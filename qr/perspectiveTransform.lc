@@ -1,0 +1,126 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- perspectiveTransform.lc — 3x3 projective transform. Spec §8.4.
+-- Port of ZXing Common\PerspectiveTransform. Requires: nothing (pure float).
+--
+-- A transform (Pattern A) is an array of nine coefficients:
+--   tT["a11"] tT["a21"] tT["a31"]
+--   tT["a12"] tT["a22"] tT["a32"]
+--   tT["a13"] tT["a23"] tT["a33"]
+-- matching ZXing's field layout. transformPoints maps (x,y) ->
+--   denom = a13*x + a23*y + a33
+--   x' = (a11*x + a21*y + a31)/denom ;  y' = (a12*x + a22*y + a32)/denom
+--
+-- All float math -- no integer-semantics traps (spec §6 does not apply here).
+-- =====================================================================
+
+function pt_squareToQuadrilateral pX0, pY0, pX1, pY1, pX2, pY2, pX3, pY3
+   local tDx3, tDy3, tDx1, tDx2, tDy1, tDy2, tDenom, tA13, tA23, tXform
+   put (pX0 - pX1 + pX2 - pX3) into tDx3
+   put (pY0 - pY1 + pY2 - pY3) into tDy3
+   if (tDx3 = 0) and (tDy3 = 0) then
+      -- affine
+      put (pX1 - pX0) into tXform["a11"]
+      put (pX2 - pX1) into tXform["a21"]
+      put pX0 into tXform["a31"]
+      put (pY1 - pY0) into tXform["a12"]
+      put (pY2 - pY1) into tXform["a22"]
+      put pY0 into tXform["a32"]
+      put 0 into tXform["a13"]
+      put 0 into tXform["a23"]
+      put 1 into tXform["a33"]
+      return tXform
+   end if
+   put (pX1 - pX2) into tDx1
+   put (pX3 - pX2) into tDx2
+   put (pY1 - pY2) into tDy1
+   put (pY3 - pY2) into tDy2
+   put ((tDx1 * tDy2) - (tDx2 * tDy1)) into tDenom
+   put (((tDx3 * tDy2) - (tDx2 * tDy3)) / tDenom) into tA13
+   put (((tDx1 * tDy3) - (tDx3 * tDy1)) / tDenom) into tA23
+   put (pX1 - pX0 + (tA13 * pX1)) into tXform["a11"]
+   put (pX3 - pX0 + (tA23 * pX3)) into tXform["a21"]
+   put pX0 into tXform["a31"]
+   put (pY1 - pY0 + (tA13 * pY1)) into tXform["a12"]
+   put (pY3 - pY0 + (tA23 * pY3)) into tXform["a22"]
+   put pY0 into tXform["a32"]
+   put tA13 into tXform["a13"]
+   put tA23 into tXform["a23"]
+   put 1 into tXform["a33"]
+   return tXform
+end pt_squareToQuadrilateral
+
+-- adjoint (= transpose of the cofactor matrix); serves as the inverse here
+function pt_buildAdjoint pXform
+   local tPtA
+   put ((pXform["a22"] * pXform["a33"]) - (pXform["a23"] * pXform["a32"])) into tPtA["a11"]
+   put ((pXform["a23"] * pXform["a31"]) - (pXform["a21"] * pXform["a33"])) into tPtA["a21"]
+   put ((pXform["a21"] * pXform["a32"]) - (pXform["a22"] * pXform["a31"])) into tPtA["a31"]
+   put ((pXform["a13"] * pXform["a32"]) - (pXform["a12"] * pXform["a33"])) into tPtA["a12"]
+   put ((pXform["a11"] * pXform["a33"]) - (pXform["a13"] * pXform["a31"])) into tPtA["a22"]
+   put ((pXform["a12"] * pXform["a31"]) - (pXform["a11"] * pXform["a32"])) into tPtA["a32"]
+   put ((pXform["a12"] * pXform["a23"]) - (pXform["a13"] * pXform["a22"])) into tPtA["a13"]
+   put ((pXform["a13"] * pXform["a21"]) - (pXform["a11"] * pXform["a23"])) into tPtA["a23"]
+   put ((pXform["a11"] * pXform["a22"]) - (pXform["a12"] * pXform["a21"])) into tPtA["a33"]
+   return tPtA
+end pt_buildAdjoint
+
+function pt_quadrilateralToSquare pX0, pY0, pX1, pY1, pX2, pY2, pX3, pY3
+   return pt_buildAdjoint(pt_squareToQuadrilateral(pX0, pY0, pX1, pY1, pX2, pY2, pX3, pY3))
+end pt_quadrilateralToSquare
+
+-- matrix product (this = pA, other = pB) matching ZXing's times()
+function pt_times pPtA, pPtB
+   local tXform
+   put ((pPtA["a11"] * pPtB["a11"]) + (pPtA["a21"] * pPtB["a12"]) + (pPtA["a31"] * pPtB["a13"])) into tXform["a11"]
+   put ((pPtA["a11"] * pPtB["a21"]) + (pPtA["a21"] * pPtB["a22"]) + (pPtA["a31"] * pPtB["a23"])) into tXform["a21"]
+   put ((pPtA["a11"] * pPtB["a31"]) + (pPtA["a21"] * pPtB["a32"]) + (pPtA["a31"] * pPtB["a33"])) into tXform["a31"]
+   put ((pPtA["a12"] * pPtB["a11"]) + (pPtA["a22"] * pPtB["a12"]) + (pPtA["a32"] * pPtB["a13"])) into tXform["a12"]
+   put ((pPtA["a12"] * pPtB["a21"]) + (pPtA["a22"] * pPtB["a22"]) + (pPtA["a32"] * pPtB["a23"])) into tXform["a22"]
+   put ((pPtA["a12"] * pPtB["a31"]) + (pPtA["a22"] * pPtB["a32"]) + (pPtA["a32"] * pPtB["a33"])) into tXform["a32"]
+   put ((pPtA["a13"] * pPtB["a11"]) + (pPtA["a23"] * pPtB["a12"]) + (pPtA["a33"] * pPtB["a13"])) into tXform["a13"]
+   put ((pPtA["a13"] * pPtB["a21"]) + (pPtA["a23"] * pPtB["a22"]) + (pPtA["a33"] * pPtB["a23"])) into tXform["a23"]
+   put ((pPtA["a13"] * pPtB["a31"]) + (pPtA["a23"] * pPtB["a32"]) + (pPtA["a33"] * pPtB["a33"])) into tXform["a33"]
+   return tXform
+end pt_times
+
+function pt_quadrilateralToQuadrilateral pX0, pY0, pX1, pY1, pX2, pY2, pX3, pY3, pX0p, pY0p, pX1p, pY1p, pX2p, pY2p, pX3p, pY3p
+   local tQToS, tSToQ
+   put pt_quadrilateralToSquare(pX0, pY0, pX1, pY1, pX2, pY2, pX3, pY3) into tQToS
+   put pt_squareToQuadrilateral(pX0p, pY0p, pX1p, pY1p, pX2p, pY2p, pX3p, pY3p) into tSToQ
+   return pt_times(tSToQ, tQToS)
+end pt_quadrilateralToQuadrilateral
+
+-- transform a 0-based flat point array {x0,y0,x1,y1,...} in place (command, @).
+-- denom == 0 leaves the point unchanged (matches the PHP guard).
+command pt_transformPoints @pPoints, pXform
+   local tNumPts, k, i, tValX, tValY, tDenom
+   local tA11, tA21, tA31, tA12, tA22, tA32, tA13, tA23, tA33
+   -- points come in (x,y) pairs; xTalk repeat has no "step", so iterate the
+   -- pair index k and derive the flat offset i = 2*k.
+   put ((the number of elements of pPoints) div 2) into tNumPts
+   put pXform["a11"] into tA11
+   put pXform["a21"] into tA21
+   put pXform["a31"] into tA31
+   put pXform["a12"] into tA12
+   put pXform["a22"] into tA22
+   put pXform["a32"] into tA32
+   put pXform["a13"] into tA13
+   put pXform["a23"] into tA23
+   put pXform["a33"] into tA33
+   repeat with k = 0 to (tNumPts - 1)
+      put (k * 2) into i
+      put pPoints[i] into tValX
+      put pPoints[i + 1] into tValY
+      put ((tA13 * tValX) + (tA23 * tValY) + tA33) into tDenom
+      if tDenom <> 0 then
+         put (((tA11 * tValX) + (tA21 * tValY) + tA31) / tDenom) into pPoints[i]
+         put (((tA12 * tValX) + (tA22 * tValY) + tA32) / tDenom) into pPoints[i + 1]
+      end if
+   end repeat
+end pt_transformPoints
+?>

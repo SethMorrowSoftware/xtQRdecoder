@@ -1,0 +1,115 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- globalHistogramBinarizer.lc — global black-point via 32-bucket histogram.
+-- Port of ZXing GlobalHistogramBinarizer. Spec §8 / module inventory.
+-- Requires: qrCompat.lc, bitMatrix.lc, luminanceSource.lc.
+--
+-- ghb_getBlackMatrix(pSrc) -> BitMatrix (true = black). Samples 4 rows to
+-- build a 32-bucket luminance histogram, estimates a black point, then
+-- thresholds the whole image. Throws "NotFound: ..." when contrast is too low
+-- (mirrors ZXing throwing NotFoundException; spec §6.6).
+-- =====================================================================
+
+constant kLumBits    = 5
+constant kLumShift   = 3      -- 8 - kLumBits
+constant kLumBuckets = 32     -- 1 << kLumBits
+
+function ghb_estimateBlackPoint pBuckets
+   local numBuckets, maxBucketCount, firstPeak, firstPeakSize, x
+   local secondPeak, secondPeakScore, dist, score, temp
+   local bestValley, bestValleyScore, fromFirst
+   put kLumBuckets into numBuckets
+
+   -- tallest peak
+   put 0 into maxBucketCount
+   put 0 into firstPeak
+   put 0 into firstPeakSize
+   repeat with x = 0 to (numBuckets - 1)
+      if pBuckets[x] > firstPeakSize then
+         put x into firstPeak
+         put pBuckets[x] into firstPeakSize
+      end if
+      if pBuckets[x] > maxBucketCount then put pBuckets[x] into maxBucketCount
+   end repeat
+
+   -- second-tallest peak, weighted toward distance from the first
+   put 0 into secondPeak
+   put 0 into secondPeakScore
+   repeat with x = 0 to (numBuckets - 1)
+      put (x - firstPeak) into dist
+      put (pBuckets[x] * dist * dist) into score
+      if score > secondPeakScore then
+         put x into secondPeak
+         put score into secondPeakScore
+      end if
+   end repeat
+
+   -- ensure firstPeak is the darker one
+   if firstPeak > secondPeak then
+      put firstPeak into temp
+      put secondPeak into firstPeak
+      put temp into secondPeak
+   end if
+
+   -- too little contrast -> give up (don't risk false positives)
+   if (secondPeak - firstPeak) <= (numBuckets div 16) then
+      throw "NotFound: too little dynamic range in luminance"
+   end if
+
+   -- lowest valley between the peaks, biased toward the white peak
+   put (secondPeak - 1) into bestValley
+   put -1 into bestValleyScore
+   repeat with x = (secondPeak - 1) down to (firstPeak + 1)
+      put (x - firstPeak) into fromFirst
+      put (fromFirst * fromFirst * (secondPeak - x) * (maxBucketCount - pBuckets[x])) into score
+      if score > bestValleyScore then
+         put x into bestValley
+         put score into bestValleyScore
+      end if
+   end repeat
+
+   return shl(bestValley, kLumShift)
+end ghb_estimateBlackPoint
+
+function ghb_getBlackMatrix pSrc
+   local tW, tH, tLum, tMatrix, x, y, tRow, tRight, tLeft, tPixel
+   local tBuckets, b, blackPoint, tOffset, tRowBase
+   put pSrc["width"] into tW
+   put pSrc["height"] into tH
+   put pSrc["lum"] into tLum
+   put bitMatrix_new(tW, tH) into tMatrix
+
+   -- histogram from 4 sampled rows (y = 1..4 of fifths), centre columns
+   repeat with b = 0 to (kLumBuckets - 1)
+      put 0 into tBuckets[b]
+   end repeat
+   -- the centre-column bounds don't depend on y, so compute them once; inside
+   -- each sampled row, hoist the row base so indexing is one add (tRowBase + x).
+   put ((tW * 4) div 5) into tRight
+   put (tW div 5) into tLeft
+   repeat with y = 1 to 4
+      put ((tH * y) div 5) into tRow
+      put (tRow * tW) into tRowBase
+      repeat with x = tLeft to (tRight - 1)
+         put tLum[tRowBase + x] into tPixel
+         add 1 to tBuckets[uShr(tPixel, kLumShift)]
+      end repeat
+   end repeat
+
+   put ghb_estimateBlackPoint(tBuckets) into blackPoint
+
+   -- threshold the whole image: pixel < blackPoint => black
+   repeat with y = 0 to (tH - 1)
+      put (y * tW) into tOffset
+      repeat with x = 0 to (tW - 1)
+         if tLum[tOffset + x] < blackPoint then bitMatrix_set tMatrix, x, y
+      end repeat
+   end repeat
+
+   return tMatrix
+end ghb_getBlackMatrix
+?>

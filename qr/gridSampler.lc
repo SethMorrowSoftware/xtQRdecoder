@@ -1,0 +1,113 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- gridSampler.lc — sample a module grid through a transform. Spec §8.4.
+-- Port of ZXing Common\GridSampler + DefaultGridSampler.
+-- Requires: qrCompat.lc, bitMatrix.lc, perspectiveTransform.lc.
+--
+-- gs_sampleGrid(image, dimX, dimY, transform) -> BitMatrix:
+--   for each output row y, build the sample points (x+0.5, y+0.5) for every
+--   column, run them through the transform, clamp endpoints to the image edge
+--   (checkAndNudgePoints), then read image.get at each sampled pixel.
+--
+-- A sample point landing outside the image throws NotFound -- this mirrors the
+-- PHP ArrayIndexOutOfBounds -> NotFoundException wrapper (a "twisted" transform).
+-- =====================================================================
+
+-- clamp barely-off endpoints back onto the image; throw if truly outside.
+-- Mutates pPoints in place (command, @). Mirrors checkAndNudgePoints exactly:
+-- nudge from the start until a point is OK, then nudge from the end likewise.
+command gs_checkAndNudgePoints @pPoints, pWidth, pHeight
+   local tCountN, tNudged, tOffset, tValX, tValY
+   put (the number of elements of pPoints) into tCountN
+
+   put true into tNudged
+   put 0 into tOffset
+   repeat while (tOffset < tCountN) and tNudged
+      put trunc(pPoints[tOffset]) into tValX
+      put trunc(pPoints[tOffset + 1]) into tValY
+      if (tValX < -1) or (tValX > pWidth) or (tValY < -1) or (tValY > pHeight) then
+         throw "NotFound: endpoint (" & tValX & "," & tValY & ") outside image (" & pWidth & "," & pHeight & ")"
+      end if
+      put false into tNudged
+      if tValX = -1 then
+         put 0 into pPoints[tOffset]
+         put true into tNudged
+      else if tValX = pWidth then
+         put (pWidth - 1) into pPoints[tOffset]
+         put true into tNudged
+      end if
+      if tValY = -1 then
+         put 0 into pPoints[tOffset + 1]
+         put true into tNudged
+      else if tValY = pHeight then
+         put (pHeight - 1) into pPoints[tOffset + 1]
+         put true into tNudged
+      end if
+      add 2 to tOffset
+   end repeat
+
+   put true into tNudged
+   put (tCountN - 2) into tOffset
+   repeat while (tOffset >= 0) and tNudged
+      put trunc(pPoints[tOffset]) into tValX
+      put trunc(pPoints[tOffset + 1]) into tValY
+      if (tValX < -1) or (tValX > pWidth) or (tValY < -1) or (tValY > pHeight) then
+         throw "NotFound: endpoint (" & tValX & "," & tValY & ") outside image (" & pWidth & "," & pHeight & ")"
+      end if
+      put false into tNudged
+      if tValX = -1 then
+         put 0 into pPoints[tOffset]
+         put true into tNudged
+      else if tValX = pWidth then
+         put (pWidth - 1) into pPoints[tOffset]
+         put true into tNudged
+      end if
+      if tValY = -1 then
+         put 0 into pPoints[tOffset + 1]
+         put true into tNudged
+      else if tValY = pHeight then
+         put (pHeight - 1) into pPoints[tOffset + 1]
+         put true into tNudged
+      end if
+      subtract 2 from tOffset
+   end repeat
+end gs_checkAndNudgePoints
+
+function gs_sampleGrid pImage, pDimX, pDimY, pTransform
+   local tBits, tPoints, y, c, x, tIValue, tImgW, tImgH, tPX, tPY
+   if (pDimX <= 0) or (pDimY <= 0) then
+      throw "NotFound: grid dimensions <= 0"
+   end if
+   put bitMatrix_new(pDimX, pDimY) into tBits
+   put bitMatrix_getWidth(pImage) into tImgW
+   put bitMatrix_getHeight(pImage) into tImgH
+   -- xTalk repeat has no "step"; iterate the column c and use x = 2*c as the
+   -- flat (x,y) offset into the points array.
+   repeat with y = 0 to (pDimY - 1)
+      put (y + 0.5) into tIValue
+      repeat with c = 0 to (pDimX - 1)
+         put (c * 2) into x
+         put (c + 0.5) into tPoints[x]
+         put tIValue into tPoints[x + 1]
+      end repeat
+      pt_transformPoints tPoints, pTransform
+      gs_checkAndNudgePoints tPoints, tImgW, tImgH
+      repeat with c = 0 to (pDimX - 1)
+         put (c * 2) into x
+         put trunc(tPoints[x]) into tPX
+         put trunc(tPoints[x + 1]) into tPY
+         if (tPX < 0) or (tPX >= tImgW) or (tPY < 0) or (tPY >= tImgH) then
+            throw "NotFound: sample point (" & tPX & "," & tPY & ") outside image"
+         end if
+         if bitMatrix_get(pImage, tPX, tPY) then
+            bitMatrix_set tBits, c, y
+         end if
+      end repeat
+   end repeat
+   return tBits
+end gs_sampleGrid
+?>

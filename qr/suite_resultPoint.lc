@@ -1,0 +1,35 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_resultPoint.lc — ResultPoint tests (spec §8.4). Defines: command suite_resultPoint.
+-- Requires loaded: mathUtils.lc, resultPoint.lc.
+-- Expected ordering independently derived in Python from the ZXing logic.
+-- =====================================================================
+
+command suite_resultPoint
+   local tPtA, tPtB, tPts, tOut
+
+   put rp_new(0, 0) into tPtA
+   put rp_new(3, 4) into tPtB
+   t_eq "distance (0,0)-(3,4) = 5", rp_distance(tPtA, tPtB), 5
+
+   -- crossProductZ of BC x BA for A=(1,0) B=(0,0) C=(0,1) is negative
+   t_eq "crossProductZ negative", \
+      (rp_crossProductZ(rp_new(1, 0), rp_new(0, 0), rp_new(0, 1)) < 0), true
+
+   -- orderBestPatterns on (TL,TR,BL) -> [BL, TL(corner), TR]
+   put rp_new(45, 45) into tPts[0]
+   put rp_new(129, 45) into tPts[1]
+   put rp_new(45, 129) into tPts[2]
+   put rp_orderBestPatterns(tPts) into tOut
+   t_eq "order[0] bl x", tOut[0]["x"], 45
+   t_eq "order[0] bl y", tOut[0]["y"], 129
+   t_eq "order[1] tl x", tOut[1]["x"], 45
+   t_eq "order[1] tl y", tOut[1]["y"], 45
+   t_eq "order[2] tr x", tOut[2]["x"], 129
+   t_eq "order[2] tr y", tOut[2]["y"], 45
+end suite_resultPoint
+?>

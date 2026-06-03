@@ -1,0 +1,79 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_parser.lc — DataBlock + DecodedBitStreamParser tests. Spec §8.5, §10.
+-- Defines: command suite_parser.
+-- Requires loaded: qrCompat.lc, version.lc, errorCorrectionLevel.lc, mode.lc,
+--   bitSource.lc, characterSetECI.lc, dataBlock.lc, decodedBitStreamParser.lc.
+--
+-- Bitstreams and the de-interleave vector were generated + verified in Python.
+-- =====================================================================
+
+-- dense 0-based byte array from a comma list
+function par_bytes pList
+   local tA, i, x
+   set the itemDelimiter to comma
+   put 0 into i
+   repeat for each item x in pList
+      put (x + 0) into tA[i]
+      add 1 to i
+   end repeat
+   return tA
+end par_bytes
+
+command suite_parser
+   local raw, blocks, r, b0, b3, i, ok
+
+   -- ============ DataBlock de-interleave (v5-Q, verified vector) ============
+   -- 134 interleaved codewords -> 4 blocks (2x15data + 2x16data, 18 ec each).
+   put par_bytes("0,100,200,300,1,101,201,301,2,102,202,302,3,103,203,303,4,104,204,304,5,105,205,305,6,106,206,306,7,107,207,307,8,108,208,308,9,109,209,309,10,110,210,310,11,111,211,311,12,112,212,312,13,113,213,313,14,114,214,314,215,315,1000,1010,1020,1030,1001,1011,1021,1031,1002,1012,1022,1032,1003,1013,1023,1033,1004,1014,1024,1034,1005,1015,1025,1035,1006,1016,1026,1036,1007,1017,1027,1037,1008,1018,1028,1038,1009,1019,1029,1039,1010,1020,1030,1040,1011,1021,1031,1041,1012,1022,1032,1042,1013,1023,1033,1043,1014,1024,1034,1044,1015,1025,1035,1045,1016,1026,1036,1046,1017,1027,1037,1047") into raw
+   put db_getDataBlocks(raw, 5, 2) into blocks       -- version 5, Q (ordinal 2)
+   t_eq "db block count", blocks["n"], 4
+   t_eq "db block0 numData", blocks[0]["numData"], 15
+   t_eq "db block3 numData", blocks[3]["numData"], 16
+   -- block 0: data should be 0..14, EC should start at 1000
+   t_eq "db block0 data[0]", blocks[0]["cw"][0], 0
+   t_eq "db block0 data[14]", blocks[0]["cw"][14], 14
+   t_eq "db block0 ec[0]", blocks[0]["cw"][15], 1000
+   t_eq "db block0 ec[17]", blocks[0]["cw"][32], 1017
+   -- block 3: data 300..315
+   t_eq "db block3 data[0]", blocks[3]["cw"][0], 300
+   t_eq "db block3 data[15]", blocks[3]["cw"][15], 315
+   t_eq "db block3 len", blocks[3]["len"], 34
+
+   -- ============ DecodedBitStreamParser (verified bitstreams) ============
+   -- NUMERIC "8675309"
+   put dbsp_decode(par_bytes("16,31,99,132,164,0"), 1, 0) into r
+   t_eq "numeric error empty", r["error"], empty
+   t_eq "numeric 8675309", r["text"], "8675309"
+
+   -- ALPHANUMERIC "HELLO WORLD"
+   put dbsp_decode(par_bytes("32,91,11,120,209,114,220,77,67,64"), 1, 0) into r
+   t_eq "alnum error empty", r["error"], empty
+   t_eq "alnum HELLO WORLD", r["text"], "HELLO WORLD"
+
+   -- BYTE "Hi!"
+   put dbsp_decode(par_bytes("64,52,134,146,16"), 1, 0) into r
+   t_eq "byte error empty", r["error"], empty
+   t_eq "byte Hi!", r["text"], "Hi!"
+
+   -- ECI 26 (UTF-8) + BYTE "café"
+   put dbsp_decode(par_bytes("113,164,5,99,97,102,195,169,0"), 1, 0) into r
+   t_eq "eci utf8 error empty", r["error"], empty
+   t_eq "eci utf8 café", r["text"], textDecode(numToByte(99) & numToByte(97) & numToByte(102) & numToByte(195) & numToByte(169), "UTF-8")
+
+   -- CharacterSetECI name lookups
+   t_eq "eci 26 = UTF-8", eci_charsetName(26), "UTF-8"
+   t_eq "eci 1 = ISO-8859-1", eci_charsetName(1), "ISO-8859-1"
+   t_eq "eci 20 = Shift_JIS", eci_charsetName(20), "Shift_JIS"
+   t_eq "eci 29 = GB2312", eci_charsetName(29), "GB2312"
+
+   -- Kanji raises the documented limitation (mode 8), not a crash
+   -- 4-bit KANJI mode then arbitrary bits; expect a Format error string.
+   put dbsp_decode(par_bytes("128,16,0"), 1, 0) into r
+   t_eq "kanji raises Format error", (r["error"] is not empty), true
+end suite_parser
+?>

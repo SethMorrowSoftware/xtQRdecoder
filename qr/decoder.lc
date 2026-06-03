@@ -1,0 +1,108 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- decoder.lc — orchestrate matrix parse -> RS -> bitstream. Spec §8.5.
+-- Port of ZXing Qrcode\Decoder\Decoder. Requires: qrCompat.lc, bitMatrix.lc,
+--   bitMatrixParser.lc, version.lc, formatInformation.lc, dataMask.lc,
+--   dataBlock.lc, reedSolomonDecoder.lc, decodedBitStreamParser.lc,
+--   errorCorrectionLevel.lc.
+--
+-- dec_decode(bits) -> result array from decodedBitStreamParser:
+--   ["text"], ["bytes"], ["error"], plus ["ecLevel"], ["version"], ["mask"].
+-- On any NotFound/Format/Checksum the result has ["error"] set and empty text.
+--
+-- Flow (dec_decodeParser):
+--   1. read format info -> ecLevel, dataMask
+--   2. read version
+--   3. un-mask the matrix with the chosen data mask
+--   4. read raw codewords (zig-zag, skipping function modules)
+--   5. de-interleave into RS blocks; correct each block; concatenate data
+--   6. DecodedBitStreamParser.decode
+-- A mirrored-symbol retry wraps this: on failure, transpose and try once more.
+-- =====================================================================
+
+function dec_decode pBits
+   local parser, tRes, e
+   put bmp_new(pBits) into parser
+   -- first attempt
+   put dec_tryParser(parser) into tRes
+   if tRes["error"] is empty then
+      return tRes
+   end if
+   -- mirror retry: re-read everything transposed
+   bmp_setMirror parser, true
+   put dec_tryParser(parser) into tRes
+   if tRes["error"] is empty then
+      put true into tRes["mirrored"]
+   end if
+   return tRes
+end dec_decode
+
+-- one decode attempt; returns the bitstream result (with error set on failure).
+function dec_tryParser pParser
+   local tFmt, tEcLevel, tMask, tVersion, tBits, tCodewords
+   local tBlocks, tNum, b, tCorrected, i, tData, tDataIdx, tSaved
+   local tResult, tErr, e
+
+   try
+      put bmp_readFormatInformation(pParser) into tFmt
+      put tFmt["ecLevel"] into tEcLevel
+      put tFmt["dataMask"] into tMask
+      put bmp_readVersion(pParser) into tVersion
+
+      -- un-mask the data modules, then read codewords from the matrix.
+      -- Work on a copy so the parser's matrix stays intact for a mirror retry.
+      put pParser["bits"] into tBits
+      dataMask_unmask tBits, ver_getDimensionForVersion(tVersion), tMask
+      put pParser["bits"] into tSaved
+      put tBits into pParser["bits"]
+      put bmp_readCodewords(pParser, tVersion) into tCodewords
+      put tSaved into pParser["bits"]
+
+      -- de-interleave + per-block Reed–Solomon correction
+      put db_getDataBlocks(tCodewords, tVersion, tEcLevel) into tBlocks
+      put tBlocks["n"] into tNum
+      put 0 into tDataIdx             -- concatenated corrected data codewords
+      repeat with b = 0 to (tNum - 1)
+         put dec_correctBlock(tBlocks[b], ver_getEcCodewordsPerBlock(tVersion, tEcLevel)) into tCorrected
+         repeat with i = 0 to (tBlocks[b]["numData"] - 1)
+            put tCorrected[i] into tData[tDataIdx]
+            add 1 to tDataIdx
+         end repeat
+      end repeat
+
+      -- bits -> text
+      put dbsp_decode(tData, tVersion, tEcLevel) into tResult
+      if tResult["error"] is not empty then
+         return tResult
+      end if
+      put ecl_name(tEcLevel) into tResult["ecLevel"]
+      put tVersion into tResult["version"]
+      put tMask into tResult["mask"]
+      return tResult
+   catch e
+      put empty into tErr
+      put e into tErr["error"]
+      return tErr
+   end try
+end dec_tryParser
+
+-- correct one block's codewords with Reed–Solomon; returns the corrected
+-- data codewords (0-based, length numData).
+function dec_correctBlock pBlock, pEcwPerBlock
+   local tLen, tCw, i, tOut
+   put pBlock["len"] into tLen
+   -- build a dense 0-based array of all codewords (data + ec) for rs_decode
+   repeat with i = 0 to (tLen - 1)
+      put pBlock["cw"][i] into tCw[i]
+   end repeat
+   rs_decode tCw, pEcwPerBlock          -- corrects in place; throws on failure
+   repeat with i = 0 to (pBlock["numData"] - 1)
+      put tCw[i] into tOut[i]
+   end repeat
+   return tOut
+end dec_correctBlock
+?>

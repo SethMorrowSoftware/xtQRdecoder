@@ -1,0 +1,93 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- mode.lc — QR encoding-mode table. Spec §8.5.
+-- Port of ZXing Qrcode\Decoder\Mode. Requires: nothing.
+--
+-- A "mode" is identified by its canonical NAME string (e.g. "NUMERIC").
+-- mode_forBits(v) maps the 4-bit mode indicator -> name (throws on unknown).
+-- mode_charCountBits(name, version) returns the character-count bit width for
+-- the version range: offset 0 if v<=9, 1 if v<=26, else 2.
+--
+-- Table (verbatim, spec §8.5):
+--   mode                 ccBits [v1-9,v10-26,v27-40]   4-bit value
+--   TERMINATOR           0,0,0                          0x00
+--   NUMERIC              10,12,14                       0x01
+--   ALPHANUMERIC         9,11,13                        0x02
+--   STRUCTURED_APPEND    0,0,0                          0x03
+--   BYTE                 8,16,16                        0x04
+--   FNC1_FIRST_POSITION  0,0,0                          0x05
+--   ECI                  0,0,0                          0x07
+--   KANJI                8,10,12                        0x08
+--   FNC1_SECOND_POSITION 0,0,0                          0x09
+--   HANZI (GB2312)       8,10,12                        0x0D
+-- =====================================================================
+
+-- 4-bit mode indicator -> canonical name
+function mode_forBits pBits
+   switch pBits
+      case 0
+         return "TERMINATOR"
+      case 1
+         return "NUMERIC"
+      case 2
+         return "ALPHANUMERIC"
+      case 3
+         return "STRUCTURED_APPEND"
+      case 4
+         return "BYTE"
+      case 5
+         return "FNC1_FIRST_POSITION"
+      case 7
+         return "ECI"
+      case 8
+         return "KANJI"
+      case 9
+         return "FNC1_SECOND_POSITION"
+      case 13                       -- 0x0D
+         return "HANZI"
+   end switch
+   throw "Format: unknown mode bits " & pBits
+end mode_forBits
+
+-- version range index: 0 for v1-9, 1 for v10-26, 2 for v27-40
+function mode_versionOffset pVersion
+   if pVersion <= 9 then
+      return 0
+   end if
+   if pVersion <= 26 then
+      return 1
+   end if
+   return 2
+end mode_versionOffset
+
+-- character-count bit width for the given mode name and version
+function mode_charCountBits pName, pVersion
+   local tOff, tTriple
+   put mode_versionOffset(pVersion) into tOff
+   switch pName
+      case "NUMERIC"
+         put "10,12,14" into tTriple
+         break
+      case "ALPHANUMERIC"
+         put "9,11,13" into tTriple
+         break
+      case "BYTE"
+         put "8,16,16" into tTriple
+         break
+      case "KANJI"
+         put "8,10,12" into tTriple
+         break
+      case "HANZI"
+         put "8,10,12" into tTriple
+         break
+      default
+         return 0                  -- TERMINATOR/ECI/FNC1/STRUCTURED_APPEND
+   end switch
+   set the itemDelimiter to comma
+   return (item (tOff + 1) of tTriple)
+end mode_charCountBits
+?>

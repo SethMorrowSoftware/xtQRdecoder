@@ -1,0 +1,153 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- hybridBinarizer.lc — local adaptive threshold (the default binarizer).
+-- Port of ZXing HybridBinarizer. Spec §8 / module inventory.
+-- Requires: qrCompat.lc, bitMatrix.lc, luminanceSource.lc, globalHistogramBinarizer.lc.
+--
+-- hb_getBlackMatrix(pSrc) -> BitMatrix (true = black). Divides the image into
+-- 8x8 blocks, computes each block's average (smoothed over a 5x5 neighbourhood
+-- of block averages), and thresholds each pixel against the local average.
+-- Falls back to the global histogram binarizer for images below MINIMUM_DIMENSION
+-- (40 px) on either side (spec: HybridBinarizer flattens the inheritance and
+-- calls the global path directly).
+--
+-- NOTE on the block-scan: ZXing has a micro-optimisation that, once a block's
+-- dynamic range exceeds MIN_DYNAMIC_RANGE, sums the remaining rows without
+-- updating min/max. xTalk's `repeat with` ignores in-body changes to its
+-- loop counter, so that early-out cannot be expressed by mutating the counter
+-- without double-counting. We sum all 64 pixels in a plain double loop — the
+-- RESULT is identical (the sum is the same; once range>24 the final low-range
+-- branch is skipped either way), only the per-block cost differs. (spec §11)
+-- =====================================================================
+
+constant kBlockSizePower = 3      -- 8x8 blocks
+constant kBlockSize      = 8      -- 1 << kBlockSizePower
+constant kBlockMask      = 7      -- kBlockSize - 1
+constant kMinDimension   = 40
+constant kMinDynRange    = 24     -- MIN_DYNAMIC_RANGE
+
+-- clamp helper (ZXing `cap`)
+function hb_cap pV, pMin, pMax
+   if pV < pMin then return pMin
+   if pV > pMax then return pMax
+   return pV
+end hb_cap
+
+-- one black-point per 8x8 block: blackPoints[subHeight][subWidth] flattened
+-- as a 1-D 0-based array indexed (tBy * subWidth + tBx).
+function hb_calculateBlackPoints pSrc, pSubW, pSubH, pW, pH
+   local tLum, tBy, tBx, tYoff, tXoff
+   local tSum, minPix, maxPix, yy, xx, tRowBase
+   local tPixel, tAvg, averageNeighbor, tBP
+   put pSrc["lum"] into tLum
+   repeat with tBy = 0 to (pSubH - 1)
+      put (tBy * kBlockSize) into tYoff
+      if (tYoff + kBlockSize) > pH then put (pH - kBlockSize) into tYoff
+      repeat with tBx = 0 to (pSubW - 1)
+         put (tBx * kBlockSize) into tXoff
+         if (tXoff + kBlockSize) > pW then put (pW - kBlockSize) into tXoff
+         put 0 into tSum
+         put 255 into minPix
+         put 0 into maxPix
+         -- hoist the row base out of the inner loop: index arithmetic per pixel
+         -- drops from (row*pW + col) -- a multiply + two adds -- to one add
+         -- (tRowBase + xx). Same flat index, so the sum/min/max are identical.
+         repeat with yy = 0 to (kBlockSize - 1)
+            put (((tYoff + yy) * pW) + tXoff) into tRowBase
+            repeat with xx = 0 to (kBlockSize - 1)
+               put tLum[tRowBase + xx] into tPixel
+               add tPixel to tSum
+               if tPixel < minPix then put tPixel into minPix
+               if tPixel > maxPix then put tPixel into maxPix
+            end repeat
+         end repeat
+         put (tSum div (kBlockSize * kBlockSize)) into tAvg
+         if (maxPix - minPix) <= kMinDynRange then
+            -- low range: likely a single colour. Black point = min/2, unless
+            -- this block is darker than the average of its (already computed)
+            -- top/left neighbours.
+            put (minPix div 2) into tAvg
+            if (tBy > 0) and (tBx > 0) then
+               put ( tBP[(tBy-1) * pSubW + tBx] \
+                   + (2 * tBP[tBy * pSubW + (tBx-1)]) \
+                   + tBP[(tBy-1) * pSubW + (tBx-1)] ) into averageNeighbor
+               put (averageNeighbor div 4) into averageNeighbor
+               if minPix < averageNeighbor then put averageNeighbor into tAvg
+            end if
+         end if
+         put tAvg into tBP[tBy * pSubW + tBx]
+      end repeat
+   end repeat
+   return tBP
+end hb_calculateBlackPoints
+
+-- threshold the 8x8 block at (tBx,tBy) against the 5x5-smoothed local average.
+-- pLum (the whole luminance plane) and pBP (the black points) are taken BY
+-- REFERENCE -- this command only reads them, but @ guarantees the large arrays
+-- are never copied per block (this runs once per 8x8 block, i.e. tens of
+-- thousands of times on a big image). Same big-array-by-ref idiom as arraycopy.
+command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
+   local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx, tPixel
+   local tNbBase, tRowY, tRowBase
+   put (tBx * kBlockSize) into tXoff
+   if (tXoff + kBlockSize) > pW then put (pW - kBlockSize) into tXoff
+   put (tBy * kBlockSize) into tYoff
+   if (tYoff + kBlockSize) > pH then put (pH - kBlockSize) into tYoff
+
+   put hb_cap(tBy, 2, pSubH - 3) into tTop
+   put hb_cap(tBx, 2, pSubW - 3) into leftBlk
+   put 0 into tSum
+   repeat with dy = -2 to 2
+      put (((tTop + dy) * pSubW) + leftBlk) into tNbBase
+      repeat with dx = -2 to 2
+         add pBP[tNbBase + dx] to tSum
+      end repeat
+   end repeat
+   put (tSum div 25) into tAvg
+
+   -- hoist the pixel-row base (and the row's y, reused as the set() y-arg) out of
+   -- the inner loop: per-pixel index arithmetic drops to a single add (tRowBase +
+   -- xx). The flat index and the (x,y) passed to bitMatrix_set are unchanged.
+   repeat with yy = 0 to (kBlockSize - 1)
+      put (tYoff + yy) into tRowY
+      put ((tRowY * pW) + tXoff) into tRowBase
+      repeat with xx = 0 to (kBlockSize - 1)
+         put pLum[tRowBase + xx] into tPixel
+         if tPixel <= tAvg then bitMatrix_set pMatrix, (tXoff + xx), tRowY
+      end repeat
+   end repeat
+end hb_thresholdBlock
+
+function hb_getBlackMatrix pSrc
+   local tW, tH, tSubW, tSubH, tBP, tMatrix, tBx, tBy, tLum
+   put pSrc["width"] into tW
+   put pSrc["height"] into tH
+
+   -- small images: fall back to the global histogram path (flattened inheritance)
+   if (tW < kMinDimension) or (tH < kMinDimension) then
+      return ghb_getBlackMatrix(pSrc)
+   end if
+
+   put (tW div kBlockSize) into tSubW
+   if (tW bitAnd kBlockMask) <> 0 then add 1 to tSubW
+   put (tH div kBlockSize) into tSubH
+   if (tH bitAnd kBlockMask) <> 0 then add 1 to tSubH
+
+   put hb_calculateBlackPoints(pSrc, tSubW, tSubH, tW, tH) into tBP
+   put bitMatrix_new(tW, tH) into tMatrix
+   -- Hoist the luminance plane into a local ONCE, then pass it (and the black
+   -- points) by reference per block, instead of re-evaluating pSrc["lum"] -- a
+   -- subarray extraction -- on every one of the tSubW*tSubH iterations.
+   put pSrc["lum"] into tLum
+   repeat with tBy = 0 to (tSubH - 1)
+      repeat with tBx = 0 to (tSubW - 1)
+         hb_thresholdBlock tMatrix, tLum, tBP, tBx, tBy, tSubW, tSubH, tW, tH
+      end repeat
+   end repeat
+   return tMatrix
+end hb_getBlackMatrix
+?>

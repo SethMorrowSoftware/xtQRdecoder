@@ -1,0 +1,62 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- dataMask.lc — the 8 QR data-mask predicates. Spec §8.5.
+-- Port of ZXing Qrcode\Decoder\DataMask. Requires: qrCompat.lc, bitMatrix.lc.
+--
+-- dataMask_isMasked(ref, i, j) -> boolean   (i = row, j = column)
+--   ref  formula
+--   0    ((i + j) bitAnd 1) = 0
+--   1    (i bitAnd 1) = 0
+--   2    j mod 3 = 0
+--   3    (i + j) mod 3 = 0
+--   4    (((i div 2) + (j div 3)) bitAnd 1) = 0
+--   5    ((i*j) mod 2) + ((i*j) mod 3) = 0
+--   6    (((i*j) mod 2) + ((i*j) mod 3)) bitAnd 1 = 0
+--   7    ((((i+j) bitAnd 1) + ((i*j) mod 3)) bitAnd 1) = 0
+--
+-- dataMask_unmask(bits, dimension, ref) flips every (i,j) where the predicate
+-- is true, in place (bits passed by @). Masking is an involution, so the same
+-- routine both applies and removes the mask.
+-- =====================================================================
+
+function dataMask_isMasked pRef, i, j
+   local tmp
+   switch pRef
+      case 0
+         return (((i + j) bitAnd 1) = 0)
+      case 1
+         return ((i bitAnd 1) = 0)
+      case 2
+         return ((j mod 3) = 0)
+      case 3
+         return (((i + j) mod 3) = 0)
+      case 4
+         return ((((i div 2) + (j div 3)) bitAnd 1) = 0)
+      case 5
+         put (i * j) into tmp
+         return ((((tmp mod 2) + (tmp mod 3)) ) = 0)
+      case 6
+         put (i * j) into tmp
+         return ((((tmp mod 2) + (tmp mod 3)) bitAnd 1) = 0)
+      case 7
+         return (((((i + j) bitAnd 1) + ((i * j) mod 3)) bitAnd 1) = 0)
+   end switch
+   throw "Format: bad data mask reference " & pRef
+end dataMask_isMasked
+
+-- flip the masked cells of the dimension x dimension matrix, in place
+command dataMask_unmask @pBits, pDimension, pRef
+   local i, j
+   repeat with i = 0 to (pDimension - 1)
+      repeat with j = 0 to (pDimension - 1)
+         if dataMask_isMasked(pRef, i, j) then
+            bitMatrix_flip pBits, j, i        -- (x=j, y=i)
+         end if
+      end repeat
+   end repeat
+end dataMask_unmask
+?>

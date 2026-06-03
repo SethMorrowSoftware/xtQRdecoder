@@ -1,0 +1,94 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_reedSolomon.lc — Reed–Solomon decode tests (spec §10.4).
+-- Defines: command suite_reedSolomon.
+-- Requires loaded: qrCompat.lc, genericGF.lc, genericGFPoly.lc, reedSolomonDecoder.lc.
+--
+-- Uses ZXing's OWN QR reference codeword from
+-- core/src/test/.../ReedSolomonDecoderQRCodeTestCase.java:
+--   data (16): 0x10,0x20,0x0C,0x56,0x61,0x80,0xEC,0x11,0xEC,0x11,0xEC,0x11,0xEC,0x11,0xEC,0x11
+--   +EC (10):  0xA5,0x24,0xD4,0xC1,0xED,0x36,0xC7,0x87,0x2C,0x55
+-- => 26 codewords total, twoS = 10, so up to floor(10/2) = 5 errors correctable.
+-- Verified hex->decimal by hand. A real RS DECODE test against known-good data
+-- is the single strongest check of the whole integer layer (spec §10.4).
+-- =====================================================================
+
+-- parse a comma list into a dense 0-based array
+function rs_listToArray pList
+   local tA, i, x
+   set the itemDelimiter to comma
+   put 0 into i
+   repeat for each item x in pList
+      put (x + 0) into tA[i]       -- numeric coercion
+      add 1 to i
+   end repeat
+   return tA
+end rs_listToArray
+
+-- compare two dense 0-based arrays for equality
+function rs_arraysEqual a, b
+   local n, i
+   put the number of elements of a into n
+   if n <> (the number of elements of b) then return false
+   repeat with i = 0 to (n - 1)
+      if a[i] <> b[i] then return false
+   end repeat
+   return true
+end rs_arraysEqual
+
+command suite_reedSolomon
+   local tRef, tEc, tDec, i, tThrew, e
+
+   -- ZXing QR reference: 16 data codewords followed by 10 EC codewords
+   put rs_listToArray("16,32,12,86,97,128,236,17,236,17,236,17,236,17,236,17,165,36,212,193,237,54,199,135,44,85") into tRef
+   put 10 into tEc
+
+   t_eq "codeword length", the number of elements of tRef, 26
+
+   -- (a) clean codeword decodes unchanged (proves the vector is a real codeword)
+   put tRef into tDec
+   rs_decode tDec, tEc
+   t_eq "clean: unchanged", rs_arraysEqual(tDec, tRef), true
+
+   -- (b) single error corrected --------------------------------------
+   put tRef into tDec
+   put (tDec[3] bitXor 255) into tDec[3]
+   rs_decode tDec, tEc
+   t_eq "1 error corrected", rs_arraysEqual(tDec, tRef), true
+
+   -- (c) three scattered errors corrected ----------------------------
+   put tRef into tDec
+   put (tDec[0] bitXor 17) into tDec[0]
+   put (tDec[8] bitXor 200) into tDec[8]
+   put (tDec[25] bitXor 99) into tDec[25]
+   rs_decode tDec, tEc
+   t_eq "3 errors corrected", rs_arraysEqual(tDec, tRef), true
+
+   -- (d) five errors (max capacity, t = floor(10/2)) corrected --------
+   put tRef into tDec
+   put (tDec[0] bitXor 1) into tDec[0]
+   put (tDec[5] bitXor 2) into tDec[5]
+   put (tDec[10] bitXor 4) into tDec[10]
+   put (tDec[15] bitXor 8) into tDec[15]
+   put (tDec[20] bitXor 16) into tDec[20]
+   rs_decode tDec, tEc
+   t_eq "5 errors (max) corrected", rs_arraysEqual(tDec, tRef), true
+
+   -- (e) six errors (beyond capacity) must NOT silently restore -------
+   put tRef into tDec
+   repeat with i = 0 to 5
+      put (tDec[i] bitXor (i + 7)) into tDec[i]
+   end repeat
+   put false into tThrew
+   try
+      rs_decode tDec, tEc
+   catch e
+      put true into tThrew
+   end try
+   t_eq "6 errors not silently fixed", (tThrew or (not rs_arraysEqual(tDec, tRef))), true
+end suite_reedSolomon
+?>

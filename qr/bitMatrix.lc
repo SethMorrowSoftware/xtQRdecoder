@@ -1,0 +1,238 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- bitMatrix.lc — packed 2-D bit grid. Port of ZXing Common\BitMatrix. Spec §8.1.
+-- Requires: qrCompat.lc, bitArray.lc (for getRow/setRow/rotate180).
+--
+-- Instance (Pattern A) is an array:
+--   pObj["width"], pObj["height"]
+--   pObj["rowSize"]  = (width + 31) div 32   (words per row)
+--   pObj["bits"][w]  = dense 0-based unsigned-32-bit words, length rowSize*height
+--
+-- get/getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
+-- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.shl
+-- is precision-safe: shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
+-- matching Java's overflow-discard semantics bit-for-bit (spec §6.2).
+--
+-- NOTE: the giant hard-coded debug array literal in PHP BitMatrix::set() is
+-- dead cruft and is intentionally NOT ported (spec §8.1 warning).
+-- =====================================================================
+
+function bitMatrix_new pWidth, pHeight
+   local tObj, tRowSize, tCount, k, tBits
+   if pWidth < 1 then throw "BitMatrix: dimensions must be > 0"
+   if pHeight is empty then put pWidth into pHeight
+   if pHeight < 1 then throw "BitMatrix: dimensions must be > 0"
+   put pWidth into tObj["width"]
+   put pHeight into tObj["height"]
+   put ((pWidth + 31) div 32) into tRowSize
+   put tRowSize into tObj["rowSize"]
+   put (tRowSize * pHeight) into tCount
+   -- zero-fill a FLAT local, then assign it into tObj["bits"] once (one nested
+   -- write instead of tCount of them; the matrix is image-sized on the binarizer
+   -- path, so this is rowSize*height words per allocation).
+   repeat with k = 0 to (tCount - 1)
+      put 0 into tBits[k]
+   end repeat
+   put tBits into tObj["bits"]
+   return tObj
+end bitMatrix_new
+
+function bitMatrix_getWidth pObj
+   return pObj["width"]
+end bitMatrix_getWidth
+
+function bitMatrix_getHeight pObj
+   return pObj["height"]
+end bitMatrix_getHeight
+
+function bitMatrix_get pObj, x, y
+   local tOffset
+   put (y * pObj["rowSize"] + (x div 32)) into tOffset
+   return ((uShr(pObj["bits"][tOffset], (x bitAnd 31)) bitAnd 1) <> 0)
+end bitMatrix_get
+
+command bitMatrix_set @pObj, x, y
+   local tOffset
+   put (y * pObj["rowSize"] + (x div 32)) into tOffset
+   put u32(pObj["bits"][tOffset] bitOr shl(1, (x bitAnd 31))) into pObj["bits"][tOffset]
+end bitMatrix_set
+
+command bitMatrix_unset @pObj, x, y
+   local tOffset
+   put (y * pObj["rowSize"] + (x div 32)) into tOffset
+   put u32(pObj["bits"][tOffset] bitAnd u32(bitNot(shl(1, (x bitAnd 31))))) into pObj["bits"][tOffset]
+end bitMatrix_unset
+
+command bitMatrix_flip @pObj, x, y
+   local tOffset
+   put (y * pObj["rowSize"] + (x div 32)) into tOffset
+   put u32(pObj["bits"][tOffset] bitXor shl(1, (x bitAnd 31))) into pObj["bits"][tOffset]
+end bitMatrix_flip
+
+command bitMatrix_clear @pObj
+   local n, i
+   put the number of elements of pObj["bits"] into n
+   repeat with i = 0 to (n - 1)
+      put 0 into pObj["bits"][i]
+   end repeat
+end bitMatrix_clear
+
+command bitMatrix_setRegion @pObj, pLeft, pTop, pWidth, pHeight
+   local tRight, tBottom, y, x, tRowSize, tOffset, tIdx
+   if (pTop < 0) or (pLeft < 0) then throw "BitMatrix: left and top must be nonnegative"
+   if (pHeight < 1) or (pWidth < 1) then throw "BitMatrix: height and width must be at least 1"
+   put (pLeft + pWidth) into tRight
+   put (pTop + pHeight) into tBottom
+   if (tBottom > pObj["height"]) or (tRight > pObj["width"]) then throw "BitMatrix: region must fit inside matrix"
+   put pObj["rowSize"] into tRowSize
+   repeat with y = pTop to (tBottom - 1)
+      put (y * tRowSize) into tOffset
+      repeat with x = pLeft to (tRight - 1)
+         put (tOffset + (x div 32)) into tIdx
+         put u32(pObj["bits"][tIdx] bitOr shl(1, (x bitAnd 31))) into pObj["bits"][tIdx]
+      end repeat
+   end repeat
+end bitMatrix_setRegion
+
+-- returns a new BitArray holding row y (width bits)
+function bitMatrix_getRow pObj, y
+   local tRow, x, tRowSize, tOffset
+   put pObj["rowSize"] into tRowSize
+   put bitArray_new(pObj["width"]) into tRow
+   put (y * tRowSize) into tOffset
+   repeat with x = 0 to (tRowSize - 1)
+      bitArray_setBulk tRow, (x * 32), pObj["bits"][tOffset + x]
+   end repeat
+   return tRow
+end bitMatrix_getRow
+
+command bitMatrix_setRow @pObj, y, pRow
+   local x, tRowSize, tOffset
+   put pObj["rowSize"] into tRowSize
+   put (y * tRowSize) into tOffset
+   repeat with x = 0 to (tRowSize - 1)
+      put u32(pRow["bits"][x]) into pObj["bits"][tOffset + x]
+   end repeat
+end bitMatrix_setRow
+
+command bitMatrix_rotate180 @pObj
+   local h, i, topRow, bottomRow
+   put pObj["height"] into h
+   repeat with i = 0 to (((h + 1) div 2) - 1)
+      put bitMatrix_getRow(pObj, i) into topRow
+      put bitMatrix_getRow(pObj, (h - 1 - i)) into bottomRow
+      bitArray_reverse topRow
+      bitArray_reverse bottomRow
+      bitMatrix_setRow pObj, i, bottomRow
+      bitMatrix_setRow pObj, (h - 1 - i), topRow
+   end repeat
+end bitMatrix_rotate180
+
+command bitMatrix_xor @pObj, pMask
+   local n, i
+   if (pObj["width"] <> pMask["width"]) or (pObj["height"] <> pMask["height"]) \
+         or (pObj["rowSize"] <> pMask["rowSize"]) then
+      throw "BitMatrix: input matrix dimensions do not match"
+   end if
+   put the number of elements of pObj["bits"] into n
+   repeat with i = 0 to (n - 1)
+      put u32(pObj["bits"][i] bitXor pMask["bits"][i]) into pObj["bits"][i]
+   end repeat
+end bitMatrix_xor
+
+-- {left, top, width, height} of the smallest rectangle covering all set bits,
+-- as a dense 0-based array; returns empty if no bits are set.
+function bitMatrix_getEnclosingRectangle pObj
+   local tLeft, tTop, tRight, tBottom, w, h, rs, y, x32, theBits, tBitN, tRes
+   put pObj["width"] into w
+   put pObj["height"] into h
+   put pObj["rowSize"] into rs
+   put w into tLeft
+   put h into tTop
+   put -1 into tRight
+   put -1 into tBottom
+   repeat with y = 0 to (h - 1)
+      repeat with x32 = 0 to (rs - 1)
+         put pObj["bits"][y * rs + x32] into theBits
+         if theBits <> 0 then
+            if y < tTop then put y into tTop
+            if y > tBottom then put y into tBottom
+            if (x32 * 32) < tLeft then
+               put 0 into tBitN
+               repeat while shl(theBits, (31 - tBitN)) = 0
+                  add 1 to tBitN
+               end repeat
+               if ((x32 * 32) + tBitN) < tLeft then put ((x32 * 32) + tBitN) into tLeft
+            end if
+            if ((x32 * 32) + 31) > tRight then
+               put 31 into tBitN
+               repeat while uShr(theBits, tBitN) = 0
+                  subtract 1 from tBitN
+               end repeat
+               if ((x32 * 32) + tBitN) > tRight then put ((x32 * 32) + tBitN) into tRight
+            end if
+         end if
+      end repeat
+   end repeat
+   if (tRight < tLeft) or (tBottom < tTop) then return empty
+   put tLeft into tRes[0]
+   put tTop into tRes[1]
+   put (tRight - tLeft + 1) into tRes[2]
+   put (tBottom - tTop + 1) into tRes[3]
+   return tRes
+end bitMatrix_getEnclosingRectangle
+
+-- {x, y} of the top-left set bit as a dense 0-based array; empty if none.
+function bitMatrix_getTopLeftOnBit pObj
+   local tCount, bitsOffset, rs, y, x, theBits, tBitN, tRes
+   put the number of elements of pObj["bits"] into tCount
+   put pObj["rowSize"] into rs
+   put 0 into bitsOffset
+   repeat while (bitsOffset < tCount) and (pObj["bits"][bitsOffset] = 0)
+      add 1 to bitsOffset
+   end repeat
+   if bitsOffset = tCount then return empty
+   put (bitsOffset div rs) into y
+   put ((bitsOffset mod rs) * 32) into x
+   put pObj["bits"][bitsOffset] into theBits
+   put 0 into tBitN
+   repeat while shl(theBits, (31 - tBitN)) = 0
+      add 1 to tBitN
+   end repeat
+   add tBitN to x
+   put x into tRes[0]
+   put y into tRes[1]
+   return tRes
+end bitMatrix_getTopLeftOnBit
+
+-- {x, y} of the bottom-right set bit as a dense 0-based array; empty if none.
+function bitMatrix_getBottomRightOnBit pObj
+   local tCount, bitsOffset, rs, y, x, theBits, tBitN, tRes
+   put the number of elements of pObj["bits"] into tCount
+   put pObj["rowSize"] into rs
+   put (tCount - 1) into bitsOffset
+   repeat while (bitsOffset >= 0) and (pObj["bits"][bitsOffset] = 0)
+      subtract 1 from bitsOffset
+   end repeat
+   if bitsOffset < 0 then return empty
+   put (bitsOffset div rs) into y
+   put ((bitsOffset mod rs) * 32) into x
+   put pObj["bits"][bitsOffset] into theBits
+   put 31 into tBitN
+   repeat while uShr(theBits, tBitN) = 0
+      subtract 1 from tBitN
+   end repeat
+   add tBitN to x
+   put x into tRes[0]
+   put y into tRes[1]
+   return tRes
+end bitMatrix_getBottomRightOnBit
+
+function bitMatrix_clone pObj
+   return pObj          -- xTalk deep-copies arrays on return
+end bitMatrix_clone
+?>

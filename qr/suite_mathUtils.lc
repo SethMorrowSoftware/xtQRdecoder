@@ -1,0 +1,27 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_mathUtils.lc — MathUtils tests (spec §8.4). Defines: command suite_mathUtils.
+-- Requires loaded: mathUtils.lc.
+-- =====================================================================
+
+command suite_mathUtils
+   -- round: x.5 rounds away from zero (matches ZXing MathUtils::round)
+   t_eq "round 2.4 -> 2", mu_round(2.4), 2
+   t_eq "round 2.5 -> 3", mu_round(2.5), 3
+   t_eq "round 2.6 -> 3", mu_round(2.6), 3
+   t_eq "round 13.999 -> 14", mu_round(13.999), 14
+   t_eq "round 14.0 -> 14", mu_round(14.0), 14
+   t_eq "round -2.5 -> -3", mu_round(-2.5), -3
+   t_eq "round 0 -> 0", mu_round(0), 0
+
+   -- distance: classic 3-4-5 triangles
+   t_eq "distance (0,0)-(3,4) = 5", mu_distance(0, 0, 3, 4), 5
+   t_eq "distance (1,1)-(4,5) = 5", mu_distance(1, 1, 4, 5), 5
+   t_eq "distance (2,2)-(2,2) = 0", mu_distance(2, 2, 2, 2), 0
+   t_eq "distance (0,0)-(0,7) = 7", mu_distance(0, 0, 0, 7), 7
+end suite_mathUtils
+?>

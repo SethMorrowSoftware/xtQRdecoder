@@ -1,0 +1,32 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- mathUtils.lc — rounding + distance helpers. Spec §8.4.
+-- Port of ZXing Common\Detector\MathUtils. Requires: nothing (builtins only).
+--
+-- PHP authority:
+--   round(d)        = (int)(d + (d < 0 ? -0.5 : 0.5))   -- x.5 rounds away from 0
+--   distance(...)   = sqrt(dx*dx + dy*dy)
+-- (int) in PHP truncates toward zero; xTalk trunc() does the same, so
+-- mu_round matches bit-for-bit for the non-negative values used on the QR path.
+-- =====================================================================
+
+-- nearest integer; x.5 rounds away from zero (matches MathUtils::round)
+function mu_round pRoundArg
+   if pRoundArg < 0 then
+      return trunc(pRoundArg - 0.5)
+   end if
+   return trunc(pRoundArg + 0.5)
+end mu_round
+
+-- Euclidean distance between (pAX,pAY) and (pBX,pBY)
+function mu_distance pAX, pAY, pBX, pBY
+   local tDX, tDY
+   put (pAX - pBX) into tDX
+   put (pAY - pBY) into tDY
+   return sqrt((tDX * tDX) + (tDY * tDY))
+end mu_distance
+?>

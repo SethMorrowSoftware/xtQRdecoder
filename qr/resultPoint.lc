@@ -1,0 +1,69 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- resultPoint.lc — 2-D point + the orderBestPatterns ordering. Spec §8.4.
+-- Port of ZXing ResultPoint. Requires: mathUtils.lc.
+--
+-- A point (Pattern A) is an array: pPt["x"], pPt["y"]. FinderPattern and
+-- AlignmentPattern are "subclasses": same x/y plus ["ms"] (estimatedModuleSize)
+-- and (finder) ["ct"] (count). Ordering only needs x/y.
+--
+-- orderBestPatterns takes a 0-based array of three points {0,1,2} and returns
+-- a new 0-based array [A,B,C] such that AB<AC and BC<AC and the angle between
+-- BC and BA is < 180 deg (ZXing's TL/TR/BL convention; downstream depends on it).
+-- =====================================================================
+
+function rp_new pPtX, pPtY
+   local tPt
+   put pPtX into tPt["x"]
+   put pPtY into tPt["y"]
+   return tPt
+end rp_new
+
+-- distance between two points (delegates to MathUtils)
+function rp_distance pP1, pP2
+   return mu_distance(pP1["x"], pP1["y"], pP2["x"], pP2["y"])
+end rp_distance
+
+-- z component of the cross product of vectors BC and BA
+function rp_crossProductZ pPtA, pPtB, pPtC
+   local tBX, tBY
+   put pPtB["x"] into tBX
+   put pPtB["y"] into tBY
+   return (((pPtC["x"] - tBX) * (pPtA["y"] - tBY)) - ((pPtC["y"] - tBY) * (pPtA["x"] - tBX)))
+end rp_crossProductZ
+
+function rp_orderBestPatterns pPatterns
+   local tZeroOne, tOneTwo, tZeroTwo, tPtA, tPtB, tPtC, tTemp, tOut
+   put rp_distance(pPatterns[0], pPatterns[1]) into tZeroOne
+   put rp_distance(pPatterns[1], pPatterns[2]) into tOneTwo
+   put rp_distance(pPatterns[0], pPatterns[2]) into tZeroTwo
+   -- the point closest to the other two is B; A and C are first guesses
+   if (tOneTwo >= tZeroOne) and (tOneTwo >= tZeroTwo) then
+      put pPatterns[0] into tPtB
+      put pPatterns[1] into tPtA
+      put pPatterns[2] into tPtC
+   else if (tZeroTwo >= tOneTwo) and (tZeroTwo >= tZeroOne) then
+      put pPatterns[1] into tPtB
+      put pPatterns[0] into tPtA
+      put pPatterns[2] into tPtC
+   else
+      put pPatterns[2] into tPtB
+      put pPatterns[0] into tPtA
+      put pPatterns[1] into tPtC
+   end if
+   -- if BC x BA has negative z, A and C are flipped; swap them
+   if rp_crossProductZ(tPtA, tPtB, tPtC) < 0 then
+      put tPtA into tTemp
+      put tPtC into tPtA
+      put tTemp into tPtC
+   end if
+   put tPtA into tOut[0]
+   put tPtB into tOut[1]
+   put tPtC into tOut[2]
+   return tOut
+end rp_orderBestPatterns
+?>

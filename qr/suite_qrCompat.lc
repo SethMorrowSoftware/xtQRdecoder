@@ -1,0 +1,98 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_qrCompat.lc — qrCompat test cases (presentation-agnostic).
+--
+-- Defines:  command suite_qrCompat
+-- It reports each case by calling a command the RUNNER must provide:
+--      command t_eq pName, pGot, pExp
+-- and assumes the qrCompat.lc handlers (u32, shl, ...) are already loaded.
+--
+-- Runners: qr_tester.lc (web/HTML) — and any future CLI/CI runner — include
+-- both qrCompat.lc and this file, define t_eq, then call suite_qrCompat.
+--
+-- All expected values are hand-computed and cross-checked against Java/ZXing
+-- semantics (signed 32-bit two's-complement, >>> unsigned shift).
+-- =====================================================================
+
+command suite_qrCompat
+   local tA, tB, tSrc, tDst
+
+   -- u32 ---------------------------------------------------------------
+   t_eq "u32 in-range", u32(5), 5
+   t_eq "u32 zero", u32(0), 0
+   t_eq "u32 -1 -> 0xFFFFFFFF", u32(-1), 4294967295
+   t_eq "u32 -16777216 -> 0xFF000000", u32(-16777216), 4278190080
+   t_eq "u32 2^32 -> 0", u32(4294967296), 0
+   t_eq "u32 already-max", u32(4294967295), 4294967295
+
+   -- u8 ----------------------------------------------------------------
+   t_eq "u8 300", u8(300), 44
+   t_eq "u8 255", u8(255), 255
+   t_eq "u8 256", u8(256), 0
+
+   -- shl  (Java <<) ----------------------------------------------------
+   t_eq "shl 1<<0", shl(1, 0), 1
+   t_eq "shl 1<<5", shl(1, 5), 32
+   t_eq "shl 1<<31", shl(1, 31), 2147483648
+   t_eq "shl 255<<24", shl(255, 24), 4278190080
+   t_eq "shl 0xFFFFFFFF<<1 (low bits survive)", shl(4294967295, 1), 4294967294
+
+   -- uShr  (Java >>>) --------------------------------------------------
+   t_eq "uShr 0xFF000000>>>24", uShr(4278190080, 24), 255
+   t_eq "uShr 1>>>1", uShr(1, 1), 0
+   t_eq "uShr 0xFFFFFFFF>>>28", uShr(4294967295, 28), 15
+   t_eq "uShr x>>>0", uShr(12345, 0), 12345
+
+   -- aShr  (Java >>, sign-extending) -----------------------------------
+   t_eq "aShr positive", aShr(255, 1), 127
+   t_eq "aShr -16777216>>24 = -1", aShr(4278190080, 24), 4294967295
+   t_eq "aShr -1>>1 = -1", aShr(4294967295, 1), 4294967295
+   t_eq "aShr -2>>1 = -1", aShr(4294967294, 1), 4294967295
+
+   -- numberOfTrailingZeros ---------------------------------------------
+   t_eq "ntz 0", numberOfTrailingZeros(0), 32
+   t_eq "ntz 1", numberOfTrailingZeros(1), 0
+   t_eq "ntz 8", numberOfTrailingZeros(8), 3
+   t_eq "ntz 6", numberOfTrailingZeros(6), 1
+   t_eq "ntz 96", numberOfTrailingZeros(96), 5
+   t_eq "ntz 0x80000000", numberOfTrailingZeros(2147483648), 31
+
+   -- hashCode ----------------------------------------------------------
+   t_eq "hashCode empty", hashCode(""), 0
+   t_eq "hashCode a", hashCode("a"), 97
+   t_eq "hashCode ab", hashCode("ab"), 3105
+   t_eq "hashCode abc", hashCode("abc"), 96354
+
+   -- floatToIntBits ----------------------------------------------------
+   t_eq "f2ib 0.0", floatToIntBits(0.0), 0
+   t_eq "f2ib 1.0", floatToIntBits(1.0), 1065353216
+   t_eq "f2ib 2.0", floatToIntBits(2.0), 1073741824
+   t_eq "f2ib -1.0", floatToIntBits(-1.0), 3212836864
+
+   -- byteAt ------------------------------------------------------------
+   t_eq "byteAt A@0", byteAt("ABC", 0), 65
+   t_eq "byteAt C@2", byteAt("ABC", 2), 67
+
+   -- fill_array --------------------------------------------------------
+   put fill_array(0, 3, 0) into tA
+   t_eq "fill_array size 3", the number of elements of tA, 3
+   t_eq "fill_array value", tA[2], 0
+   put fill_array(0, 0, 7) into tB
+   t_eq "fill_array quirk size 1", the number of elements of tB, 1
+   t_eq "fill_array quirk value", tB[0], 7
+
+   -- arraycopy ---------------------------------------------------------
+   put 10 into tSrc[0]
+   put 11 into tSrc[1]
+   put 12 into tSrc[2]
+   put 13 into tSrc[3]
+   arraycopy tSrc, 1, tDst, 5, 2
+   t_eq "arraycopy dst[5]", tDst[5], 11
+   t_eq "arraycopy dst[6]", tDst[6], 12
+   t_eq "arraycopy count", the number of elements of tDst, 2
+end suite_qrCompat
+?>

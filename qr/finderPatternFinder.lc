@@ -1,0 +1,530 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- finderPatternFinder.lc — locate the 3 corner finder patterns. Spec §8.4.
+-- Port of ZXing Qrcode\Detector\FinderPatternFinder (the most intricate module).
+-- Requires: qrCompat.lc, bitMatrix.lc, mathUtils.lc, resultPoint.lc.
+--
+-- Finder state (Pattern A) is an array pF:
+--   pF["bits"]   the binarized BitMatrix to search (true = black)
+--   pF["np"]     number of possible centres found so far
+--   pF["pat"][k] a finder pattern {["x"],["y"],["ms"]=est module size,["ct"]=count}
+--   pF["skip"]   hasSkipped flag
+-- Entry point fpf_find(image, hints) -> {["bl"],["tl"],["tr"]} (3 ordered points).
+--
+-- XTALK NOTES:
+--  * NaN is represented by `empty`; crossCheck* return a number or empty, and
+--    callers test `is empty` / `is not empty`. A real centre is never empty.
+--  * The PHP inner-loop `continue` is replaced by restructured if/else (no skip
+--    of the clear-state code) and a tEndRow flag + `exit repeat` for the row
+--    skip -- both behaviourally identical, no reliance on loop-counter mutation.
+--  * Out-of-range bitMatrix_get reads return false harmlessly, so the guarded
+--    `(i >= 0) and bitMatrix_get(...)` conditions are safe whether or not the
+--    engine short-circuits `and`.
+--  * CENTER_QUORUM=2, MIN_SKIP=3, MAX_MODULES=57 are inlined as literals.
+-- =====================================================================
+
+-- is key pKey present in the hints array pHints? Uses only proven constructs:
+-- "the keys of" yields a CR-list of keys; "among the lines of" tests membership.
+-- A non-array pHints yields an empty key list, so this safely returns false.
+function fpf_hintPresent pHints, pKey
+   return (pKey is among the lines of the keys of pHints)
+end fpf_hintPresent
+
+-- 1:1:3:1:1 proportion test on a 5-element run count (spec §8.4)
+function fpf_foundPatternCross pSC, pMaxVariance
+   local tTotal, i, tCount, tModuleSize, tMV
+   put 0 into tTotal
+   repeat with i = 0 to 4
+      put pSC[i] into tCount
+      if tCount = 0 then return false
+      add tCount to tTotal
+   end repeat
+   if tTotal < 7 then return false
+   put (tTotal / 7) into tModuleSize
+   put (tModuleSize * pMaxVariance) into tMV
+   return ((abs(tModuleSize - pSC[0]) < tMV) and \
+           (abs(tModuleSize - pSC[1]) < tMV) and \
+           (abs((3 * tModuleSize) - pSC[2]) < (3 * tMV)) and \
+           (abs(tModuleSize - pSC[3]) < tMV) and \
+           (abs(tModuleSize - pSC[4]) < tMV))
+end fpf_foundPatternCross
+
+-- centre of a run given the end position (spec §8.4)
+function fpf_centerFromEnd pSC, pEnd
+   return ((pEnd - pSC[4] - pSC[3]) - (pSC[2] / 2))
+end fpf_centerFromEnd
+
+-- shift the run counts back by two (the "no winner" recovery)
+command fpf_shiftCounts2 @pSC
+   put pSC[2] into pSC[0]
+   put pSC[3] into pSC[1]
+   put pSC[4] into pSC[2]
+   put 1 into pSC[3]
+   put 0 into pSC[4]
+end fpf_shiftCounts2
+
+-- vertical cross-check; returns the vertical centre or empty (NaN)
+function fpf_crossCheckVertical pImg, pStartI, pCenterJ, pMaxCount, pOrigTotal
+   local tMaxI, tSC, i, tTotal
+   put bitMatrix_getHeight(pImg) into tMaxI
+   put 0 into tSC[0]
+   put 0 into tSC[1]
+   put 0 into tSC[2]
+   put 0 into tSC[3]
+   put 0 into tSC[4]
+   put pStartI into i
+   repeat while (i >= 0) and bitMatrix_get(pImg, pCenterJ, i)
+      add 1 to tSC[2]
+      subtract 1 from i
+   end repeat
+   if i < 0 then return empty
+   repeat while (i >= 0) and (not bitMatrix_get(pImg, pCenterJ, i)) and (tSC[1] <= pMaxCount)
+      add 1 to tSC[1]
+      subtract 1 from i
+   end repeat
+   if (i < 0) or (tSC[1] > pMaxCount) then return empty
+   repeat while (i >= 0) and bitMatrix_get(pImg, pCenterJ, i) and (tSC[0] <= pMaxCount)
+      add 1 to tSC[0]
+      subtract 1 from i
+   end repeat
+   if tSC[0] > pMaxCount then return empty
+   put (pStartI + 1) into i
+   repeat while (i < tMaxI) and bitMatrix_get(pImg, pCenterJ, i)
+      add 1 to tSC[2]
+      add 1 to i
+   end repeat
+   if i = tMaxI then return empty
+   repeat while (i < tMaxI) and (not bitMatrix_get(pImg, pCenterJ, i)) and (tSC[3] < pMaxCount)
+      add 1 to tSC[3]
+      add 1 to i
+   end repeat
+   if (i = tMaxI) or (tSC[3] >= pMaxCount) then return empty
+   repeat while (i < tMaxI) and bitMatrix_get(pImg, pCenterJ, i) and (tSC[4] < pMaxCount)
+      add 1 to tSC[4]
+      add 1 to i
+   end repeat
+   if tSC[4] >= pMaxCount then return empty
+   put (tSC[0] + tSC[1] + tSC[2] + tSC[3] + tSC[4]) into tTotal
+   if (5 * abs(tTotal - pOrigTotal)) >= (2 * pOrigTotal) then return empty
+   if fpf_foundPatternCross(tSC, 0.5) then
+      return fpf_centerFromEnd(tSC, i)
+   end if
+   return empty
+end fpf_crossCheckVertical
+
+-- horizontal cross-check; returns the horizontal centre or empty (NaN)
+function fpf_crossCheckHorizontal pImg, pStartJ, pCenterI, pMaxCount, pOrigTotal
+   local tMaxJ, tSC, j, tTotal
+   put bitMatrix_getWidth(pImg) into tMaxJ
+   put 0 into tSC[0]
+   put 0 into tSC[1]
+   put 0 into tSC[2]
+   put 0 into tSC[3]
+   put 0 into tSC[4]
+   put pStartJ into j
+   repeat while (j >= 0) and bitMatrix_get(pImg, j, pCenterI)
+      add 1 to tSC[2]
+      subtract 1 from j
+   end repeat
+   if j < 0 then return empty
+   repeat while (j >= 0) and (not bitMatrix_get(pImg, j, pCenterI)) and (tSC[1] <= pMaxCount)
+      add 1 to tSC[1]
+      subtract 1 from j
+   end repeat
+   if (j < 0) or (tSC[1] > pMaxCount) then return empty
+   repeat while (j >= 0) and bitMatrix_get(pImg, j, pCenterI) and (tSC[0] <= pMaxCount)
+      add 1 to tSC[0]
+      subtract 1 from j
+   end repeat
+   if tSC[0] > pMaxCount then return empty
+   put (pStartJ + 1) into j
+   repeat while (j < tMaxJ) and bitMatrix_get(pImg, j, pCenterI)
+      add 1 to tSC[2]
+      add 1 to j
+   end repeat
+   if j = tMaxJ then return empty
+   repeat while (j < tMaxJ) and (not bitMatrix_get(pImg, j, pCenterI)) and (tSC[3] < pMaxCount)
+      add 1 to tSC[3]
+      add 1 to j
+   end repeat
+   if (j = tMaxJ) or (tSC[3] >= pMaxCount) then return empty
+   repeat while (j < tMaxJ) and bitMatrix_get(pImg, j, pCenterI) and (tSC[4] < pMaxCount)
+      add 1 to tSC[4]
+      add 1 to j
+   end repeat
+   if tSC[4] >= pMaxCount then return empty
+   put (tSC[0] + tSC[1] + tSC[2] + tSC[3] + tSC[4]) into tTotal
+   if (5 * abs(tTotal - pOrigTotal)) >= pOrigTotal then return empty
+   if fpf_foundPatternCross(tSC, 0.5) then
+      return fpf_centerFromEnd(tSC, j)
+   end if
+   return empty
+end fpf_crossCheckHorizontal
+
+-- diagonal cross-check; returns true/false (used only in PURE_BARCODE mode)
+function fpf_crossCheckDiagonal pImg, pStartI, pCenterJ, pMaxCount, pOrigTotal
+   local tSC, i, tMaxI, tMaxJ, tTotal
+   put 0 into tSC[0]
+   put 0 into tSC[1]
+   put 0 into tSC[2]
+   put 0 into tSC[3]
+   put 0 into tSC[4]
+   put 0 into i
+   repeat while ((pStartI >= i) and (pCenterJ >= i) and bitMatrix_get(pImg, (pCenterJ - i), (pStartI - i)))
+      add 1 to tSC[2]
+      add 1 to i
+   end repeat
+   if (pStartI < i) or (pCenterJ < i) then return false
+   repeat while ((pStartI >= i) and (pCenterJ >= i) and (not bitMatrix_get(pImg, (pCenterJ - i), (pStartI - i))) and (tSC[1] <= pMaxCount))
+      add 1 to tSC[1]
+      add 1 to i
+   end repeat
+   if (pStartI < i) or (pCenterJ < i) or (tSC[1] > pMaxCount) then return false
+   repeat while ((pStartI >= i) and (pCenterJ >= i) and bitMatrix_get(pImg, (pCenterJ - i), (pStartI - i)) and (tSC[0] <= pMaxCount))
+      add 1 to tSC[0]
+      add 1 to i
+   end repeat
+   if tSC[0] > pMaxCount then return false
+   put bitMatrix_getHeight(pImg) into tMaxI
+   put bitMatrix_getWidth(pImg) into tMaxJ
+   put 1 into i
+   repeat while (((pStartI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and bitMatrix_get(pImg, (pCenterJ + i), (pStartI + i)))
+      add 1 to tSC[2]
+      add 1 to i
+   end repeat
+   if ((pStartI + i) >= tMaxI) or ((pCenterJ + i) >= tMaxJ) then return false
+   repeat while (((pStartI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and (not bitMatrix_get(pImg, (pCenterJ + i), (pStartI + i))) and (tSC[3] < pMaxCount))
+      add 1 to tSC[3]
+      add 1 to i
+   end repeat
+   if ((pStartI + i) >= tMaxI) or ((pCenterJ + i) >= tMaxJ) or (tSC[3] >= pMaxCount) then return false
+   repeat while (((pStartI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and bitMatrix_get(pImg, (pCenterJ + i), (pStartI + i)) and (tSC[4] < pMaxCount))
+      add 1 to tSC[4]
+      add 1 to i
+   end repeat
+   if tSC[4] >= pMaxCount then return false
+   put (tSC[0] + tSC[1] + tSC[2] + tSC[3] + tSC[4]) into tTotal
+   return ((abs(tTotal - pOrigTotal) < (2 * pOrigTotal)) and fpf_foundPatternCross(tSC, 0.5))
+end fpf_crossCheckDiagonal
+
+-- a horizontal candidate: cross-check, then accumulate/merge into pF["pat"].
+-- rConfirmed (output) = true iff a finder candidate was confirmed this call.
+command fpf_handlePossibleCenter @pFinder, pSC, pRowI, pEndCol, pPure, @rConfirmed
+   local tTotal, tCenterJ, tCenterI, tEst, tFound, tIdx
+   local tOldX, tOldY, tOldMs, tOldCt, tMSDiff, tCC
+   put false into rConfirmed
+   put (pSC[0] + pSC[1] + pSC[2] + pSC[3] + pSC[4]) into tTotal
+   put fpf_centerFromEnd(pSC, pEndCol) into tCenterJ
+   put fpf_crossCheckVertical(pFinder["bits"], pRowI, trunc(tCenterJ), pSC[2], tTotal) into tCenterI
+   if tCenterI is empty then exit fpf_handlePossibleCenter
+   put fpf_crossCheckHorizontal(pFinder["bits"], trunc(tCenterJ), trunc(tCenterI), pSC[2], tTotal) into tCenterJ
+   if tCenterJ is empty then exit fpf_handlePossibleCenter
+   if pPure then
+      if not fpf_crossCheckDiagonal(pFinder["bits"], trunc(tCenterI), trunc(tCenterJ), pSC[2], tTotal) then
+         exit fpf_handlePossibleCenter
+      end if
+   end if
+   put (tTotal / 7) into tEst
+   put false into tFound
+   repeat with tIdx = 0 to (pFinder["np"] - 1)
+      put pFinder["pat"][tIdx]["x"] into tOldX
+      put pFinder["pat"][tIdx]["y"] into tOldY
+      put pFinder["pat"][tIdx]["ms"] into tOldMs
+      put pFinder["pat"][tIdx]["ct"] into tOldCt
+      if (abs(tCenterI - tOldY) <= tEst) and (abs(tCenterJ - tOldX) <= tEst) then
+         put abs(tEst - tOldMs) into tMSDiff
+         if (tMSDiff <= 1) or (tMSDiff <= tOldMs) then
+            put (tOldCt + 1) into tCC
+            put (((tOldCt * tOldX) + tCenterJ) / tCC) into pFinder["pat"][tIdx]["x"]
+            put (((tOldCt * tOldY) + tCenterI) / tCC) into pFinder["pat"][tIdx]["y"]
+            put (((tOldCt * tOldMs) + tEst) / tCC) into pFinder["pat"][tIdx]["ms"]
+            put tCC into pFinder["pat"][tIdx]["ct"]
+            put true into tFound
+            exit repeat
+         end if
+      end if
+   end repeat
+   if not tFound then
+      put tCenterJ into pFinder["pat"][pFinder["np"]]["x"]
+      put tCenterI into pFinder["pat"][pFinder["np"]]["y"]
+      put tEst into pFinder["pat"][pFinder["np"]]["ms"]
+      put 1 into pFinder["pat"][pFinder["np"]]["ct"]
+      add 1 to pFinder["np"]
+   end if
+   put true into rConfirmed
+end fpf_handlePossibleCenter
+
+-- >=3 centres each confirmed >=2 times, with similar module sizes?
+function fpf_haveMultiplyConfirmedCenters pFinder, pAllowedDev
+   local tConfirmed, tTotalMS, tMax, k, tAvg, tTotalDev
+   put 0 into tConfirmed
+   put 0 into tTotalMS
+   put pFinder["np"] into tMax
+   repeat with k = 0 to (tMax - 1)
+      if pFinder["pat"][k]["ct"] >= 2 then
+         add 1 to tConfirmed
+         add pFinder["pat"][k]["ms"] to tTotalMS
+      end if
+   end repeat
+   if tConfirmed < 3 then return false
+   put (tTotalMS / tMax) into tAvg
+   put 0 into tTotalDev
+   repeat with k = 0 to (tMax - 1)
+      add abs(pFinder["pat"][k]["ms"] - tAvg) to tTotalDev
+   end repeat
+   return (tTotalDev <= (pAllowedDev * tTotalMS))
+end fpf_haveMultiplyConfirmedCenters
+
+-- rows we may skip once two centres are confirmed; sets pF["skip"] when it does.
+command fpf_findRowSkip @pFinder, @rSkip
+   local tMax, k, tFirstX, tFirstY, tHaveFirst
+   put pFinder["np"] into tMax
+   if tMax <= 1 then
+      put 0 into rSkip
+      exit fpf_findRowSkip
+   end if
+   put false into tHaveFirst
+   repeat with k = 0 to (tMax - 1)
+      if pFinder["pat"][k]["ct"] >= 2 then
+         if not tHaveFirst then
+            put pFinder["pat"][k]["x"] into tFirstX
+            put pFinder["pat"][k]["y"] into tFirstY
+            put true into tHaveFirst
+         else
+            put true into pFinder["skip"]
+            put trunc((abs(tFirstX - pFinder["pat"][k]["x"]) - abs(tFirstY - pFinder["pat"][k]["y"])) / 2) into rSkip
+            exit fpf_findRowSkip
+         end if
+      end if
+   end repeat
+   put 0 into rSkip
+end fpf_findRowSkip
+
+-- stable insertion sort by FurthestFromAverageComparator (largest |dev| first)
+-- PHP comparator: dA=|c2-avg|, dB=|c1-avg|; -1 if dA<dB. usort places a before b
+-- when cmp(a,b)<0, i.e. when |a-avg| > |b-avg|. So this orders DESC by |dev|.
+command fpf_sortFurthest @pList, pCountN, pAvg
+   local i, j, tKey, tKeyDev, tCmpDev
+   repeat with i = 1 to (pCountN - 1)
+      put pList[i] into tKey
+      put abs(tKey["ms"] - pAvg) into tKeyDev
+      put (i - 1) into j
+      repeat while j >= 0
+         put abs(pList[j]["ms"] - pAvg) into tCmpDev
+         if tCmpDev < tKeyDev then
+            put pList[j] into pList[j + 1]
+            subtract 1 from j
+         else
+            exit repeat
+         end if
+      end repeat
+      put tKey into pList[j + 1]
+   end repeat
+end fpf_sortFurthest
+
+-- stable insertion sort by CenterComparator (count DESC, then |dev| ASC)
+command fpf_sortCenter @pList, pCountN, pAvg
+   local i, j, tKey, tKeyDev, tKeyCt, tCmpDev, tCmpCt, tAfter
+   repeat with i = 1 to (pCountN - 1)
+      put pList[i] into tKey
+      put tKey["ct"] into tKeyCt
+      put abs(tKey["ms"] - pAvg) into tKeyDev
+      put (i - 1) into j
+      repeat while j >= 0
+         put pList[j]["ct"] into tCmpCt
+         put abs(pList[j]["ms"] - pAvg) into tCmpDev
+         -- does pList[j] sort AFTER tKey (so we shift it right)?
+         if tCmpCt = tKeyCt then
+            put (tCmpDev > tKeyDev) into tAfter
+         else
+            put (tCmpCt < tKeyCt) into tAfter
+         end if
+         if tAfter then
+            put pList[j] into pList[j + 1]
+            subtract 1 from j
+         else
+            exit repeat
+         end if
+      end repeat
+      put tKey into pList[j + 1]
+   end repeat
+end fpf_sortCenter
+
+-- remove element pIdx from a 0-based list of pCountN elements, shifting down
+command fpf_removeAt @pList, pCountN, pIdx
+   local k
+   repeat with k = pIdx to (pCountN - 2)
+      put pList[k + 1] into pList[k]
+   end repeat
+end fpf_removeAt
+
+-- pick the best 3 finder candidates; throws NotFound if fewer than 3 exist
+function fpf_selectBestPatterns pFinder
+   local tCountN, k, tList, tTotal, tSquare, tAvg, tStdDev, tLimit, i, tOut
+   put pFinder["np"] into tCountN
+   if tCountN < 3 then
+      throw "NotFound: could not find 3 finder patterns (" & tCountN & " found)"
+   end if
+   repeat with k = 0 to (tCountN - 1)
+      put pFinder["pat"][k] into tList[k]
+   end repeat
+   if tCountN > 3 then
+      put 0 into tTotal
+      put 0 into tSquare
+      repeat with k = 0 to (tCountN - 1)
+         add tList[k]["ms"] to tTotal
+         add (tList[k]["ms"] * tList[k]["ms"]) to tSquare
+      end repeat
+      put (tTotal / tCountN) into tAvg
+      put sqrt((tSquare / tCountN) - (tAvg * tAvg)) into tStdDev
+      fpf_sortFurthest tList, tCountN, tAvg
+      put max((0.2 * tAvg), tStdDev) into tLimit
+      put 0 into i
+      repeat while (i < tCountN) and (tCountN > 3)
+         if abs(tList[i]["ms"] - tAvg) > tLimit then
+            fpf_removeAt tList, tCountN, i
+            subtract 1 from tCountN
+            subtract 1 from i
+         end if
+         add 1 to i
+      end repeat
+   end if
+   if tCountN > 3 then
+      put 0 into tTotal
+      repeat with k = 0 to (tCountN - 1)
+         add tList[k]["ms"] to tTotal
+      end repeat
+      put (tTotal / tCountN) into tAvg
+      fpf_sortCenter tList, tCountN, tAvg
+   end if
+   put tList[0] into tOut[0]
+   put tList[1] into tOut[1]
+   put tList[2] into tOut[2]
+   return tOut
+end fpf_selectBestPatterns
+
+-- main entry: scan the image, returns {["bl"],["tl"],["tr"]} (ordered points)
+function fpf_find pImg, pHints
+   local tTryHarder, tPure, tNrSkip, tAllowedDev, tMaxVar
+   local tMaxI, tMaxJ, tISkip, tDone, i, j, tSC, tCurState, tEndRow
+   local tConfirmed, tRowSkip, tInfo, tPats, tFinder
+   -- hints: read each key directly. A missing key (or a non-array pHints)
+   -- yields empty in xTalk, so we just test the read value -- no need for
+   -- "is an array" / "is among the keys of" (both unexercised on this engine).
+   -- fpf_hintPresent() centralises the "present?" test using only proven constructs.
+   put (pHints["TRY_HARDER"] is true) into tTryHarder
+   put (pHints["PURE_BARCODE"] is true) into tPure
+   if fpf_hintPresent(pHints, "NR_ALLOW_SKIP_ROWS") then
+      put pHints["NR_ALLOW_SKIP_ROWS"] into tNrSkip
+   else if tTryHarder then
+      put 0 into tNrSkip
+   else
+      put empty into tNrSkip
+   end if
+   if fpf_hintPresent(pHints, "ALLOWED_DEVIATION") then
+      put pHints["ALLOWED_DEVIATION"] into tAllowedDev
+   else
+      put 0.05 into tAllowedDev
+   end if
+   if fpf_hintPresent(pHints, "MAX_VARIANCE") then
+      put pHints["MAX_VARIANCE"] into tMaxVar
+   else
+      put 0.5 into tMaxVar
+   end if
+   put bitMatrix_getHeight(pImg) into tMaxI
+   put bitMatrix_getWidth(pImg) into tMaxJ
+   -- iSkip = (3*maxI) / (4*MAX_MODULES). MAX_MODULES=57, so 4*57=228 (inlined as
+   -- a literal: the engine dislikes a literal*literal product as a div operand).
+   put ((3 * tMaxI) div 228) into tISkip
+   if (tISkip < 3) or tTryHarder then put 3 into tISkip
+   put false into tDone
+
+   put pImg into tFinder["bits"]
+   put 0 into tFinder["np"]
+   put false into tFinder["skip"]
+
+   put (tISkip - 1) into i
+   repeat while (i < tMaxI) and (not tDone)
+      put 0 into tSC[0]
+      put 0 into tSC[1]
+      put 0 into tSC[2]
+      put 0 into tSC[3]
+      put 0 into tSC[4]
+      put 0 into tCurState
+      put false into tEndRow
+      repeat with j = 0 to (tMaxJ - 1)
+         if bitMatrix_get(pImg, j, i) then
+            -- black pixel
+            if (tCurState bitAnd 1) = 1 then add 1 to tCurState
+            add 1 to tSC[tCurState]
+         else
+            -- white pixel
+            if (tCurState bitAnd 1) = 0 then
+               if tCurState = 4 then
+                  if fpf_foundPatternCross(tSC, tMaxVar) then
+                     fpf_handlePossibleCenter tFinder, tSC, i, j, tPure, tConfirmed
+                     if tConfirmed then
+                        put 3 into tISkip
+                        if tFinder["skip"] then
+                           put fpf_haveMultiplyConfirmedCenters(tFinder, tAllowedDev) into tDone
+                        else
+                           if tNrSkip is empty then
+                              fpf_findRowSkip tFinder, tRowSkip
+                           else
+                              put tNrSkip into tRowSkip
+                           end if
+                           if tRowSkip > tSC[2] then
+                              add (tRowSkip - tSC[2] - tISkip) to i
+                              put true into tEndRow
+                           end if
+                        end if
+                        put 0 into tCurState
+                        put 0 into tSC[0]
+                        put 0 into tSC[1]
+                        put 0 into tSC[2]
+                        put 0 into tSC[3]
+                        put 0 into tSC[4]
+                        if tEndRow then
+                           exit repeat
+                        end if
+                     else
+                        fpf_shiftCounts2 tSC
+                        put 3 into tCurState
+                     end if
+                  else
+                     fpf_shiftCounts2 tSC
+                     put 3 into tCurState
+                  end if
+               else
+                  add 1 to tCurState
+                  add 1 to tSC[tCurState]
+               end if
+            else
+               add 1 to tSC[tCurState]
+            end if
+         end if
+      end repeat
+      if fpf_foundPatternCross(tSC, tMaxVar) then
+         fpf_handlePossibleCenter tFinder, tSC, i, tMaxJ, tPure, tConfirmed
+         if tConfirmed then
+            put tSC[0] into tISkip
+            if tFinder["skip"] then
+               put fpf_haveMultiplyConfirmedCenters(tFinder, tAllowedDev) into tDone
+            end if
+         end if
+      end if
+      add tISkip to i
+   end repeat
+
+   put fpf_selectBestPatterns(tFinder) into tPats
+   put rp_orderBestPatterns(tPats) into tPats
+   put tPats[0] into tInfo["bl"]
+   put tPats[1] into tInfo["tl"]
+   put tPats[2] into tInfo["tr"]
+   return tInfo
+end fpf_find
+?>

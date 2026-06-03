@@ -1,0 +1,144 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- reedSolomonDecoder.lc — Euclidean Reed–Solomon decoder over GF(256).
+-- Port of ZXing Common\Reedsolomon\ReedSolomonDecoder. Spec §8.5.
+-- Requires: qrCompat.lc, genericGF.lc, genericGFPoly.lc.
+--
+-- rs_decode mutates the received codeword array IN PLACE (passed by @),
+-- correcting up to floor(twoS/2) errors. Throws "RS: ..." on failure
+-- (the decoder layer maps that to a Checksum error per spec §6.6).
+-- =====================================================================
+
+-- received: dense 0-based array of codewords (0..255); twoS = number of EC codewords
+command rs_decode @pReceived, pTwoS
+   local n, poly, syndromeCoeffs, noError, i, ev
+   local syndrome, sigmaOmega, sigma, omega, errorLocations, errorMagnitudes
+   local numLoc, tPosition
+
+   put the number of elements of pReceived into n
+   put poly_new(pReceived) into poly
+
+   -- syndromes: S_i = poly( alpha^(i + generatorBase) ), generatorBase = 0
+   put fill_array(0, pTwoS, 0) into syndromeCoeffs
+   put true into noError
+   repeat with i = 0 to (pTwoS - 1)
+      put poly_evaluateAt(poly, gf_exp(i + gf_getGeneratorBase())) into ev
+      put ev into syndromeCoeffs[(pTwoS - 1 - i)]
+      if ev <> 0 then put false into noError
+   end repeat
+   if noError then
+      exit rs_decode                          -- clean codeword, nothing to correct
+   end if
+
+   put poly_new(syndromeCoeffs) into syndrome
+   put rs_runEuclidean(gf_buildMonomial(pTwoS, 1), syndrome, pTwoS) into sigmaOmega
+   put sigmaOmega["sigma"] into sigma
+   put sigmaOmega["omega"] into omega
+   put rs_findErrorLocations(sigma) into errorLocations
+   put rs_findErrorMagnitudes(omega, errorLocations) into errorMagnitudes
+
+   put the number of elements of errorLocations into numLoc
+   repeat with i = 0 to (numLoc - 1)
+      put (n - 1 - gf_log(errorLocations[i])) into tPosition
+      if tPosition < 0 then throw "RS: bad error location"
+      put gf_addOrSubtract(pReceived[tPosition], errorMagnitudes[i]) into pReceived[tPosition]
+   end repeat
+end rs_decode
+
+-- Extended Euclidean algorithm; returns array with keys "sigma" and "omega".
+function rs_runEuclidean a, b, pTwoT
+   local rLast, r, tLast, t, rLastLast, tLastLast, q, dLT, dltInverse
+   local degreeDiff, tScale, sigmaTildeAtZero, tInverse, sigma, omega, tmp, tRes
+
+   if poly_degree(a) < poly_degree(b) then
+      put a into tmp
+      put b into a
+      put tmp into b
+   end if
+
+   put a into rLast
+   put b into r
+   put poly_zero() into tLast
+   put poly_one() into t
+
+   -- run until r's degree is less than R/2  (R == 2t == number of EC codewords)
+   repeat while poly_degree(r) >= (pTwoT div 2)
+      put rLast into rLastLast
+      put tLast into tLastLast
+      put r into rLast
+      put t into tLast
+      if poly_isZero(rLast) then throw "RS: r_{i-1} was zero"
+      put rLastLast into r
+      put poly_zero() into q
+      put poly_getCoefficient(rLast, poly_degree(rLast)) into dLT
+      put gf_inverse(dLT) into dltInverse
+      repeat while (poly_degree(r) >= poly_degree(rLast)) and (not poly_isZero(r))
+         put (poly_degree(r) - poly_degree(rLast)) into degreeDiff
+         put gf_multiply(poly_getCoefficient(r, poly_degree(r)), dltInverse) into tScale
+         put poly_addOrSubtract(q, gf_buildMonomial(degreeDiff, tScale)) into q
+         put poly_addOrSubtract(r, poly_multiplyByMonomial(rLast, degreeDiff, tScale)) into r
+      end repeat
+      put poly_addOrSubtract(poly_multiply(q, tLast), tLastLast) into t
+      if poly_degree(r) >= poly_degree(rLast) then throw "RS: division failed to reduce polynomial"
+   end repeat
+
+   put poly_getCoefficient(t, 0) into sigmaTildeAtZero
+   if sigmaTildeAtZero = 0 then throw "RS: sigmaTilde(0) was zero"
+   put gf_inverse(sigmaTildeAtZero) into tInverse
+   put poly_multiplyScalar(t, tInverse) into sigma
+   put poly_multiplyScalar(r, tInverse) into omega
+   put sigma into tRes["sigma"]
+   put omega into tRes["omega"]
+   return tRes
+end rs_runEuclidean
+
+-- Chien search for the roots of the error-locator polynomial.
+function rs_findErrorLocations errorLocator
+   local numErrors, tRes, e, i, sz
+   put poly_degree(errorLocator) into numErrors
+   if numErrors = 1 then                       -- shortcut
+      put poly_getCoefficient(errorLocator, 1) into tRes[0]
+      return tRes
+   end if
+   put fill_array(0, numErrors, 0) into tRes
+   put 0 into e
+   put gf_getSize() into sz
+   put 1 into i
+   repeat while (i < sz) and (e < numErrors)
+      if poly_evaluateAt(errorLocator, i) = 0 then
+         put gf_inverse(i) into tRes[e]
+         add 1 to e
+      end if
+      add 1 to i
+   end repeat
+   if e <> numErrors then throw "RS: error locator degree does not match number of roots"
+   return tRes
+end rs_findErrorLocations
+
+-- Forney's formula for the error magnitudes.
+function rs_findErrorMagnitudes errorEvaluator, pLocations
+   local s, tRes, i, j, xiInverse, denominator, term, termPlus1
+   put the number of elements of pLocations into s
+   put fill_array(0, s, 0) into tRes
+   repeat with i = 0 to (s - 1)
+      put gf_inverse(pLocations[i]) into xiInverse
+      put 1 into denominator
+      repeat with j = 0 to (s - 1)
+         if i <> j then
+            put gf_multiply(pLocations[j], xiInverse) into term
+            put gf_addOrSubtract(term, 1) into termPlus1     -- explicit add mirrors ZXing's Apple-JVM JIT workaround (no JIT in xTalk)
+            put gf_multiply(denominator, termPlus1) into denominator
+         end if
+      end repeat
+      put gf_multiply(poly_evaluateAt(errorEvaluator, xiInverse), gf_inverse(denominator)) into tRes[i]
+      if gf_getGeneratorBase() <> 0 then
+         put gf_multiply(tRes[i], xiInverse) into tRes[i]
+      end if
+   end repeat
+   return tRes
+end rs_findErrorMagnitudes
+?>

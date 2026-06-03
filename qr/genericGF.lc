@@ -1,0 +1,96 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- genericGF.lc — Galois field GF(256) for QR Reed–Solomon.
+-- Port of ZXing Common\Reedsolomon\GenericGF (only QR_CODE_FIELD_256).
+-- Spec §8.5 "ReedSolomon group". Requires: qrCompat.lc, genericGFPoly.lc.
+--
+-- QR field parameters: primitive 0x011D (285), size 256, generatorBase 0.
+-- The exp/log tables are built once (lazily) and kept script-local; all
+-- field arithmetic goes through the gf_* functions so callers never touch
+-- the tables directly.
+--
+-- A "polynomial" in this port is simply its 0-based coefficient array, where
+-- index 0 is the HIGHEST-degree coefficient (matching ZXing). See genericGFPoly.lc.
+-- =====================================================================
+
+constant kGFSize      = 256
+constant kGFPrimitive = 285     -- 0x011D
+constant kGFGenBase   = 0
+
+local sExp, sLog, sGFReady
+
+-- Build the antilog (exp) and log tables. Safe to call repeatedly.
+command gf_init
+   local x, i
+   put empty into sExp
+   put empty into sLog
+   put 1 into x
+   repeat with i = 0 to (kGFSize - 1)
+      put x into sExp[i]
+      put (x * 2) into x                 -- generator alpha = 2
+      if x >= kGFSize then put ((x bitXor kGFPrimitive) bitAnd (kGFSize - 1)) into x
+   end repeat
+   repeat with i = 0 to (kGFSize - 2)
+      put i into sLog[sExp[i]]
+   end repeat
+   put 0 into sLog[0]                     -- never used, but defined
+   put true into sGFReady
+end gf_init
+
+-- lazy guard so callers don't have to remember gf_init
+command gf_ensure
+   if sGFReady is not true then gf_init
+end gf_ensure
+
+-- a + b (== a - b) in GF(2^n) is XOR
+function gf_addOrSubtract a, b
+   return (a bitXor b)
+end gf_addOrSubtract
+
+function gf_exp a
+   gf_ensure
+   return sExp[a]
+end gf_exp
+
+function gf_log a
+   gf_ensure
+   if a = 0 then throw "RS: log(0) is undefined"
+   return sLog[a]
+end gf_log
+
+function gf_inverse a
+   gf_ensure
+   if a = 0 then throw "RS: inverse(0) is undefined"
+   return sExp[(kGFSize - sLog[a] - 1)]
+end gf_inverse
+
+function gf_multiply a, b
+   gf_ensure
+   if (a = 0) or (b = 0) then return 0
+   return sExp[((sLog[a] + sLog[b]) mod (kGFSize - 1))]
+end gf_multiply
+
+function gf_getSize
+   return kGFSize
+end gf_getSize
+
+function gf_getGeneratorBase
+   return kGFGenBase
+end gf_getGeneratorBase
+
+-- buildMonomial(degree, coefficient) -> polynomial  coefficient * x^degree
+function gf_buildMonomial pDegree, pCoeff
+   local tC, i
+   if pDegree < 0 then throw "RS: buildMonomial negative degree"
+   if pCoeff = 0 then return poly_zero()
+   put pCoeff into tC[0]
+   repeat with i = 1 to pDegree
+      put 0 into tC[i]
+   end repeat
+   return poly_new(tC)
+end gf_buildMonomial
+?>

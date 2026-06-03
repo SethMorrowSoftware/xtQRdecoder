@@ -1,0 +1,157 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- alignmentPatternFinder.lc — locate the bottom-right alignment pattern (v2+).
+-- Port of ZXing Qrcode\Detector\AlignmentPatternFinder. Spec §8.4.
+-- Requires: qrCompat.lc, bitMatrix.lc.
+--
+-- Stateless apart from a small accumulator: apf_find searches a sub-region for
+-- the 1:1:1 black/white/black alignment cross. The image is passed by value
+-- (copy-on-write, read-only) and the accumulator (possible centres) by @, so
+-- the large image is never duplicated when a centre is recorded.
+--
+-- An alignment pattern point is {["x"],["y"],["ms"]}. NaN -> empty (as in the
+-- finder). apf_find returns the point, or throws NotFound.
+-- =====================================================================
+
+-- 1:1:1 proportion test against the expected module size
+function apf_foundPatternCross pModuleSize, pSC
+   local tMaxVariance, i
+   put (pModuleSize / 2) into tMaxVariance
+   repeat with i = 0 to 2
+      if abs(pModuleSize - pSC[i]) >= tMaxVariance then return false
+   end repeat
+   return true
+end apf_foundPatternCross
+
+function apf_centerFromEnd pSC, pEnd
+   return ((pEnd - pSC[2]) - (pSC[1] / 2))
+end apf_centerFromEnd
+
+-- vertical cross-check; returns the vertical centre or empty (NaN)
+function apf_crossCheckVertical pImg, pModuleSize, pStartI, pCenterJ, pMaxCount, pOrigTotal
+   local tMaxI, tSC, i, tTotal
+   put bitMatrix_getHeight(pImg) into tMaxI
+   put 0 into tSC[0]
+   put 0 into tSC[1]
+   put 0 into tSC[2]
+   put pStartI into i
+   repeat while (i >= 0) and bitMatrix_get(pImg, pCenterJ, i) and (tSC[1] <= pMaxCount)
+      add 1 to tSC[1]
+      subtract 1 from i
+   end repeat
+   if (i < 0) or (tSC[1] > pMaxCount) then return empty
+   repeat while (i >= 0) and (not bitMatrix_get(pImg, pCenterJ, i)) and (tSC[0] <= pMaxCount)
+      add 1 to tSC[0]
+      subtract 1 from i
+   end repeat
+   if tSC[0] > pMaxCount then return empty
+   put (pStartI + 1) into i
+   repeat while (i < tMaxI) and bitMatrix_get(pImg, pCenterJ, i) and (tSC[1] <= pMaxCount)
+      add 1 to tSC[1]
+      add 1 to i
+   end repeat
+   if (i = tMaxI) or (tSC[1] > pMaxCount) then return empty
+   repeat while (i < tMaxI) and (not bitMatrix_get(pImg, pCenterJ, i)) and (tSC[2] <= pMaxCount)
+      add 1 to tSC[2]
+      add 1 to i
+   end repeat
+   if tSC[2] > pMaxCount then return empty
+   put (tSC[0] + tSC[1] + tSC[2]) into tTotal
+   if (5 * abs(tTotal - pOrigTotal)) >= (2 * pOrigTotal) then return empty
+   if apf_foundPatternCross(pModuleSize, tSC) then
+      return apf_centerFromEnd(tSC, i)
+   end if
+   return empty
+end apf_crossCheckVertical
+
+-- cross-check + merge. rResult = the confirmed (combined) point, or empty if
+-- this was a first sighting (just recorded in the accumulator).
+command apf_handlePossibleCenter pImg, pModuleSize, @pAcc, pSC, pRowI, pEndCol, @rResult
+   local tTotal, tCenterJ, tCenterI, tEst, k, tMSDiff, tCombined
+   put empty into rResult
+   put (pSC[0] + pSC[1] + pSC[2]) into tTotal
+   put apf_centerFromEnd(pSC, pEndCol) into tCenterJ
+   put apf_crossCheckVertical(pImg, pModuleSize, pRowI, trunc(tCenterJ), (2 * pSC[1]), tTotal) into tCenterI
+   if tCenterI is empty then exit apf_handlePossibleCenter
+   put ((pSC[0] + pSC[1] + pSC[2]) / 3) into tEst
+   repeat with k = 0 to (pAcc["np"] - 1)
+      if (abs(tCenterI - pAcc["pat"][k]["y"]) <= tEst) and (abs(tCenterJ - pAcc["pat"][k]["x"]) <= tEst) then
+         put abs(tEst - pAcc["pat"][k]["ms"]) into tMSDiff
+         if (tMSDiff <= 1) or (tMSDiff <= pAcc["pat"][k]["ms"]) then
+            put ((pAcc["pat"][k]["x"] + tCenterJ) / 2) into tCombined["x"]
+            put ((pAcc["pat"][k]["y"] + tCenterI) / 2) into tCombined["y"]
+            put ((pAcc["pat"][k]["ms"] + tEst) / 2) into tCombined["ms"]
+            put tCombined into rResult
+            exit apf_handlePossibleCenter
+         end if
+      end if
+   end repeat
+   put tCenterJ into pAcc["pat"][pAcc["np"]]["x"]
+   put tCenterI into pAcc["pat"][pAcc["np"]]["y"]
+   put tEst into pAcc["pat"][pAcc["np"]]["ms"]
+   add 1 to pAcc["np"]
+end apf_handlePossibleCenter
+
+-- search the region for the alignment cross; returns a point or throws NotFound
+function apf_find pImg, pStartX, pStartY, pWidth, pHeight, pModuleSize
+   local tMaxJ, tMiddleI, iGen, i, j, tSC, tCurState, tAcc, tResult
+   put (pStartX + pWidth) into tMaxJ
+   put (pStartY + (pHeight / 2)) into tMiddleI
+   put 0 into tAcc["np"]
+   repeat with iGen = 0 to (pHeight - 1)
+      if (iGen bitAnd 1) = 0 then
+         put (tMiddleI + ((iGen + 1) / 2)) into i
+      else
+         put (tMiddleI - ((iGen + 1) / 2)) into i
+      end if
+      put trunc(i) into i
+      put 0 into tSC[0]
+      put 0 into tSC[1]
+      put 0 into tSC[2]
+      put pStartX into j
+      repeat while (j < tMaxJ) and (not bitMatrix_get(pImg, j, i))
+         add 1 to j
+      end repeat
+      put 0 into tCurState
+      repeat while j < tMaxJ
+         if bitMatrix_get(pImg, j, i) then
+            -- black pixel
+            if tCurState = 1 then
+               add 1 to tSC[tCurState]
+            else
+               if tCurState = 2 then
+                  if apf_foundPatternCross(pModuleSize, tSC) then
+                     apf_handlePossibleCenter pImg, pModuleSize, tAcc, tSC, i, j, tResult
+                     if tResult is not empty then return tResult
+                  end if
+                  put tSC[2] into tSC[0]
+                  put 1 into tSC[1]
+                  put 0 into tSC[2]
+                  put 1 into tCurState
+               else
+                  add 1 to tCurState
+                  add 1 to tSC[tCurState]
+               end if
+            end if
+         else
+            -- white pixel
+            if tCurState = 1 then add 1 to tCurState
+            add 1 to tSC[tCurState]
+         end if
+         add 1 to j
+      end repeat
+      if apf_foundPatternCross(pModuleSize, tSC) then
+         apf_handlePossibleCenter pImg, pModuleSize, tAcc, tSC, i, tMaxJ, tResult
+         if tResult is not empty then return tResult
+      end if
+   end repeat
+   if tAcc["np"] > 0 then
+      return tAcc["pat"][0]
+   end if
+   throw "NotFound: bottom right alignment pattern not found"
+end apf_find
+?>

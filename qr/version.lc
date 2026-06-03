@@ -1,0 +1,203 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- version.lc — QR Version/EC-block tables (v1-40). Spec §8.5 (largest table).
+-- Port of ZXing Qrcode\Decoder\Version. Requires: qrCompat.lc, errorCorrectionLevel.lc.
+--
+-- The table below was GENERATED from the ZXing data and independently verified:
+--   * every version x level total codewords matches the ISO/IEC 18004 totals
+--     (160/160 checks), and
+--   * the 34 version-info words regenerate from BCH gen 0x1F25.
+-- Each row (delimited by "~"):  ver ~ alignCenters ~ Lblocks ~ Mblocks ~ Qblocks ~ Hblocks
+-- alignCenters: comma list (empty for v1).
+-- a "blocks" field is "ecw/count,data[/count,data]"  (ecw = EC codewords/block).
+--
+-- Stored form after init (per version v, 1-based here only as a key):
+--   sVer[v]["dimension"]   = 17 + 4v
+--   sVer[v]["align"]       = comma list of centres
+--   sVer[v]["ec"][ord]     = "ecw;count,data;count,data..."  (ord 0..3 = L,M,Q,H)
+-- ECBlocks are indexed by EC ORDINAL (L,M,Q,H) per ErrorCorrectionLevel (spec §8.5).
+--
+-- VERSION_DECODE_INFO: the 34 raw 18-bit version-info patterns for v7-40.
+-- =====================================================================
+
+local sVerReady, sVer, sVDI
+
+command ver_init
+   local tTable, tRow, v, tItems, tEC, ord, tBlk
+   put ver_tableData() into tTable
+   set the lineDelimiter to lf
+   repeat for each line tRow in tTable
+      if tRow is empty then next repeat
+      set the itemDelimiter to "~"
+      put (item 1 of tRow) into v
+      put (17 + (4 * v)) into sVer[v]["dimension"]
+      put (item 2 of tRow) into sVer[v]["align"]
+      repeat with ord = 0 to 3
+         put (item (3 + ord) of tRow) into tBlk      -- e.g. "18/2,15/2,16"
+         put ver_parseBlocks(tBlk) into sVer[v]["ec"][ord]
+      end repeat
+   end repeat
+   -- version-info decode patterns (v7..40), index 0 => v7
+   put \
+"31892,34236,39577,42195,48118,51042,55367,58893,63784,68472,70749,76311,79154,84390,87683,92361,96236,102084,102881,110507,110734,117786,119615,126325,127568,133589,136944,141498,145311,150283,152622,158308,161089,167017" \
+      into sVDI
+   put true into sVerReady
+end ver_init
+
+command ver_ensure
+   if sVerReady is not true then ver_init
+end ver_ensure
+
+-- population count (local copy so version.lc has no cross-module dependency)
+function ver_popcount n
+   local c
+   put 0 into c
+   put u32(n) into n
+   repeat while n > 0
+      add (n bitAnd 1) to c
+      put (n div 2) into n
+   end repeat
+   return c
+end ver_popcount
+
+-- parse "ecw/count,data[/count,data]" -> "ecw;count,data;count,data"
+function ver_parseBlocks pBlk
+   local tOut, i, tCount
+   set the itemDelimiter to "/"
+   put the number of items of pBlk into tCount
+   put (item 1 of pBlk) into tOut          -- first field is ecw
+   repeat with i = 2 to tCount
+      put ";" & (item i of pBlk) after tOut    -- ";count,data"
+   end repeat
+   return tOut
+end ver_parseBlocks
+
+function ver_getDimensionForVersion pVersion
+   ver_ensure
+   return sVer[pVersion]["dimension"]
+end ver_getDimensionForVersion
+
+function ver_getAlignmentCenters pVersion
+   ver_ensure
+   return sVer[pVersion]["align"]      -- comma list (may be empty)
+end ver_getAlignmentCenters
+
+-- EC codewords per block, for version + EC ordinal
+function ver_getEcCodewordsPerBlock pVersion, pEcOrdinal
+   local tEC
+   ver_ensure
+   put sVer[pVersion]["ec"][pEcOrdinal] into tEC
+   set the itemDelimiter to ";"
+   return (item 1 of tEC)
+end ver_getEcCodewordsPerBlock
+
+-- returns the block layout as lines "count,dataCodewords" for version+ordinal
+function ver_getEcBlocks pVersion, pEcOrdinal
+   local tEC, tOut, i
+   ver_ensure
+   put sVer[pVersion]["ec"][pEcOrdinal] into tEC
+   set the itemDelimiter to ";"
+   put empty into tOut
+   repeat with i = 2 to (the number of items of tEC)
+      put (item i of tEC) & lf after tOut
+   end repeat
+   return tOut          -- e.g. "2,15" & lf & "2,16"
+end ver_getEcBlocks
+
+-- total number of data codewords across all blocks (version+ordinal)
+function ver_getTotalDataCodewords pVersion, pEcOrdinal
+   local tBlocks, tLn, tSum, cnt, dat
+   put ver_getEcBlocks(pVersion, pEcOrdinal) into tBlocks
+   put 0 into tSum
+   set the lineDelimiter to lf
+   repeat for each line tLn in tBlocks
+      if tLn is empty then next repeat
+      set the itemDelimiter to comma
+      put (item 1 of tLn) into cnt
+      put (item 2 of tLn) into dat
+      add (cnt * dat) to tSum
+   end repeat
+   return tSum
+end ver_getTotalDataCodewords
+
+-- version implied by a sampled dimension: (dimension - 17) / 4
+function ver_getProvisionalVersionForDimension pDimension
+   if ((pDimension mod 4) <> 1) then throw "Format: dimension not %4==1"
+   return ((pDimension - 17) div 4)
+end ver_getProvisionalVersionForDimension
+
+-- decode the 18-bit version information (Hamming-nearest within <=3 bits)
+-- returns version number (7..40) or empty if none close enough.
+function ver_decodeVersionInformation pVersionBits
+   local bestDifference, bestVersion, i, targetVersion, bitsDifference
+   ver_ensure
+   put 32 into bestDifference
+   put 0 into bestVersion
+   set the itemDelimiter to comma
+   repeat with i = 1 to (the number of items of sVDI)
+      put (item i of sVDI) into targetVersion
+      if targetVersion = pVersionBits then
+         return (i + 6)               -- index 1 => v7
+      end if
+      put ver_popcount(u32(pVersionBits bitXor targetVersion)) into bitsDifference
+      if bitsDifference < bestDifference then
+         put (i + 6) into bestVersion
+         put bitsDifference into bestDifference
+      end if
+   end repeat
+   if bestDifference <= 3 then
+      return bestVersion
+   end if
+   return empty
+end ver_decodeVersionInformation
+
+-- The generated + verified table (see header). One version per line.
+function ver_tableData
+   local t
+   put "1~~7/1,19~10/1,16~13/1,13~17/1,9" & lf after t
+   put "2~6,18~10/1,34~16/1,28~22/1,22~28/1,16" & lf after t
+   put "3~6,22~15/1,55~26/1,44~18/2,17~22/2,13" & lf after t
+   put "4~6,26~20/1,80~18/2,32~26/2,24~16/4,9" & lf after t
+   put "5~6,30~26/1,108~24/2,43~18/2,15/2,16~22/2,11/2,12" & lf after t
+   put "6~6,34~18/2,68~16/4,27~24/4,19~28/4,15" & lf after t
+   put "7~6,22,38~20/2,78~18/4,31~18/2,14/4,15~26/4,13/1,14" & lf after t
+   put "8~6,24,42~24/2,97~22/2,38/2,39~22/4,18/2,19~26/4,14/2,15" & lf after t
+   put "9~6,26,46~30/2,116~22/3,36/2,37~20/4,16/4,17~24/4,12/4,13" & lf after t
+   put "10~6,28,50~18/2,68/2,69~26/4,43/1,44~24/6,19/2,20~28/6,15/2,16" & lf after t
+   put "11~6,30,54~20/4,81~30/1,50/4,51~28/4,22/4,23~24/3,12/8,13" & lf after t
+   put "12~6,32,58~24/2,92/2,93~22/6,36/2,37~26/4,20/6,21~28/7,14/4,15" & lf after t
+   put "13~6,34,62~26/4,107~22/8,37/1,38~24/8,20/4,21~22/12,11/4,12" & lf after t
+   put "14~6,26,46,66~30/3,115/1,116~24/4,40/5,41~20/11,16/5,17~24/11,12/5,13" & lf after t
+   put "15~6,26,48,70~22/5,87/1,88~24/5,41/5,42~30/5,24/7,25~24/11,12/7,13" & lf after t
+   put "16~6,26,50,74~24/5,98/1,99~28/7,45/3,46~24/15,19/2,20~30/3,15/13,16" & lf after t
+   put "17~6,30,54,78~28/1,107/5,108~28/10,46/1,47~28/1,22/15,23~28/2,14/17,15" & lf after t
+   put "18~6,30,56,82~30/5,120/1,121~26/9,43/4,44~28/17,22/1,23~28/2,14/19,15" & lf after t
+   put "19~6,30,58,86~28/3,113/4,114~26/3,44/11,45~26/17,21/4,22~26/9,13/16,14" & lf after t
+   put "20~6,34,62,90~28/3,107/5,108~26/3,41/13,42~30/15,24/5,25~28/15,15/10,16" & lf after t
+   put "21~6,28,50,72,94~28/4,116/4,117~26/17,42~28/17,22/6,23~30/19,16/6,17" & lf after t
+   put "22~6,26,50,74,98~28/2,111/7,112~28/17,46~30/7,24/16,25~24/34,13" & lf after t
+   put "23~6,30,54,78,102~30/4,121/5,122~28/4,47/14,48~30/11,24/14,25~30/16,15/14,16" & lf after t
+   put "24~6,28,54,80,106~30/6,117/4,118~28/6,45/14,46~30/11,24/16,25~30/30,16/2,17" & lf after t
+   put "25~6,32,58,84,110~26/8,106/4,107~28/8,47/13,48~30/7,24/22,25~30/22,15/13,16" & lf after t
+   put "26~6,30,58,86,114~28/10,114/2,115~28/19,46/4,47~28/28,22/6,23~30/33,16/4,17" & lf after t
+   put "27~6,34,62,90,118~30/8,122/4,123~28/22,45/3,46~30/8,23/26,24~30/12,15/28,16" & lf after t
+   put "28~6,26,50,74,98,122~30/3,117/10,118~28/3,45/23,46~30/4,24/31,25~30/11,15/31,16" & lf after t
+   put "29~6,30,54,78,102,126~30/7,116/7,117~28/21,45/7,46~30/1,23/37,24~30/19,15/26,16" & lf after t
+   put "30~6,26,52,78,104,130~30/5,115/10,116~28/19,47/10,48~30/15,24/25,25~30/23,15/25,16" & lf after t
+   put "31~6,30,56,82,108,134~30/13,115/3,116~28/2,46/29,47~30/42,24/1,25~30/23,15/28,16" & lf after t
+   put "32~6,34,60,86,112,138~30/17,115~28/10,46/23,47~30/10,24/35,25~30/19,15/35,16" & lf after t
+   put "33~6,30,58,86,114,142~30/17,115/1,116~28/14,46/21,47~30/29,24/19,25~30/11,15/46,16" & lf after t
+   put "34~6,34,62,90,118,146~30/13,115/6,116~28/14,46/23,47~30/44,24/7,25~30/59,16/1,17" & lf after t
+   put "35~6,30,54,78,102,126,150~30/12,121/7,122~28/12,47/26,48~30/39,24/14,25~30/22,15/41,16" & lf after t
+   put "36~6,24,50,76,102,128,154~30/6,121/14,122~28/6,47/34,48~30/46,24/10,25~30/2,15/64,16" & lf after t
+   put "37~6,28,54,80,106,132,158~30/17,122/4,123~28/29,46/14,47~30/49,24/10,25~30/24,15/46,16" & lf after t
+   put "38~6,32,58,84,110,136,162~30/4,122/18,123~28/13,46/32,47~30/48,24/14,25~30/42,15/32,16" & lf after t
+   put "39~6,26,52,78,104,130,156,182~30/20,117/4,118~28/40,47/7,48~30/43,24/22,25~30/10,15/67,16" & lf after t
+   put "40~6,30,58,86,114,142,170,198~30/19,118/6,119~28/18,47/31,48~30/34,24/34,25~30/20,15/61,16" & lf after t
+   return t
+end ver_tableData
+?>

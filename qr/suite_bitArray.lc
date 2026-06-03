@@ -1,0 +1,78 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_bitArray.lc — BitArray tests (spec §10.3). Defines: command suite_bitArray.
+-- Requires loaded: qrCompat.lc, bitArray.lc.
+-- =====================================================================
+
+command suite_bitArray
+   local a, b, c, tBytes
+
+   -- construction / size --------------------------------------------
+   put bitArray_new(20) into a
+   t_eq "new size", bitArray_getSize(a), 20
+   t_eq "sizeInBytes (20->3)", bitArray_getSizeInBytes(a), 3
+
+   -- set / get ------------------------------------------------------
+   bitArray_set a, 0
+   bitArray_set a, 19
+   t_eq "get(0)", bitArray_get(a, 0), true
+   t_eq "get(1)", bitArray_get(a, 1), false
+   t_eq "get(19)", bitArray_get(a, 19), true
+
+   -- getNextSet / getNextUnset --------------------------------------
+   t_eq "nextSet(0)", bitArray_getNextSet(a, 0), 0
+   t_eq "nextSet(1)", bitArray_getNextSet(a, 1), 19
+   t_eq "nextUnset(0)", bitArray_getNextUnset(a, 0), 1
+   put bitArray_new(20) into b
+   t_eq "nextSet none -> size", bitArray_getNextSet(b, 0), 20
+
+   -- setRange / isRange (end exclusive) -----------------------------
+   put bitArray_new(32) into c
+   bitArray_setRange c, 4, 8
+   t_eq "range get(3)", bitArray_get(c, 3), false
+   t_eq "range get(4)", bitArray_get(c, 4), true
+   t_eq "range get(7)", bitArray_get(c, 7), true
+   t_eq "range get(8)", bitArray_get(c, 8), false
+   t_eq "isRange 4..8 true", bitArray_isRange(c, 4, 8, true), true
+   t_eq "isRange 4..9 true", bitArray_isRange(c, 4, 9, true), false
+   t_eq "isRange 0..4 false", bitArray_isRange(c, 0, 4, false), true
+
+   -- appendBits + toBytes (MSB-first) -------------------------------
+   put bitArray_new(0) into a
+   bitArray_appendBits a, 181, 8         -- 0xB5 = 10110101
+   t_eq "append size", bitArray_getSize(a), 8
+   t_eq "append get(0)=1", bitArray_get(a, 0), true
+   t_eq "append get(1)=0", bitArray_get(a, 1), false
+   t_eq "append get(2)=1", bitArray_get(a, 2), true
+   put bitArray_toBytes(a, 0, 1) into tBytes
+   t_eq "toBytes round-trip", tBytes[0], 181
+
+   -- xor ------------------------------------------------------------
+   put bitArray_new(32) into a
+   put bitArray_new(32) into b
+   bitArray_setBulk a, 0, 4042322160     -- 0xF0F0F0F0
+   bitArray_setBulk b, 0, 252645135      -- 0x0F0F0F0F
+   bitArray_xor a, b
+   t_eq "xor -> 0xFFFFFFFF", a["bits"][0], 4294967295
+
+   -- reverse (8-bit) ------------------------------------------------
+   put bitArray_new(8) into a
+   bitArray_set a, 0
+   bitArray_reverse a
+   t_eq "reverse bit0 -> bit7", bitArray_get(a, 7), true
+   t_eq "reverse old bit0 clear", bitArray_get(a, 0), false
+   t_eq "reverse word value", a["bits"][0], 128
+
+   -- clone independence ---------------------------------------------
+   put bitArray_new(16) into a
+   bitArray_set a, 3
+   put bitArray_clone(a) into b
+   bitArray_set a, 4                      -- mutate original only
+   t_eq "clone keeps bit3", bitArray_get(b, 3), true
+   t_eq "clone unaffected by bit4", bitArray_get(b, 4), false
+end suite_bitArray
+?>

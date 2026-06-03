@@ -1,0 +1,174 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- genericGFPoly.lc — polynomials over GF(256).
+-- Port of ZXing Common\Reedsolomon\GenericGFPoly. Spec §8.5.
+-- Requires: qrCompat.lc, genericGF.lc.
+--
+-- REPRESENTATION: a polynomial is its 0-based coefficient array; index 0 is
+-- the HIGHEST-degree coefficient (ZXing convention). Arrays are dense
+-- (keys 0..n-1 all present), so "the number of elements" == length.
+-- Polynomials are treated as immutable: every operation returns a NEW array.
+-- The single GF(256) field is implicit (gf_* in genericGF.lc).
+-- =====================================================================
+
+-- the zero / one constant polynomials
+function poly_zero
+   local t
+   put 0 into t[0]
+   return t
+end poly_zero
+
+function poly_one
+   local t
+   put 1 into t[0]
+   return t
+end poly_one
+
+-- Build a normalised polynomial from a dense 0-based coefficient array,
+-- stripping leading (high-degree) zeros exactly as ZXing's constructor does.
+function poly_new pC
+   local n, firstNonZero, tOut, i
+   put the number of elements of pC into n
+   if n = 0 then throw "RS: empty coefficients"
+   if (n > 1) and (pC[0] = 0) then
+      put 1 into firstNonZero
+      repeat while (firstNonZero < n) and (pC[firstNonZero] = 0)
+         add 1 to firstNonZero
+      end repeat
+      if firstNonZero = n then
+         put 0 into tOut[0]                       -- the constant polynomial "0"
+         return tOut
+      end if
+      repeat with i = firstNonZero to (n - 1)
+         put pC[i] into tOut[i - firstNonZero]
+      end repeat
+      return tOut
+   end if
+   -- already normalised (or single element): return a copy
+   repeat with i = 0 to (n - 1)
+      put pC[i] into tOut[i]
+   end repeat
+   return tOut
+end poly_new
+
+function poly_isZero p
+   return (p[0] = 0)
+end poly_isZero
+
+function poly_degree p
+   return ((the number of elements of p) - 1)
+end poly_degree
+
+-- coefficient of x^pDegree
+function poly_getCoefficient p, pDegree
+   return p[((the number of elements of p) - 1 - pDegree)]
+end poly_getCoefficient
+
+-- evaluate the polynomial at x = a in GF(256) (Horner's method)
+function poly_evaluateAt p, a
+   local n, tRes, i
+   put the number of elements of p into n
+   if a = 0 then return poly_getCoefficient(p, 0)     -- the x^0 coefficient
+   if a = 1 then
+      put 0 into tRes
+      repeat with i = 0 to (n - 1)
+         put gf_addOrSubtract(tRes, p[i]) into tRes
+      end repeat
+      return tRes
+   end if
+   put p[0] into tRes
+   repeat with i = 1 to (n - 1)
+      put gf_addOrSubtract(gf_multiply(a, tRes), p[i]) into tRes
+   end repeat
+   return tRes
+end poly_evaluateAt
+
+-- (this poly) + (other poly)
+function poly_addOrSubtract p, q
+   local smaller, larger, sumDiff, lengthDiff, lgN, smN, i
+   if poly_isZero(p) then return q
+   if poly_isZero(q) then return p
+   if (the number of elements of p) > (the number of elements of q) then
+      put q into smaller
+      put p into larger
+   else
+      put p into smaller
+      put q into larger
+   end if
+   put the number of elements of larger into lgN
+   put the number of elements of smaller into smN
+   put (lgN - smN) into lengthDiff
+   repeat with i = 0 to (lengthDiff - 1)
+      put larger[i] into sumDiff[i]
+   end repeat
+   repeat with i = lengthDiff to (lgN - 1)
+      put gf_addOrSubtract(smaller[i - lengthDiff], larger[i]) into sumDiff[i]
+   end repeat
+   return poly_new(sumDiff)
+end poly_addOrSubtract
+
+-- (this poly) * (other poly)
+function poly_multiply p, q
+   local pn, qn, tProduct, i, j
+   if poly_isZero(p) or poly_isZero(q) then return poly_zero()
+   put the number of elements of p into pn
+   put the number of elements of q into qn
+   put fill_array(0, (pn + qn - 1), 0) into tProduct
+   repeat with i = 0 to (pn - 1)
+      repeat with j = 0 to (qn - 1)
+         put gf_addOrSubtract(tProduct[i + j], gf_multiply(p[i], q[j])) into tProduct[i + j]
+      end repeat
+   end repeat
+   return poly_new(tProduct)
+end poly_multiply
+
+-- (this poly) * scalar
+function poly_multiplyScalar p, pScalar
+   local n, tProduct, i
+   if pScalar = 0 then return poly_zero()
+   if pScalar = 1 then return p
+   put the number of elements of p into n
+   repeat with i = 0 to (n - 1)
+      put gf_multiply(p[i], pScalar) into tProduct[i]
+   end repeat
+   return poly_new(tProduct)
+end poly_multiplyScalar
+
+-- (this poly) * (coefficient * x^degree)
+function poly_multiplyByMonomial p, pDegree, pCoeff
+   local n, tProduct, i
+   if pDegree < 0 then throw "RS: multiplyByMonomial negative degree"
+   if pCoeff = 0 then return poly_zero()
+   put the number of elements of p into n
+   put fill_array(0, (n + pDegree), 0) into tProduct
+   repeat with i = 0 to (n - 1)
+      put gf_multiply(p[i], pCoeff) into tProduct[i]
+   end repeat
+   return poly_new(tProduct)
+end poly_multiplyByMonomial
+
+-- divide this poly by other; returns array with keys "q" (quotient) and "r" (remainder)
+function poly_divide p, q
+   local quotient, remainder, dLT, invDLT, degreeDiff, tScale, term, iterQ, tRes
+   if poly_isZero(q) then throw "RS: divide by zero polynomial"
+   put poly_zero() into quotient
+   put p into remainder
+   put poly_getCoefficient(q, poly_degree(q)) into dLT
+   put gf_inverse(dLT) into invDLT
+   repeat while (poly_degree(remainder) >= poly_degree(q)) and (not poly_isZero(remainder))
+      put (poly_degree(remainder) - poly_degree(q)) into degreeDiff
+      put gf_multiply(poly_getCoefficient(remainder, poly_degree(remainder)), invDLT) into tScale
+      put poly_multiplyByMonomial(q, degreeDiff, tScale) into term
+      put gf_buildMonomial(degreeDiff, tScale) into iterQ
+      put poly_addOrSubtract(quotient, iterQ) into quotient
+      put poly_addOrSubtract(remainder, term) into remainder
+   end repeat
+   put quotient into tRes["q"]
+   put remainder into tRes["r"]
+   return tRes
+end poly_divide
+?>

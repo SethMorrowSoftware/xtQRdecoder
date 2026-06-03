@@ -1,0 +1,238 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- qr_imageprobe.lc — diagnostic: does headless xTalk server decode
+-- images and expose pixels via `the imageData`?  (spec §7)
+--
+-- This is the SINGLE biggest portability assumption in the whole port:
+-- the binarizer/detector pipeline needs a luminance array, which §7 builds
+-- from `the imageData of image`. Whether the image object works in a headless
+-- cPanel xTalk server is engine/build-specific, so we probe it directly instead
+-- of assuming.
+--
+-- DEPLOY: upload this one file anywhere in your web space and open it:
+--     https://yoursite/qr/qr_imageprobe.lc
+-- It needs NO other files. It embeds a known 2x2 test PNG whose pixels are
+--   (0,0)=red  (1,0)=green  (0,1)=blue  (1,1)=white
+-- so each colour channel is isolated and the byte order is unambiguous.
+--
+-- It reports, step by step: image creation, format decode, dimensions,
+-- imageData length, bytes-per-pixel, and the actual channel byte order —
+-- then a verdict on whether §7's pure-xTalk luminance path will work here.
+-- =====================================================================
+
+local sRows, sHTML, sFatal
+
+-- ---- handlers ----
+
+command out s
+   put s & cr after sHTML
+end out
+
+function htmlEsc s
+   replace "&" with "&amp;" in s
+   replace "<" with "&lt;" in s
+   replace ">" with "&gt;" in s
+   replace quote with "&quot;" in s
+   return s
+end htmlEsc
+
+-- record one diagnostic row: name, ok/warn/bad, detail
+command probeStep pName, pState, pDetail
+   put "<tr class='" & pState & "'><td>" & htmlEsc(pName) & \
+       "</td><td class='st'>" & toupper(pState) & "</td><td><code>" & \
+       htmlEsc(pDetail) & "</code></td></tr>" & cr after sRows
+end probeStep
+
+-- the four channel bytes of 0-based pixel p, as "b1,b2,b3,b4"
+function pixelBytes pData, p
+   local o, b1, b2, b3, b4
+   put (p * 4) into o
+   put byteToNum(byte (o + 1) of pData) into b1
+   put byteToNum(byte (o + 2) of pData) into b2
+   put byteToNum(byte (o + 3) of pData) into b3
+   put byteToNum(byte (o + 4) of pData) into b4
+   return b1 & comma & b2 & comma & b3 & comma & b4
+end pixelBytes
+
+-- the spec §7.3 greyscale rule, given "b1,b2,b3,b4" assuming byte2/3/4 = R/G/B
+function specLuma pQuad
+   local r, g, b
+   set the itemDelimiter to comma
+   put item 2 of pQuad into r
+   put item 3 of pQuad into g
+   put item 4 of pQuad into b
+   if (r = g) and (g = b) then return r
+   return trunc((r + (2 * g) + b) / 4)
+end specLuma
+
+command runProbe
+   local tB64, tPng, tImg, tW, tH, tData, tLen, tBpp
+   local tRed, tGreen, tBlue, tWhite, tOrder, tCreated, e, e2
+   local tRok, tGok, tBok
+
+   put empty into sRows
+   put empty into sFatal
+
+   -- [0] embedded known 2x2 PNG (red, green / blue, white)
+   put "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR42mP4z8DAAMIM/4EAAB/uBfvxq7p3AAAAAElFTkSuQmCC" into tB64
+   put base64Decode(tB64) into tPng
+   put the number of bytes of tPng into tLen
+   if tLen = 75 then
+      probeStep "decode embedded test PNG (base64)", "ok", tLen & " bytes (expected 75)"
+   else
+      probeStep "decode embedded test PNG (base64)", "warn", tLen & " bytes (expected 75)"
+   end if
+
+   -- [1] create an in-memory image control (the crux on headless servers)
+   put false into tCreated
+   try
+      -- a stack to host the control; headless engines may lack a default one
+      try
+         create invisible stack "qrProbeStack"
+      catch e2
+         -- a default stack may already exist; ignore and try the image directly
+      end try
+      create invisible image "qrProbe"
+      put true into tCreated
+      probeStep "create invisible image", "ok", "image control created"
+   catch e
+      probeStep "create invisible image", "bad", e
+      put "Could not create an image control in this engine." into sFatal
+   end try
+   if not tCreated then
+      exit runProbe
+   end if
+
+   -- [2] decode the PNG into the image
+   try
+      set the lockLoc of image "qrProbe" to true
+      put tPng into image "qrProbe"
+      probeStep "put PNG bytes into image", "ok", "no error thrown"
+   catch e
+      probeStep "put PNG bytes into image", "bad", e
+      put "The engine accepted no image data (PNG decoder likely absent)." into sFatal
+      exit runProbe
+   end try
+
+   -- [3] formattedWidth / formattedHeight
+   try
+      put the formattedWidth of image "qrProbe" into tW
+      put the formattedHeight of image "qrProbe" into tH
+   catch e
+      put -1 into tW
+      put -1 into tH
+   end try
+   if (tW = 2) and (tH = 2) then
+      probeStep "formattedWidth x formattedHeight", "ok", tW & " x " & tH & " (expected 2 x 2)"
+   else
+      probeStep "formattedWidth x formattedHeight", "bad", tW & " x " & tH & " (expected 2 x 2)"
+      put "Image dimensions wrong — the PNG was not truly decoded." into sFatal
+      exit runProbe
+   end if
+
+   -- [4] the imageData
+   set the width of image "qrProbe" to tW
+   set the height of image "qrProbe" to tH
+   try
+      put the imageData of image "qrProbe" into tData
+   catch e
+      probeStep "read the imageData", "bad", e
+      put "`the imageData` is unavailable in this engine." into sFatal
+      exit runProbe
+   end try
+   put the number of bytes of tData into tLen
+   if tLen = 16 then
+      probeStep "imageData length", "ok", tLen & " bytes (expected 16 = 2*2*4)"
+   else
+      probeStep "imageData length", "bad", tLen & " bytes (expected 16)"
+      put "imageData is not 4 bytes/pixel as §7.2 assumes." into sFatal
+      exit runProbe
+   end if
+   put (tLen / (tW * tH)) into tBpp
+   probeStep "bytes per pixel", "ok", tBpp
+
+   -- [5] per-pixel channel bytes (b1,b2,b3,b4)
+   put pixelBytes(tData, 0) into tRed
+   put pixelBytes(tData, 1) into tGreen
+   put pixelBytes(tData, 2) into tBlue
+   put pixelBytes(tData, 3) into tWhite
+   probeStep "pixel (0,0) expected RED", "ok", tRed
+   probeStep "pixel (1,0) expected GREEN", "ok", tGreen
+   probeStep "pixel (0,1) expected BLUE", "ok", tBlue
+   probeStep "pixel (1,1) expected WHITE", "ok", tWhite
+
+   -- [6] verify §7.2 byte order  byte1=alpha/0, byte2=R, byte3=G, byte4=B
+   --     red pixel has its 255 in byte2; green in byte3; blue in byte4.
+   set the itemDelimiter to comma
+   put (item 2 of tRed = 255) into tRok
+   put (item 3 of tGreen = 255) into tGok
+   put (item 4 of tBlue = 255) into tBok
+   if (tRok and tGok and tBok) then
+      put "0,R,G,B confirmed" into tOrder
+      probeStep "channel byte order (§7.2 = 0,R,G,B)", "ok", tOrder
+   else
+      put "R@byte2=" & tRok & " G@byte3=" & tGok & " B@byte4=" & tBok into tOrder
+      probeStep "channel byte order (§7.2 = 0,R,G,B)", "warn", "differs: " & tOrder & " — luminanceSource will need remapping"
+   end if
+
+   -- [7] show the luminance the §7.3 rule would produce
+   probeStep "luminance §7.3 of RED pixel", "ok", specLuma(tRed) & "  (=R since r<>g)"
+   probeStep "luminance §7.3 of WHITE pixel", "ok", specLuma(tWhite) & "  (=255)"
+end runProbe
+
+command renderHead
+   out "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+   out "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+   out "<title>xtQRdecoder — image / imageData probe</title><style>"
+   out "body{font:15px/1.55 -apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0f1117;color:#e6e6e6}"
+   out ".wrap{max-width:820px;margin:0 auto;padding:26px 20px}"
+   out "h1{font-size:21px;margin:0 0 4px}.sub{color:#9aa4b2;font-size:14px;margin:0 0 20px}"
+   out ".banner{padding:14px 18px;border-radius:10px;font-weight:600;margin:16px 0}"
+   out ".banner.ok{background:#0f3d2e;color:#5ee6a8;border:1px solid #1c6b4f}"
+   out ".banner.bad{background:#3d1414;color:#ff8a8a;border:1px solid #6b1c1c}"
+   out "table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:8px}"
+   out "th,td{text-align:left;padding:7px 10px;border-bottom:1px solid #232734;vertical-align:top}"
+   out "th{color:#9aa4b2}code{background:#1a1d27;padding:1px 6px;border-radius:4px;color:#cdd6f4}"
+   out ".st{font-weight:700}tr.ok .st{color:#5ee6a8}tr.bad .st{color:#ff8a8a}tr.warn .st{color:#f5c451}"
+   out "tr.bad{background:#241313}tr.warn{background:#2a2410}"
+   out ".foot{color:#6b7280;font-size:12px;margin-top:26px}.kv{font-size:14px}"
+   out "</style></head><body><div class='wrap'>"
+end renderHead
+
+command renderPage
+   put empty into sHTML
+   renderProbeBody
+   put sHTML
+end renderPage
+
+command renderProbeBody
+   local tVer, tPlat
+   runProbe
+   renderHead
+   out "<h1>xtQRdecoder — image / <code>imageData</code> probe</h1>"
+   out "<p class='sub'>Confirms whether headless xTalk server can decode an image and expose pixels (spec §7).</p>"
+
+   if sFatal is empty then
+      out "<div class='banner ok'>&#10003; This engine can decode images and read <code>the imageData</code>. The pure-xTalk luminance path (spec §7) will work here.</div>"
+   else
+      out "<div class='banner bad'>&#10007; " & htmlEsc(sFatal) & "<br>This engine cannot supply pixels for the decode path; a different engine build (or a shell helper) is needed.</div>"
+   end if
+
+   out "<table><tr><th>Step</th><th>Result</th><th>Detail</th></tr>"
+   out sRows
+   out "</table>"
+
+   put the version into tVer
+   put the platform into tPlat
+   out "<p class='foot kv'>engine " & htmlEsc(tVer) & " &middot; platform " & htmlEsc(tPlat) & " &middot; qr_imageprobe.lc</p>"
+   out "</div></body></html>"
+end renderProbeBody
+
+
+-- ---- main ----
+renderPage
+?>

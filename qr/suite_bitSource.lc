@@ -1,0 +1,69 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_bitSource.lc — BitSource tests (spec §10). Defines: command suite_bitSource.
+-- Requires loaded: qrCompat.lc, bitSource.lc.
+-- =====================================================================
+
+-- build a dense 0-based byte array from a comma list
+function bs_bytes pList
+   local tA, i, x
+   set the itemDelimiter to comma
+   put 0 into i
+   repeat for each item x in pList
+      put (x + 0) into tA[i]
+      add 1 to i
+   end repeat
+   return tA
+end bs_bytes
+
+command suite_bitSource
+   local s, tThrew, e
+
+   -- nibble + byte reads over [0xAB, 0xCD, 0xEF] --------------------
+   put bitSource_new(bs_bytes("171,205,239")) into s    -- AB CD EF
+   t_eq "available start", bitSource_available(s), 24
+   bitSource_readBits s, 4
+   t_eq "read nibble A", the result, 10
+   bitSource_readBits s, 4
+   t_eq "read nibble B", the result, 11
+   bitSource_readBits s, 8
+   t_eq "read byte CD", the result, 205
+   t_eq "available mid", bitSource_available(s), 8
+   bitSource_readBits s, 8
+   t_eq "read byte EF", the result, 239
+   t_eq "available end", bitSource_available(s), 0
+
+   -- cross-byte read: 4 then 8 bits over [0xAB, 0xCD] ---------------
+   put bitSource_new(bs_bytes("171,205")) into s
+   bitSource_readBits s, 4
+   t_eq "cross nibble A", the result, 10
+   bitSource_readBits s, 8
+   t_eq "cross byte BC", the result, 188            -- 0xB then 0xC = 0xBC
+
+   -- 16-bit read assembles MSB-first -------------------------------
+   put bitSource_new(bs_bytes("171,205")) into s
+   bitSource_readBits s, 16
+   t_eq "read 16 = 0xABCD", the result, 43981
+
+   -- single-bit reads ----------------------------------------------
+   put bitSource_new(bs_bytes("128")) into s         -- 1000 0000
+   bitSource_readBits s, 1
+   t_eq "first bit of 0x80", the result, 1
+   bitSource_readBits s, 1
+   t_eq "second bit of 0x80", the result, 0
+
+   -- over-read throws ----------------------------------------------
+   put bitSource_new(bs_bytes("255")) into s
+   put false into tThrew
+   try
+      bitSource_readBits s, 9                          -- only 8 available
+   catch e
+      put true into tThrew
+   end try
+   t_eq "over-read throws", tThrew, true
+end suite_bitSource
+?>

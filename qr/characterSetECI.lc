@@ -1,0 +1,79 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- characterSetECI.lc — ECI numeric value -> charset name. Spec §8.6.
+-- Port of (the used subset of) ZXing Common\CharacterSetECI.
+-- Requires: nothing.
+--
+-- Only the values likely to appear are mapped; the byte decoder
+-- (decodedBitStreamParser) only natively handles ASCII / ISO-8859-1 / UTF-8
+-- (spec §8.7), so other charsets resolve to a name that decoder treats as a
+-- best-effort fallback.
+-- =====================================================================
+
+function eci_charsetName pValue
+   switch pValue
+      case 0
+      case 2
+         return "Cp437"
+      case 1
+      case 3
+         return "ISO-8859-1"
+      case 4
+         return "ISO-8859-2"
+      case 5
+         return "ISO-8859-3"
+      case 6
+         return "ISO-8859-4"
+      case 7
+         return "ISO-8859-5"
+      case 8
+         return "ISO-8859-6"
+      case 9
+         return "ISO-8859-7"
+      case 10
+         return "ISO-8859-8"
+      case 11
+         return "ISO-8859-9"
+      case 12
+         return "ISO-8859-10"
+      case 13
+         return "ISO-8859-11"
+      case 15
+         return "ISO-8859-13"
+      case 16
+         return "ISO-8859-14"
+      case 17
+         return "ISO-8859-15"
+      case 18
+         return "ISO-8859-16"
+      case 20
+         return "Shift_JIS"
+      case 21
+         return "Cp1250"
+      case 22
+         return "Cp1251"
+      case 23
+         return "Cp1252"
+      case 24
+         return "Cp1256"
+      case 25
+         return "UTF-16BE"
+      case 26
+         return "UTF-8"
+      case 27
+      case 170
+         return "US-ASCII"
+      case 28
+         return "Big5"
+      case 29
+         return "GB2312"
+      case 30
+         return "EUC-KR"
+   end switch
+   return "ISO-8859-1"           -- unknown ECI: safe byte-preserving default
+end eci_charsetName
+?>

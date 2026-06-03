@@ -1,0 +1,30 @@
+xtQRdecoder — an xTalk port of the ZXing QR decoder
+Copyright 2026 Seth Morrow
+
+This product includes software derived from the following projects:
+
+------------------------------------------------------------------------
+ZXing ("Zebra Crossing")
+  https://github.com/zxing/zxing
+  Copyright 2007-present ZXing authors
+  Licensed under the Apache License, Version 2.0.
+
+  xtQRdecoder is a line-for-line port of the ZXing QR Code detector/decoder.
+  The algorithms, data tables, and module structure are derived from ZXing.
+------------------------------------------------------------------------
+khanamiryan/php-qrcode-detector-decoder
+  https://github.com/khanamiryan/php-qrcode-detector-decoder
+  Copyright Ashot Khanamiryan and contributors
+  Dual-licensed under Apache-2.0 / MIT.
+
+  xtQRdecoder was ported directly from this PHP transliteration of ZXing, which
+  is the line-level authority for the port's behavior.
+------------------------------------------------------------------------
+
+The golden test fixtures in qr/fixtures/ originate from the upstream
+khanamiryan/php-qrcode-detector-decoder test suite and remain under that
+project's license. They are included solely to verify decode fidelity.
+
+This NOTICE file is provided for attribution purposes in accordance with
+Section 4(d) of the Apache License, Version 2.0. It does not modify the
+License.

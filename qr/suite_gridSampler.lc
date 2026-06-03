@@ -1,0 +1,63 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_gridSampler.lc — GridSampler tests (spec §8.4). Defines: command suite_gridSampler.
+-- Requires loaded: qrCompat.lc, bitMatrix.lc, perspectiveTransform.lc, gridSampler.lc.
+--
+-- Build a 3x3 "checkerboard" (1 0 1 / 0 1 0 / 1 0 1), upscale x8 to a 24x24
+-- image, then sample a 3x3 grid through a transform that maps the sample
+-- square (centres 0.5..2.5) onto the image region (4..20). Expect 101010101.
+-- =====================================================================
+
+command suite_gridSampler
+   local tSmall, tBig, tXform, tBits, r, c, yy, xx, tDump, y, x, tPts
+
+   put bitMatrix_new(3) into tSmall
+   bitMatrix_set tSmall, 0, 0
+   bitMatrix_set tSmall, 2, 0
+   bitMatrix_set tSmall, 1, 1
+   bitMatrix_set tSmall, 0, 2
+   bitMatrix_set tSmall, 2, 2
+
+   -- upscale x8 (no border) -> 24x24
+   put bitMatrix_new(24) into tBig
+   repeat with r = 0 to 2
+      repeat with c = 0 to 2
+         if bitMatrix_get(tSmall, c, r) then
+            repeat with yy = (r * 8) to ((r * 8) + 7)
+               repeat with xx = (c * 8) to ((c * 8) + 7)
+                  bitMatrix_set tBig, xx, yy
+               end repeat
+            end repeat
+         end if
+      end repeat
+   end repeat
+
+   put pt_quadrilateralToQuadrilateral(0.5, 0.5, 2.5, 0.5, 2.5, 2.5, 0.5, 2.5, \
+      4, 4, 20, 4, 20, 20, 4, 20) into tXform
+   put gs_sampleGrid(tBig, 3, 3, tXform) into tBits
+   put empty into tDump
+   repeat with y = 0 to 2
+      repeat with x = 0 to 2
+         if bitMatrix_get(tBits, x, y) then
+            put "1" after tDump
+         else
+            put "0" after tDump
+         end if
+      end repeat
+   end repeat
+   t_eq "sampled 3x3 = 101010101", tDump, "101010101"
+
+   -- checkAndNudgePoints clamps barely-off endpoints (-1 -> 0, width -> width-1)
+   put -1 into tPts[0]
+   put 5 into tPts[1]
+   put 24 into tPts[2]
+   put 10 into tPts[3]
+   gs_checkAndNudgePoints tPts, 24, 24
+   t_eq "nudge x=-1 -> 0", tPts[0], 0
+   t_eq "nudge x=width -> width-1", tPts[2], 23
+end suite_gridSampler
+?>

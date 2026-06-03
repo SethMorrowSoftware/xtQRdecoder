@@ -1,0 +1,85 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- binaryBitmap.lc — caches the black matrix for the reader. Spec §3, §module inv.
+-- Port of ZXing BinaryBitmap. Requires: bitMatrix.lc, hybridBinarizer.lc,
+-- globalHistogramBinarizer.lc, luminanceSource.lc.
+--
+-- Instance (Pattern A):
+--   pObj["src"]       — luminanceSource array
+--   pObj["binarizer"] — "hybrid" (default) or "global"
+--   pObj["matrix"]    — cached BitMatrix (computed lazily by the selected binarizer)
+--   pObj["hasMatrix"] — whether the cache is populated
+--
+-- The detector pulls the binarized BitMatrix from here; binaryBitmap_getBlackMatrix
+-- computes it once (HybridBinarizer, the default) and caches it.
+-- =====================================================================
+
+-- pBinarizer (optional): "hybrid" (default) or "global". The hybrid local
+-- adaptive threshold is best for uneven lighting/glare; the global histogram is
+-- a useful fallback for low-contrast or evenly-lit images where hybrid's small
+-- blocks can misfire. A robust reader tries both (see qrDecodeResultRobust).
+function binaryBitmap_new pSrc, pBinarizer
+   local tObj
+   put pSrc into tObj["src"]
+   put false into tObj["hasMatrix"]
+   if pBinarizer is "global" then
+      put "global" into tObj["binarizer"]
+   else
+      put "hybrid" into tObj["binarizer"]
+   end if
+   return tObj
+end binaryBitmap_new
+
+function binaryBitmap_getWidth pObj
+   return pObj["src"]["width"]
+end binaryBitmap_getWidth
+
+function binaryBitmap_getHeight pObj
+   return pObj["src"]["height"]
+end binaryBitmap_getHeight
+
+-- lazily compute + cache the black matrix (default: hybrid binarizer)
+command binaryBitmap_ensureMatrix @pObj
+   if pObj["hasMatrix"] then
+      exit binaryBitmap_ensureMatrix
+   end if
+   if pObj["binarizer"] is "global" then
+      put ghb_getBlackMatrix(pObj["src"]) into pObj["matrix"]
+   else
+      put hb_getBlackMatrix(pObj["src"]) into pObj["matrix"]
+   end if
+   put true into pObj["hasMatrix"]
+end binaryBitmap_ensureMatrix
+
+function binaryBitmap_getBlackMatrix pObj
+   binaryBitmap_ensureMatrix pObj
+   return pObj["matrix"]
+end binaryBitmap_getBlackMatrix
+
+-- ASCII preview of the cached matrix ("X" = black, " " = white), for debugging
+-- and for the §10.5 cross-oracle dump against the PHP reference.
+function binaryBitmap_toString pObj
+   local m, w, h, x, y, s, tLine
+   binaryBitmap_ensureMatrix pObj
+   put pObj["matrix"] into m
+   put m["width"] into w
+   put m["height"] into h
+   put empty into s
+   repeat with y = 0 to (h - 1)
+      put empty into tLine
+      repeat with x = 0 to (w - 1)
+         if bitMatrix_get(m, x, y) then
+            put "X" after tLine
+         else
+            put " " after tLine
+         end if
+      end repeat
+      put tLine & cr after s
+   end repeat
+   return s
+end binaryBitmap_toString
+?>

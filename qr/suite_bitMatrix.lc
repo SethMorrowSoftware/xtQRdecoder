@@ -1,0 +1,96 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_bitMatrix.lc — BitMatrix tests (spec §10.3). Defines: command suite_bitMatrix.
+-- Requires loaded: qrCompat.lc, bitArray.lc, bitMatrix.lc.
+-- =====================================================================
+
+command suite_bitMatrix
+   local m, m2, tRect, pt, tRow
+
+   -- construction ----------------------------------------------------
+   put bitMatrix_new(21) into m
+   t_eq "square width", m["width"], 21
+   t_eq "square height", m["height"], 21
+   t_eq "square rowSize", m["rowSize"], 1
+   put bitMatrix_new(33, 10) into m2
+   t_eq "rect rowSize (33->2)", m2["rowSize"], 2
+   t_eq "rect bits count", the number of elements of m2["bits"], 20
+
+   -- set / get / unset / flip ---------------------------------------
+   put bitMatrix_new(21) into m
+   bitMatrix_set m, 5, 3
+   t_eq "get(5,3)", bitMatrix_get(m, 5, 3), true
+   t_eq "get(6,3)", bitMatrix_get(m, 6, 3), false
+   t_eq "get(5,4)", bitMatrix_get(m, 5, 4), false
+   bitMatrix_unset m, 5, 3
+   t_eq "after unset", bitMatrix_get(m, 5, 3), false
+   bitMatrix_flip m, 5, 3
+   t_eq "after flip on", bitMatrix_get(m, 5, 3), true
+   bitMatrix_flip m, 5, 3
+   t_eq "after flip off", bitMatrix_get(m, 5, 3), false
+
+   -- cross-word column (x=32 in a 33-wide matrix) -------------------
+   put bitMatrix_new(33, 10) into m2
+   bitMatrix_set m2, 32, 0
+   t_eq "cross-word get(32,0)", bitMatrix_get(m2, 32, 0), true
+   t_eq "cross-word get(31,0)", bitMatrix_get(m2, 31, 0), false
+
+   -- setRegion -------------------------------------------------------
+   put bitMatrix_new(10) into m
+   bitMatrix_setRegion m, 1, 1, 2, 2          -- (1,1),(2,1),(1,2),(2,2)
+   t_eq "region (1,1)", bitMatrix_get(m, 1, 1), true
+   t_eq "region (2,2)", bitMatrix_get(m, 2, 2), true
+   t_eq "region (3,1) off", bitMatrix_get(m, 3, 1), false
+   t_eq "region (0,0) off", bitMatrix_get(m, 0, 0), false
+
+   -- getEnclosingRectangle / getTopLeftOnBit / getBottomRightOnBit --
+   put bitMatrix_getEnclosingRectangle(m) into tRect
+   t_eq "encl left", tRect[0], 1
+   t_eq "encl top", tRect[1], 1
+   t_eq "encl width", tRect[2], 2
+   t_eq "encl height", tRect[3], 2
+   put bitMatrix_getTopLeftOnBit(m) into pt
+   t_eq "topLeft x", pt[0], 1
+   t_eq "topLeft y", pt[1], 1
+   put bitMatrix_getBottomRightOnBit(m) into pt
+   t_eq "bottomRight x", pt[0], 2
+   t_eq "bottomRight y", pt[1], 2
+
+   -- empty matrix -> empty results ----------------------------------
+   put bitMatrix_new(8) into m
+   t_eq "encl empty", bitMatrix_getEnclosingRectangle(m), empty
+   t_eq "topLeft empty", bitMatrix_getTopLeftOnBit(m), empty
+
+   -- getRow / setRow round-trip -------------------------------------
+   put bitMatrix_new(33, 4) into m
+   bitMatrix_set m, 0, 1
+   bitMatrix_set m, 32, 1
+   put bitMatrix_getRow(m, 1) into tRow
+   t_eq "getRow bit0", bitArray_get(tRow, 0), true
+   t_eq "getRow bit32", bitArray_get(tRow, 32), true
+   t_eq "getRow bit1", bitArray_get(tRow, 1), false
+   put bitMatrix_new(33, 4) into m2
+   bitMatrix_setRow m2, 3, tRow
+   t_eq "setRow bit0", bitMatrix_get(m2, 0, 3), true
+   t_eq "setRow bit32", bitMatrix_get(m2, 32, 3), true
+
+   -- rotate180 (single bit at (0,0) -> (3,3)) -----------------------
+   put bitMatrix_new(4, 4) into m
+   bitMatrix_set m, 0, 0
+   bitMatrix_rotate180 m
+   t_eq "rotate180 (0,0)->(3,3)", bitMatrix_get(m, 3, 3), true
+   t_eq "rotate180 old (0,0) clear", bitMatrix_get(m, 0, 0), false
+
+   -- clone independence ---------------------------------------------
+   put bitMatrix_new(10) into m
+   bitMatrix_set m, 2, 2
+   put bitMatrix_clone(m) into m2
+   bitMatrix_set m, 3, 3
+   t_eq "clone keeps (2,2)", bitMatrix_get(m2, 2, 2), true
+   t_eq "clone unaffected (3,3)", bitMatrix_get(m2, 3, 3), false
+end suite_bitMatrix
+?>

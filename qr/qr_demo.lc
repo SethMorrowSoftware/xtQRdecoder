@@ -1,0 +1,614 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- qr_demo.lc — interactive demo: upload a photo of a QR code, get the text.
+--
+-- A friendly, modern front-end over the finished library. GET serves the
+-- single-page scanner; the browser then decodes by POSTing the chosen image
+-- back to this same page. Two response modes share one decode path:
+--
+--   * api mode  ($_POST["api"] = "1", used by qr_demo.js / fetch): the image is
+--     decoded and the result returned as compact JSON. The page stays put and the
+--     client renders a rich result card (smart link/Wi-Fi/contact actions, copy,
+--     scan history) with a live loading state -- no full-page reload.
+--   * html mode (a plain form POST, i.e. JavaScript disabled): the result is
+--     server-rendered above the form, so the scanner is fully functional with no
+--     JavaScript at all. Progressive enhancement, both paths, one decode.
+--
+-- Real photos are decoded via qrDecodeResultRobust: the image is decoded once,
+-- then several binarizer/scale strategies are tried (hybrid+global at <=1200px
+-- and a ~1600px retry) so glare, blur and dense codes have multiple chances --
+-- the first strategy that decodes wins. TRY_HARDER is on by default; a BINARY
+-- toggle returns the raw bytes as hex.
+--
+-- Presentation lives in two sibling static files served next to this page:
+-- qr_demo.css (styling) and qr_demo.js (the interactive client). The JSON the
+-- client consumes is pure ASCII -- free-text fields are base64(UTF-8) -- so it is
+-- robust regardless of the engine build's default output encoding.
+--
+-- DEPLOY: upload the qr/ folder and open https://yoursite/qr/qr_demo.lc
+-- =====================================================================
+
+local tBase, tReady, tFiles, tF, tMissing, tApi
+local sHTML
+
+-- the asset version: bump to bust the browser cache after editing css / js
+constant kAssetVer = "4"
+
+-- ---- directory resolution (same as qr_tester.lc) ----
+function qrDirOf pPath
+   if pPath is empty then return empty
+   set the itemDelimiter to "/"
+   if the number of items of pPath < 2 then return empty
+   delete the last item of pPath
+   return pPath
+end qrDirOf
+
+function qrFindBase
+   local tCands, d
+   put qrDirOf($_SERVER["SCRIPT_FILENAME"]) & cr after tCands
+   put qrDirOf($_SERVER["PATH_TRANSLATED"]) & cr after tCands
+   if ($_SERVER["DOCUMENT_ROOT"] is not empty) and ($_SERVER["SCRIPT_NAME"] is not empty) then
+      put qrDirOf($_SERVER["DOCUMENT_ROOT"] & $_SERVER["SCRIPT_NAME"]) & cr after tCands
+   end if
+   put the defaultFolder & cr after tCands
+   repeat for each line d in tCands
+      if (d is not empty) and (there is a file (d & "/qrCompat.lc")) then
+         return d
+      end if
+   end repeat
+   return empty
+end qrFindBase
+
+command out s
+   put s & cr after sHTML
+end out
+
+function htmlEsc s
+   replace "&" with "&amp;" in s
+   replace "<" with "&lt;" in s
+   replace ">" with "&gt;" in s
+   replace quote with "&quot;" in s
+   return s
+end htmlEsc
+
+-- attribute-safe escape: like htmlEsc, but ALSO escapes the single quote, so a
+-- value is safe inside a single-quoted attribute (htmlEsc only covers the double
+-- quote). Use this for any user-derived value placed in an attribute -- e.g. a
+-- decoded-QR link href, or the URL re-fill -- to close off attribute-injection.
+function attrEsc s
+   replace "&" with "&amp;" in s
+   replace "<" with "&lt;" in s
+   replace ">" with "&gt;" in s
+   replace quote with "&quot;" in s
+   replace "'" with "&#39;" in s
+   return s
+end attrEsc
+
+-- a byte string as lowercase hex (no separators)
+function toHex pStr
+   local h, i, b, hx
+   put empty into h
+   repeat with i = 1 to the number of bytes of pStr
+      put byteToNum(byte i of pStr) into b
+      put baseConvert(b, 10, 16) into hx
+      if the number of chars of hx < 2 then
+         put "0" before hx
+      end if
+      put hx after h
+   end repeat
+   return h
+end toHex
+
+-- ---- JSON helpers (api mode) ----------------------------------------------
+-- wrap a JSON token in double quotes (the value must already be quote-safe:
+-- a base64 blob, a hex string, or a fixed ASCII key)
+function demoQuote pStr
+   return quote & pStr & quote
+end demoQuote
+
+-- an xTalk string -> a quote-safe base64(UTF-8) blob. The whole JSON document
+-- is therefore pure ASCII with no characters needing JSON escaping, so it parses
+-- correctly no matter what the engine build picks for its default text output.
+-- (xTalk's base64Encode wraps at 76 columns; strip the breaks back out.)
+function demoB64 pStr
+   local b
+   put base64Encode(textEncode(pStr, "UTF-8")) into b
+   replace (numToChar(10)) with empty in b
+   replace (numToChar(13)) with empty in b
+   return b
+end demoB64
+
+-- ---- shared decode (used by both response modes) --------------------------
+-- decode gathered image bytes with the robust multi-strategy path; reports the
+-- result array, an error string (empty on success), the processed dimensions and
+-- the wall-clock time. Never throws.
+command demoDecodeBytes pBytes, pTryHarder, @rResult, @rErr, @rProcW, @rProcH, @rMs
+   local tHints, e, tStart
+   if pTryHarder then
+      put true into tHints["TRY_HARDER"]
+   end if
+   put 0 into rProcW
+   put 0 into rProcH
+   put empty into rErr
+   put the milliseconds into tStart
+   try
+      -- robust multi-strategy decode: one image decode, then hybrid/global
+      -- binarizers at two scales (first success wins). Best for real photos.
+      put qrDecodeResultRobust(pBytes, tHints, 1200) into rResult
+      if rResult["procW"] is not empty then put rResult["procW"] into rProcW
+      if rResult["procH"] is not empty then put rResult["procH"] into rProcH
+      put rResult["error"] into rErr
+   catch e
+      put e into rErr
+   end try
+   put (the milliseconds - tStart) into rMs
+end demoDecodeBytes
+
+-- ---- HTML shell -----------------------------------------------------------
+command renderHead
+   out "<!DOCTYPE html>"
+   out "<html lang='en' class='no-js'>"
+   out "<head>"
+   out "<meta charset='utf-8'>"
+   out "<meta name='viewport' content='width=device-width, initial-scale=1, viewport-fit=cover'>"
+   out "<meta name='color-scheme' content='dark light'>"
+   out "<meta name='theme-color' content='#0b0e16'>"
+   out "<title>QR Code Scanner &mdash; xtQRdecoder</title>"
+   out "<meta name='description' content='Decode QR codes from an image in pure xTalk - no external service, no native code. A live demo of xtQRdecoder, a faithful ZXing port for any xTalk server.'>"
+   out "<meta property='og:title' content='QR Code Scanner - xtQRdecoder'>"
+   out "<meta property='og:description' content='Decode QR codes in pure xTalk, on the server, with no external service.'>"
+   out "<meta property='og:type' content='website'>"
+   out "<meta name='twitter:card' content='summary'>"
+   out "<link rel='icon' href=" & quote & "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='5' fill='%230b0e16'/><g fill='%236ea8fe'><path d='M5 5h5v5H5z'/><path d='M14 5h5v5h-5z'/><path d='M5 14h5v5H5z'/><rect x='14' y='14' width='2' height='2'/><rect x='17' y='14' width='2' height='2'/><rect x='14' y='17' width='2' height='2'/><rect x='17' y='17' width='2' height='2'/></g></svg>" & quote & ">"
+   out "<link rel='stylesheet' href='qr_demo.css?v=" & kAssetVer & "'>"
+   out "</head>"
+   out "<body>"
+   out "<div class='wrap'>"
+   out "<header class='hero'>"
+   out "<span class='logo' aria-hidden='true'><svg viewBox='0 0 24 24' fill='none' stroke='currentColor'><rect x='3.5' y='3.5' width='6' height='6' rx='1.2' stroke-width='1.6'/><rect x='14.5' y='3.5' width='6' height='6' rx='1.2' stroke-width='1.6'/><rect x='3.5' y='14.5' width='6' height='6' rx='1.2' stroke-width='1.6'/><g fill='currentColor' stroke='none'><rect x='5.6' y='5.6' width='1.8' height='1.8'/><rect x='16.6' y='5.6' width='1.8' height='1.8'/><rect x='5.6' y='16.6' width='1.8' height='1.8'/><rect x='14' y='14' width='2' height='2'/><rect x='18' y='14' width='2' height='2'/><rect x='14' y='18' width='2' height='2'/><rect x='18' y='18' width='2' height='2'/><rect x='16' y='16' width='2' height='2'/></g></svg></span>"
+   out "<div class='hero-text'>"
+   out "<h1>QR Scanner</h1>"
+   out "<p class='tagline'>Upload, snap, or paste a QR code &mdash; decoded in pure xTalk, right here, with no external service.</p>"
+   out "<ul class='hero-badges' aria-label='Highlights'><li>Pure xTalk</li><li>No external service</li><li>QR versions 1&ndash;40</li></ul>"
+   out "</div>"
+   out "</header>"
+end renderHead
+
+-- the input form. pTryHarder / pBinary preselect the toggles; pUrl re-fills the
+-- URL field. Without JavaScript every panel is visible and the form posts
+-- normally; qr_demo.js upgrades it to a tabbed, drag-and-drop, async scanner.
+command renderForm pTryHarder, pBinary, pUrl
+   local tTh, tBin
+   if pTryHarder is false then
+      put empty into tTh
+   else
+      put " checked" into tTh
+   end if
+   if pBinary is true then
+      put " checked" into tBin
+   else
+      put empty into tBin
+   end if
+
+   out "<form id='qform' class='card form' method='post' enctype='multipart/form-data' action=''>"
+
+   out "<div class='tabs' role='tablist' aria-label='Choose how to provide the image'>"
+   out "<button type='button' class='tab is-active' role='tab' id='tab-upload' data-tab='upload' aria-selected='true'>Upload</button>"
+   out "<button type='button' class='tab' role='tab' id='tab-camera' data-tab='camera' aria-selected='false'>Camera</button>"
+   out "<button type='button' class='tab' role='tab' id='tab-url' data-tab='url' aria-selected='false'>Image URL</button>"
+   out "</div>"
+
+   out "<section class='panel is-active' id='panel-upload' role='tabpanel' aria-labelledby='tab-upload'>"
+   out "<label class='dropzone' id='dropzone' for='fileInput'>"
+   out "<svg class='dz-icon' viewBox='0 0 24 24' aria-hidden='true'><path d='M12 15V4m0 0L8.5 7.5M12 4l3.5 3.5' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/><path d='M4 14v3a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-3' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>"
+   out "<span class='dz-title'>Drop an image here, click to browse, or paste</span>"
+   out "<span class='dz-hint'>PNG, JPEG, GIF or BMP &middot; up to a few megapixels</span>"
+   out "<input type='file' id='fileInput' name='qrimage' accept='image/*' class='vh'>"
+   out "</label>"
+   out "</section>"
+
+   out "<section class='panel' id='panel-camera' role='tabpanel' aria-labelledby='tab-camera'>"
+   out "<div class='cam-live' id='camLive' hidden>"
+   out "<div class='cam-stage'><video id='camVideo' class='cam-video' playsinline autoplay muted></video><span class='cam-reticle' aria-hidden='true'></span></div>"
+   out "<div class='cam-controls'>"
+   out "<button type='button' class='btn' id='camStart'>Start camera</button>"
+   out "<button type='button' class='btn primary' id='camShot' hidden>Capture &amp; decode</button>"
+   out "<button type='button' class='btn ghost' id='camStop' hidden>Stop</button>"
+   out "</div>"
+   out "</div>"
+   out "<label class='filepick'>"
+   out "<span class='flbl'>Or take a photo with your phone</span>"
+   out "<input type='file' id='camInput' name='qrcamera' accept='image/*' capture='environment'>"
+   out "</label>"
+   out "</section>"
+
+   out "<section class='panel' id='panel-url' role='tabpanel' aria-labelledby='tab-url'>"
+   out "<label class='flbl' for='urlInput'>Paste a public image URL</label>"
+   out "<input type='url' id='urlInput' name='imageurl' inputmode='url' autocomplete='off' placeholder='https://example.com/qr.png' value='" & attrEsc(pUrl) & "'>"
+   out "<p class='hint'>A direct link to a PNG / JPEG image of the code.</p>"
+   out "</section>"
+
+   out "<div class='options'>"
+   out "<label class='switch'><input type='checkbox' id='tryharder' name='tryharder' value='1'" & tTh & "><span class='track'></span><span class='swtext'>Try harder<em>thorough scan &mdash; best for photos</em></span></label>"
+   out "<label class='switch'><input type='checkbox' id='binary' name='binary' value='1'" & tBin & "><span class='track'></span><span class='swtext'>Binary mode<em>show the raw bytes as hex</em></span></label>"
+   out "</div>"
+
+   out "<div class='preview-wrap' id='previewWrap' hidden><img id='previewImg' class='preview' alt='Selected image preview'><button type='button' class='preview-clear' id='previewClear' aria-label='Remove selected image'>&times;</button></div>"
+
+   out "<div class='actions'>"
+   out "<button type='submit' class='btn primary big' id='decodeBtn'><span class='spinner' aria-hidden='true' hidden></span><span class='btn-label'>Decode QR code</span></button>"
+   out "<button type='button' class='btn ghost' id='resetBtn' hidden>Scan another</button>"
+   out "</div>"
+
+   out "</form>"
+end renderForm
+
+command renderFoot
+   out "<footer class='foot'>"
+   out "<p>Powered by <strong>xtQRdecoder</strong> &middot; a faithful ZXing port in pure xTalk.</p>"
+   out "<p><a href='qr_golden.lc'>Acceptance suite</a> &middot; <a href='qr_tester.lc'>Unit tests</a> &middot; <a href='https://github.com/SethMorrowSoftware/xtQRdecoder' rel='noopener noreferrer' target='_blank'>GitHub</a></p>"
+   out "</footer>"
+   out "</div>"
+   out "<div id='toast' class='toast' role='status' aria-live='polite' hidden></div>"
+   out "<script src='qr_demo.js?v=" & kAssetVer & "' defer></script>"
+   out "</body></html>"
+end renderFoot
+
+-- linkify http(s) URLs; everything else is escaped plain text (no-JS path)
+function asLinkOrText pText
+   local tLow
+   put tolower(pText) into tLow
+   if (tLow begins with "http://") or (tLow begins with "https://") then
+      return "<a href='" & attrEsc(pText) & "' rel='noopener noreferrer' target='_blank'>" & htmlEsc(pText) & "</a>"
+   end if
+   return htmlEsc(pText)
+end asLinkOrText
+
+-- server-rendered decode outcome (no-JS path). pResult is the result array.
+command renderOutcome pName, pSize, pType, pBytes, pWantBinary, pResult, pErr, pProcW, pProcH, pMs
+   local tText, tBytes, tDataUri, tSafeType
+   if pErr is not empty then
+      out "<div class='banner bad'><span class='banner-ico'>&#10007;</span> No QR code found</div>"
+      out "<div class='result'><code>" & htmlEsc(pErr) & "</code></div>"
+      out "<div class='tips'><b>Tips</b><ul>"
+      out "<li>Make sure the whole QR code is in frame, with a little white margin around it.</li>"
+      out "<li>Avoid glare and heavy blur; hold the camera square to the code.</li>"
+      out "<li>If a JPEG will not decode, try a PNG (some server builds lack a JPEG codec).</li>"
+      out "<li>Very dense codes: get closer so the squares stay crisp.</li>"
+      out "</ul></div>"
+   else
+      put pResult["text"] into tText
+      put pResult["bytes"] into tBytes
+      out "<div class='banner ok'><span class='banner-ico'>&#10003;</span> Decoded successfully</div>"
+      if pWantBinary then
+         out "<div class='result mono'><b class='result-tag'>RAW BYTES (hex)</b><br><code>" & toHex(tBytes) & "</code></div>"
+      else
+         out "<div class='result'>" & asLinkOrText(tText) & "</div>"
+      end if
+      out "<div class='kv'>"
+      out "<b>QR version</b><span>" & htmlEsc(pResult["version"]) & "</span>"
+      out "<b>Error correction</b><span>" & htmlEsc(pResult["ecLevel"]) & "</span>"
+      out "<b>Data mask</b><span>" & htmlEsc(pResult["mask"]) & "</span>"
+      out "<b>Characters</b><span>" & (the number of chars of tText) & "</span>"
+      out "<b>Raw bytes</b><span>" & (the number of bytes of tBytes) & "</span>"
+      out "</div>"
+   end if
+   out "<div class='card sub'><div class='kv'>"
+   out "<b>File</b><span>" & htmlEsc(pName) & "</span>"
+   out "<b>Type</b><span>" & htmlEsc(pType) & "</span>"
+   out "<b>Size</b><span>" & pSize & " bytes</span>"
+   out "<b>Processed at</b><span>" & pProcW & " &times; " & pProcH & " px</span>"
+   if pResult["strategy"] is not empty then
+      out "<b>Binarizer</b><span>" & htmlEsc(pResult["strategy"]) & "</span>"
+   end if
+   if pMs is not empty then
+      out "<b>Decode time</b><span>" & pMs & " ms</span>"
+   end if
+   out "</div>"
+   -- preview MIME from the bytes' own magic numbers (a fixed, quote-safe string),
+   -- never the attacker-controllable upload Content-Type, so the data: URI can't
+   -- break out of the src attribute.
+   put demoSniffType(pBytes) into tSafeType
+   if (tSafeType begins with "image/") and (the number of bytes of pBytes < 1200000) then
+      put "data:" & tSafeType & ";base64," & base64Encode(pBytes) into tDataUri
+      out "<img class='preview' src='" & tDataUri & "' alt='Uploaded image preview'>"
+   end if
+   out "</div>"
+end renderOutcome
+
+-- sniff an image MIME type from the leading magic bytes (for the preview;
+-- the decoder itself sniffs the format independently from the raw bytes).
+function demoSniffType pBytes
+   local b1, b2, b3
+   put byteToNum(byte 1 of pBytes) into b1
+   put byteToNum(byte 2 of pBytes) into b2
+   put byteToNum(byte 3 of pBytes) into b3
+   if (b1 = 137) and (b2 = 80) and (b3 = 78) then return "image/png"
+   if (b1 = 255) and (b2 = 216) then return "image/jpeg"
+   if (byte 1 to 4 of pBytes) = "GIF8" then return "image/gif"
+   if (byte 1 to 2 of pBytes) = "BM" then return "image/bmp"
+   if ((byte 1 to 4 of pBytes) = "RIFF") and ((byte 9 to 12 of pBytes) = "WEBP") then
+      return "image/webp"
+   end if
+   return "application/octet-stream"
+end demoSniffType
+
+-- basic SSRF guard: only public http(s) hosts (block loopback/private ranges).
+-- Not bulletproof (no DNS-rebind / IPv6 vetting), but responsible for a demo.
+function demoUrlAllowed pUrl
+   local tHost, tLow, tOct2
+   put tolower(pUrl) into tLow
+   if not ((tLow begins with "http://") or (tLow begins with "https://")) then
+      return false
+   end if
+   set the itemDelimiter to "/"
+   put item 3 of pUrl into tHost            -- scheme:(1) ""(2) host[:port](3)
+   set the itemDelimiter to "@"
+   put the last item of tHost into tHost     -- strip any userinfo@
+   set the itemDelimiter to ":"
+   put item 1 of tHost into tHost            -- strip :port
+   put tolower(tHost) into tHost
+   if tHost is empty then return false
+   if tHost begins with "[" then return false           -- IPv6 literal: skip
+   if tHost is "localhost" then return false
+   if tHost ends with ".localhost" then return false
+   if tHost begins with "127." then return false
+   if tHost begins with "10." then return false
+   if tHost begins with "192.168." then return false
+   if tHost begins with "169.254." then return false
+   if tHost begins with "0." then return false
+   if tHost is "0.0.0.0" then return false
+   set the itemDelimiter to "."
+   if (the number of items of tHost = 4) and (item 1 of tHost = 172) then
+      put item 2 of tHost into tOct2
+      if (tOct2 >= 16) and (tOct2 <= 31) then return false
+   end if
+   return true
+end demoUrlAllowed
+
+-- gather the image bytes from whichever input the user used: an uploaded file
+-- (regular picker or camera), or a pasted http(s) / data: URL. Outputs the bytes
+-- and source metadata, or an error. All three empty => nothing submitted (form).
+command demoGetInput @rBytes, @rName, @rType, @rSize, @rErr
+   local tFile, tTmp, tUrl, tMeta, tPayload, tCpos, tType2, e
+   put empty into rBytes
+   put empty into rErr
+   put empty into rName
+   put empty into rType
+   put 0 into rSize
+
+   -- 1) uploaded file: regular picker, then camera capture field
+   put $_FILES["qrimage"] into tFile
+   put tFile["filename"] into tTmp
+   if (tTmp is empty) or (there is not a file tTmp) then
+      put $_FILES["qrcamera"] into tFile
+      put tFile["filename"] into tTmp
+   end if
+   if (tTmp is not empty) and (there is a file tTmp) then
+      put url ("binfile:" & tTmp) into rBytes
+      put tFile["name"] into rName
+      put tFile["type"] into rType
+      put tFile["size"] into rSize
+      exit demoGetInput
+   end if
+
+   -- 2) pasted URL or data: URI
+   put (word 1 to -1 of $_POST["imageurl"]) into tUrl
+   if tUrl is empty then
+      exit demoGetInput                       -- nothing submitted -> show form
+   end if
+   if tUrl begins with "data:" then
+      put offset(comma, tUrl) into tCpos
+      if tCpos = 0 then
+         put "Malformed data: URI" into rErr
+         exit demoGetInput
+      end if
+      put char 1 to (tCpos - 1) of tUrl into tMeta
+      put char (tCpos + 1) to -1 of tUrl into tPayload
+      if "base64" is not in tMeta then
+         put "Only base64 data: URIs are supported" into rErr
+         exit demoGetInput
+      end if
+      put base64Decode(tPayload) into rBytes
+      put tMeta into tType2
+      replace "data:" with empty in tType2
+      set the itemDelimiter to ";"
+      put item 1 of tType2 into rType         -- e.g. image/png
+      if rType is empty then put "image/data" into rType
+      put "(pasted data URI)" into rName
+      put the number of bytes of rBytes into rSize
+      exit demoGetInput
+   end if
+   if not demoUrlAllowed(tUrl) then
+      put "URL not allowed -- use a public http:// or https:// image URL" into rErr
+      exit demoGetInput
+   end if
+   try
+      put url tUrl into rBytes
+   catch e
+      put "Could not fetch the URL: " & e into rErr
+      exit demoGetInput
+   end try
+   if rBytes is empty then
+      put "Fetched 0 bytes -- the URL may not be a direct image link" into rErr
+      exit demoGetInput
+   end if
+   put tUrl into rName
+   put demoSniffType(rBytes) into rType      -- real MIME from magic bytes (preview)
+   put the number of bytes of rBytes into rSize
+end demoGetInput
+
+-- ---- api response (JSON for qr_demo.js / fetch) ---------------------------
+command runDemoApi
+   local tBytes, tName, tType, tSize, tInErr, tWantBinary, tTryHarder
+   local tResult, tErr, tProcW, tProcH, tMs, tHex, tText, tOk, j
+
+   demoGetInput tBytes, tName, tType, tSize, tInErr
+   put ($_POST["tryharder"] is not empty) into tTryHarder
+   put ($_POST["binary"] is not empty) into tWantBinary
+
+   if (tBytes is empty) and (tInErr is empty) then
+      put "No image was submitted." into tInErr
+   end if
+   if tInErr is not empty then
+      out "{" & demoQuote("ok") & ":false," & demoQuote("error") & ":" & demoQuote(demoB64(tInErr)) & "}"
+      exit runDemoApi
+   end if
+
+   demoDecodeBytes tBytes, tTryHarder, tResult, tErr, tProcW, tProcH, tMs
+
+   put empty into tHex
+   if tWantBinary then
+      put toHex(tResult["bytes"]) into tHex
+   end if
+   put tResult["text"] into tText
+   if tErr is empty then
+      put "true" into tOk
+   else
+      put "false" into tOk
+   end if
+
+   put "{" into j
+   put demoQuote("ok") & ":" & tOk & "," after j
+   put demoQuote("error") & ":" & demoQuote(demoB64(tErr)) & "," after j
+   put demoQuote("text") & ":" & demoQuote(demoB64(tText)) & "," after j
+   put demoQuote("hex") & ":" & demoQuote(tHex) & "," after j
+   put demoQuote("binaryMode") & ":" & tWantBinary & "," after j
+   put demoQuote("version") & ":" & demoQuote(demoB64(tResult["version"])) & "," after j
+   put demoQuote("ecLevel") & ":" & demoQuote(demoB64(tResult["ecLevel"])) & "," after j
+   put demoQuote("mask") & ":" & demoQuote(demoB64(tResult["mask"])) & "," after j
+   put demoQuote("chars") & ":" & (the number of chars of tText) & "," after j
+   put demoQuote("byteCount") & ":" & (the number of bytes of tResult["bytes"]) & "," after j
+   put demoQuote("strategy") & ":" & demoQuote(demoB64(tResult["strategy"])) & "," after j
+   put demoQuote("mirrored") & ":" & (tResult["mirrored"] is true) & "," after j
+   put demoQuote("procW") & ":" & tProcW & "," after j
+   put demoQuote("procH") & ":" & tProcH & "," after j
+   put demoQuote("ms") & ":" & tMs & "," after j
+   put demoQuote("name") & ":" & demoQuote(demoB64(tName)) & "," after j
+   put demoQuote("type") & ":" & demoQuote(demoB64(tType)) & "," after j
+   put demoQuote("size") & ":" & tSize after j
+   put "}" after j
+   out j
+end runDemoApi
+
+-- ---- html response (no-JS form + server-rendered result) ------------------
+command runDemo
+   local tBytes, tName, tType, tSize, tInErr, tWantBinary, tTryHarder
+   local tResult, tErr, tProcW, tProcH, tMs, tUrlVal
+   renderHead
+   out "<main class='app'>"
+
+   put (word 1 to -1 of $_POST["imageurl"]) into tUrlVal      -- to re-fill form
+   demoGetInput tBytes, tName, tType, tSize, tInErr
+   put ($_POST["tryharder"] is not empty) into tTryHarder
+   put ($_POST["binary"] is not empty) into tWantBinary
+
+   out "<div id='result' class='result-zone' aria-live='polite'>"
+   if (tBytes is not empty) or (tInErr is not empty) then
+      if tInErr is not empty then
+         out "<div class='banner bad'><span class='banner-ico'>&#10007;</span> " & htmlEsc(tInErr) & "</div>"
+      else
+         demoDecodeBytes tBytes, tTryHarder, tResult, tErr, tProcW, tProcH, tMs
+         renderOutcome tName, tSize, tType, tBytes, tWantBinary, tResult, tErr, tProcW, tProcH, tMs
+      end if
+   end if
+   out "</div>"
+
+   renderForm tTryHarder, tWantBinary, tUrlVal
+   out "<section id='history' class='history' hidden></section>"
+   out "</main>"
+   renderFoot
+end runDemo
+
+command renderMissing
+   renderHead
+   out "<main class='app'>"
+   out "<div class='banner bad'><span class='banner-ico'>&#10007;</span> Library files not found.</div>"
+   out "<div class='card'><p>Upload the whole <code>qr/</code> folder so this page sits beside the decoder modules. Missing:</p>"
+   out "<pre><code>" & htmlEsc(tMissing) & "</code></pre></div>"
+   out "</main>"
+   out "</div></body></html>"
+end renderMissing
+
+
+-- =========================  main  =========================================
+put ($_POST["api"] is "1") into tApi
+put qrFindBase() into tBase
+put "qrCompat.lc,genericGF.lc,genericGFPoly.lc,reedSolomonDecoder.lc,bitArray.lc,bitMatrix.lc,bitSource.lc,luminanceSource.lc,globalHistogramBinarizer.lc,hybridBinarizer.lc,binaryBitmap.lc,errorCorrectionLevel.lc,mode.lc,dataMask.lc,formatInformation.lc,version.lc,characterSetECI.lc,dataBlock.lc,decodedBitStreamParser.lc,bitMatrixParser.lc,decoder.lc,mathUtils.lc,resultPoint.lc,perspectiveTransform.lc,gridSampler.lc,finderPatternFinder.lc,alignmentPatternFinder.lc,detector.lc,qrCodeReader.lc,qrReader.lc" into tFiles
+set the itemDelimiter to comma
+put empty into tMissing
+if tBase is empty then
+   put "(could not locate the script directory)" into tMissing
+else
+   repeat for each item tF in tFiles
+      if there is not a file (tBase & "/" & tF) then
+         put tF & cr after tMissing
+      end if
+   end repeat
+end if
+
+put false into tReady
+if tMissing is empty then
+   include (tBase & "/qrCompat.lc")
+   include (tBase & "/genericGF.lc")
+   include (tBase & "/genericGFPoly.lc")
+   include (tBase & "/reedSolomonDecoder.lc")
+   include (tBase & "/bitArray.lc")
+   include (tBase & "/bitMatrix.lc")
+   include (tBase & "/bitSource.lc")
+   include (tBase & "/luminanceSource.lc")
+   include (tBase & "/globalHistogramBinarizer.lc")
+   include (tBase & "/hybridBinarizer.lc")
+   include (tBase & "/binaryBitmap.lc")
+   include (tBase & "/errorCorrectionLevel.lc")
+   include (tBase & "/mode.lc")
+   include (tBase & "/dataMask.lc")
+   include (tBase & "/formatInformation.lc")
+   include (tBase & "/version.lc")
+   include (tBase & "/characterSetECI.lc")
+   include (tBase & "/dataBlock.lc")
+   include (tBase & "/decodedBitStreamParser.lc")
+   include (tBase & "/bitMatrixParser.lc")
+   include (tBase & "/decoder.lc")
+   include (tBase & "/mathUtils.lc")
+   include (tBase & "/resultPoint.lc")
+   include (tBase & "/perspectiveTransform.lc")
+   include (tBase & "/gridSampler.lc")
+   include (tBase & "/finderPatternFinder.lc")
+   include (tBase & "/alignmentPatternFinder.lc")
+   include (tBase & "/detector.lc")
+   include (tBase & "/qrCodeReader.lc")
+   include (tBase & "/qrReader.lc")
+   put true into tReady
+end if
+
+put empty into sHTML
+if tReady then
+   if tApi then
+      runDemoApi
+   else
+      runDemo
+   end if
+else
+   if tApi then
+      out "{" & demoQuote("ok") & ":false," & demoQuote("error") & ":" & demoQuote(demoB64("The decoder library files were not found on the server.")) & "}"
+   else
+      renderMissing
+   end if
+end if
+
+set the outputTextEncoding to "UTF-8"
+put header "X-Content-Type-Options: nosniff"
+put header "Referrer-Policy: no-referrer"
+if tApi then
+   put header "Content-Type: application/json; charset=utf-8"
+   put header "Cache-Control: no-store"
+else
+   put header "Content-Type: text/html; charset=utf-8"
+end if
+put sHTML
+?>

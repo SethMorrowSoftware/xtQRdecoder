@@ -1,0 +1,64 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- errorCorrectionLevel.lc — QR error-correction levels. Spec §8.5.
+-- Port of ZXing Qrcode\Decoder\ErrorCorrectionLevel. Requires: nothing.
+--
+-- THE ORDINAL/BIT SUBTLETY (spec §13 checklist item):
+-- ZXing orders the enum L, M, Q, H (ordinals 0,1,2,3) but the 2-bit field
+-- stored in the format information is:  M=00, L=01, H=10, Q=11.
+-- The ECBlocks array in Version is indexed by getOrdinal() (the L,M,Q,H order),
+-- NOT by the bit value. Reproduce both mappings exactly; do not "fix" them.
+--
+-- Representation: an EC level is just its ORDINAL integer 0..3 (L,M,Q,H).
+-- Helpers convert to/from the 2-bit format-info value and the name.
+-- =====================================================================
+
+-- ordinal (0..3) -> name  (ZXing order L,M,Q,H)
+function ecl_name pOrdinal
+   switch pOrdinal
+      case 0
+         return "L"
+      case 1
+         return "M"
+      case 2
+         return "Q"
+      case 3
+         return "H"
+   end switch
+   throw "Format: bad EC ordinal " & pOrdinal
+end ecl_name
+
+-- the 2-bit value stored in format info, by ordinal.  L=01,M=00,Q=11,H=10
+function ecl_bits pOrdinal
+   switch pOrdinal
+      case 0
+         return 1     -- L = 01
+      case 1
+         return 0     -- M = 00
+      case 2
+         return 3     -- Q = 11
+      case 3
+         return 2     -- H = 10
+   end switch
+   throw "Format: bad EC ordinal " & pOrdinal
+end ecl_bits
+
+-- decode the 2-bit format-info field -> ordinal (0..3).  00->M(1),01->L(0),10->H(3),11->Q(2)
+function ecl_forBits pBits
+   switch pBits
+      case 0
+         return 1     -- 00 -> M
+      case 1
+         return 0     -- 01 -> L
+      case 2
+         return 3     -- 10 -> H
+      case 3
+         return 2     -- 11 -> Q
+   end switch
+   throw "Format: EC bits out of range " & pBits
+end ecl_forBits
+?>

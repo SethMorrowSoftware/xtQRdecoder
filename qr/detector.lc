@@ -1,0 +1,231 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- detector.lc — top-level detect: finders -> module size -> transform -> sample.
+-- Port of ZXing Qrcode\Detector\Detector. Spec §8.4.
+-- Requires: qrCompat.lc, bitMatrix.lc, mathUtils.lc, resultPoint.lc,
+--           perspectiveTransform.lc, gridSampler.lc, finderPatternFinder.lc,
+--           alignmentPatternFinder.lc, version.lc.
+--
+-- dt_detect(image, hints) -> {["bits"] sampled square BitMatrix,
+--                             ["points"] result points, ["dimension"]}.
+-- The image is passed by value everywhere (copy-on-write, read-only).
+-- NaN -> empty (sizeOfBlackWhiteBlackRun). Throws NotFound on failure.
+-- =====================================================================
+
+-- trace a black-white-black run from (fromX,fromY) toward (toX,toY); returns
+-- the distance to the run end, or empty (NaN) if no B-W-B found. Mild Bresenham.
+function dt_sizeOfBlackWhiteBlackRun pImg, pFromX, pFromY, pToX, pToY
+   local tSteep, tTemp, tDx, tDy, tErr, tXstep, tYstep, tState, tXLimit
+   local x, y, tRealX, tRealY, tFromX, tFromY, tToX, tToY, tPtA, tPtB
+   put pFromX into tFromX
+   put pFromY into tFromY
+   put pToX into tToX
+   put pToY into tToY
+   put (abs(tToY - tFromY) > abs(tToX - tFromX)) into tSteep
+   if tSteep then
+      put tFromX into tTemp
+      put tFromY into tFromX
+      put tTemp into tFromY
+      put tToX into tTemp
+      put tToY into tToX
+      put tTemp into tToY
+   end if
+   put abs(tToX - tFromX) into tDx
+   put abs(tToY - tFromY) into tDy
+   put (0 - (tDx / 2)) into tErr
+   if tFromX < tToX then
+      put 1 into tXstep
+   else
+      put -1 into tXstep
+   end if
+   if tFromY < tToY then
+      put 1 into tYstep
+   else
+      put -1 into tYstep
+   end if
+   put 0 into tState
+   put (tToX + tXstep) into tXLimit
+   put tFromX into x
+   put tFromY into y
+   repeat while x <> tXLimit
+      if tSteep then
+         put y into tRealX
+         put x into tRealY
+      else
+         put x into tRealX
+         put y into tRealY
+      end if
+      put (tState = 1) into tPtA
+      put bitMatrix_get(pImg, tRealX, tRealY) into tPtB
+      if tPtA = tPtB then
+         if tState = 2 then
+            return mu_distance(x, y, tFromX, tFromY)
+         end if
+         add 1 to tState
+      end if
+      add tDy to tErr
+      if tErr > 0 then
+         if y = tToY then exit repeat
+         add tYstep to y
+         subtract tDx from tErr
+      end if
+      add tXstep to x
+   end repeat
+   if tState = 2 then
+      return mu_distance((tToX + tXstep), tToY, tFromX, tFromY)
+   end if
+   return empty
+end dt_sizeOfBlackWhiteBlackRun
+
+-- B-W-B run measured both ways from a finder centre, minus the double-counted
+-- centre pixel. NaN propagates (matches PHP: result += run2; return result-1).
+function dt_sizeOfBWBRunBothWays pImg, pFromX, pFromY, pToX, pToY
+   local tResult, tScale, tOtherToX, tOtherToY, tImgW, tImgH, tResult2
+   put bitMatrix_getWidth(pImg) into tImgW
+   put bitMatrix_getHeight(pImg) into tImgH
+   put dt_sizeOfBlackWhiteBlackRun(pImg, pFromX, pFromY, pToX, pToY) into tResult
+   put 1 into tScale
+   put (pFromX - (pToX - pFromX)) into tOtherToX
+   if tOtherToX < 0 then
+      put (pFromX / (pFromX - tOtherToX)) into tScale
+      put 0 into tOtherToX
+   else if tOtherToX >= tImgW then
+      put (((tImgW - 1) - pFromX) / (tOtherToX - pFromX)) into tScale
+      put (tImgW - 1) into tOtherToX
+   end if
+   put trunc(pFromY - ((pToY - pFromY) * tScale)) into tOtherToY
+   put 1 into tScale
+   if tOtherToY < 0 then
+      put (pFromY / (pFromY - tOtherToY)) into tScale
+      put 0 into tOtherToY
+   else if tOtherToY >= tImgH then
+      put (((tImgH - 1) - pFromY) / (tOtherToY - pFromY)) into tScale
+      put (tImgH - 1) into tOtherToY
+   end if
+   put trunc(pFromX + ((tOtherToX - pFromX) * tScale)) into tOtherToX
+   put dt_sizeOfBlackWhiteBlackRun(pImg, pFromX, pFromY, tOtherToX, tOtherToY) into tResult2
+   if (tResult is empty) or (tResult2 is empty) then return empty
+   return ((tResult + tResult2) - 1)
+end dt_sizeOfBWBRunBothWays
+
+function dt_calculateModuleSizeOneWay pImg, pPattern, pOther
+   local tEst1, tEst2
+   put dt_sizeOfBWBRunBothWays(pImg, trunc(pPattern["x"]), trunc(pPattern["y"]), trunc(pOther["x"]), trunc(pOther["y"])) into tEst1
+   put dt_sizeOfBWBRunBothWays(pImg, trunc(pOther["x"]), trunc(pOther["y"]), trunc(pPattern["x"]), trunc(pPattern["y"])) into tEst2
+   if tEst1 is empty then return (tEst2 / 7)
+   if tEst2 is empty then return (tEst1 / 7)
+   return ((tEst1 + tEst2) / 14)
+end dt_calculateModuleSizeOneWay
+
+function dt_calculateModuleSize pImg, pTL, pTR, pBL
+   return ((dt_calculateModuleSizeOneWay(pImg, pTL, pTR) + dt_calculateModuleSizeOneWay(pImg, pTL, pBL)) / 2)
+end dt_calculateModuleSize
+
+-- dimension (modules per side) from finder distances + module size; snap %4==1
+function dt_computeDimension pTL, pTR, pBL, pModuleSize
+   local tTltr, tTlbl, tDim, tMod
+   put mu_round(rp_distance(pTL, pTR) / pModuleSize) into tTltr
+   put mu_round(rp_distance(pTL, pBL) / pModuleSize) into tTlbl
+   put round((((tTltr + tTlbl) / 2) + 7)) into tDim
+   put (tDim bitAnd 3) into tMod
+   if tMod = 0 then
+      add 1 to tDim
+   else if tMod = 2 then
+      subtract 1 from tDim
+   else if tMod = 3 then
+      throw "NotFound: dimension " & tDim & " mod 4 == 3 unusable"
+   end if
+   return tDim
+end dt_computeDimension
+
+-- locate the alignment pattern in a guessed region (delegates to apf_find)
+function dt_findAlignmentInRegion pImg, pOverallEstModuleSize, pEstAlignX, pEstAlignY, pAllowanceFactor
+   local tAllowance, tLeftX, tRightX, tTopY, tBottomY, tImgW, tImgH
+   put trunc(pAllowanceFactor * pOverallEstModuleSize) into tAllowance
+   put bitMatrix_getWidth(pImg) into tImgW
+   put bitMatrix_getHeight(pImg) into tImgH
+   put max(0, (pEstAlignX - tAllowance)) into tLeftX
+   put min((tImgW - 1), (pEstAlignX + tAllowance)) into tRightX
+   if (tRightX - tLeftX) < (pOverallEstModuleSize * 3) then
+      throw "NotFound: alignment area too small (x)"
+   end if
+   put max(0, (pEstAlignY - tAllowance)) into tTopY
+   put min((tImgH - 1), (pEstAlignY + tAllowance)) into tBottomY
+   if (tBottomY - tTopY) < (pOverallEstModuleSize * 3) then
+      throw "NotFound: alignment area too small (y)"
+   end if
+   return apf_find(pImg, tLeftX, tTopY, (tRightX - tLeftX), (tBottomY - tTopY), pOverallEstModuleSize)
+end dt_findAlignmentInRegion
+
+-- build the sampling transform from the 3 (or 4) reference points
+function dt_createTransform pTL, pTR, pBL, pAlign, pDimension
+   local tDimMinus3, tBRX, tBRY, tSrcBRX, tSrcBRY
+   put (pDimension - 3.5) into tDimMinus3
+   if pAlign is not empty then
+      put pAlign["x"] into tBRX
+      put pAlign["y"] into tBRY
+      put (tDimMinus3 - 3) into tSrcBRX
+      put tSrcBRX into tSrcBRY
+   else
+      put ((pTR["x"] - pTL["x"]) + pBL["x"]) into tBRX
+      put ((pTR["y"] - pTL["y"]) + pBL["y"]) into tBRY
+      put tDimMinus3 into tSrcBRX
+      put tDimMinus3 into tSrcBRY
+   end if
+   return pt_quadrilateralToQuadrilateral(3.5, 3.5, tDimMinus3, 3.5, tSrcBRX, tSrcBRY, 3.5, tDimMinus3, \
+      pTL["x"], pTL["y"], pTR["x"], pTR["y"], tBRX, tBRY, pBL["x"], pBL["y"])
+end dt_createTransform
+
+-- top-level detect; returns {["bits"],["points"],["dimension"]} or throws
+function dt_detect pImg, pHints
+   local tInfo, tTL, tTR, tBL, tModuleSize, tDimension, tProvVer, tModulesBetween
+   local tAlignCenters, tAlign, tBRX, tBRY, tCorr, tEstAX, tEstAY, ii, e
+   local tTransform, tBits, tPoints, tResult
+   put fpf_find(pImg, pHints) into tInfo
+   put tInfo["tl"] into tTL
+   put tInfo["tr"] into tTR
+   put tInfo["bl"] into tBL
+   put dt_calculateModuleSize(pImg, tTL, tTR, tBL) into tModuleSize
+   if tModuleSize < 1 then
+      throw "NotFound: module size " & tModuleSize & " < 1.0"
+   end if
+   put dt_computeDimension(tTL, tTR, tBL, tModuleSize) into tDimension
+   put ver_getProvisionalVersionForDimension(tDimension) into tProvVer
+   put (ver_getDimensionForVersion(tProvVer) - 7) into tModulesBetween
+   put empty into tAlign
+   put ver_getAlignmentCenters(tProvVer) into tAlignCenters
+   if tAlignCenters is not empty then
+      put ((tTR["x"] - tTL["x"]) + tBL["x"]) into tBRX
+      put ((tTR["y"] - tTL["y"]) + tBL["y"]) into tBRY
+      put (1 - (3 / tModulesBetween)) into tCorr
+      put mu_round(tTL["x"] + (tCorr * (tBRX - tTL["x"]))) into tEstAX
+      put mu_round(tTL["y"] + (tCorr * (tBRY - tTL["y"]))) into tEstAY
+      put 4 into ii
+      repeat while ii <= 16
+         try
+            put dt_findAlignmentInRegion(pImg, tModuleSize, tEstAX, tEstAY, ii) into tAlign
+            exit repeat
+         catch e
+            put empty into tAlign
+         end try
+         put (ii * 2) into ii
+      end repeat
+   end if
+   put dt_createTransform(tTL, tTR, tBL, tAlign, tDimension) into tTransform
+   put gs_sampleGrid(pImg, tDimension, tDimension, tTransform) into tBits
+   put tBL into tPoints[0]
+   put tTL into tPoints[1]
+   put tTR into tPoints[2]
+   if tAlign is not empty then
+      put tAlign into tPoints[3]
+   end if
+   put tBits into tResult["bits"]
+   put tPoints into tResult["points"]
+   put tDimension into tResult["dimension"]
+   return tResult
+end dt_detect
+?>

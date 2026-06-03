@@ -1,0 +1,294 @@
+# xtQRdecoder — architecture and contributor guide
+
+This document explains how xtQRdecoder is built and the conventions to follow
+when contributing. For usage, see [`README.md`](../README.md); for the
+authoritative algorithm and data-table specification, see [`spec.md`](spec.md).
+The [`khanamiryan/php-qrcode-detector-decoder`](https://github.com/khanamiryan/php-qrcode-detector-decoder)
+PHP source (itself a port of ZXing) is the line-level authority for behaviour.
+
+---
+
+## 1. What xtQRdecoder is
+
+A pure **xTalk** port of the ZXing QR **decoder**, targeting **OpenXTalk** and
+compatible xTalk engines (9.6.3+ generation and later) on desktop, mobile, and
+headless servers. It reads existing QR codes from raster images; it does not
+generate them. The public entry point is `qrDecodeFromData(imageBytes)` →
+decoded text, running entirely in xTalk with no companion app, external, or GUI.
+
+---
+
+## 2. The pipeline
+
+The decode is a linear pipeline; each stage is a module group (see `spec.md` §3
+for the authoritative description):
+
+```
+image bytes (PNG/JPEG/GIF/BMP)
+   → luminance acquisition      luminanceSource.lc        (imageData → greyscale plane)
+   → binarization               hybridBinarizer.lc /      (greyscale → BitMatrix)
+                                globalHistogramBinarizer.lc
+   → detection                  detector.lc + finder/alignment/perspective/grid
+   → bit-matrix parsing         bitMatrixParser.lc        (format/version/codewords)
+   → error correction           dataBlock.lc + reedSolomonDecoder.lc (GF(256))
+   → bitstream decode           decodedBitStreamParser.lc (modes + charset → text)
+```
+
+`qrReader.lc` wires the front of the pipeline (image → binary bitmap);
+`qrCodeReader.lc` (`qcr_decode`) runs detection through bitstream decode. The
+integer layer (`qrCompat.lc`) underpins everything.
+
+---
+
+## 3. Architecture conventions
+
+- **OOP-as-arrays ("Pattern A").** There are no classes; each "object" is an
+  xTalk array and methods are handlers named `<class>_<method>` whose first
+  argument is the instance. Mutators are **commands** taking the instance by
+  reference (`@`); accessors are **functions**. Example: `bitMatrix_new()`
+  returns an array; `bitMatrix_set tBM, x, y` mutates it; `bitMatrix_get(tBM, x,
+  y)` reads it.
+- **0-based indexing throughout**, matching the PHP/Java source. xTalk arrays
+  accept key `0` directly. String byte access is 1-based, wrapped by
+  `byteAt(s, i)`.
+- **All bit-packed words are unsigned 32-bit** `[0, 2³²)`. Every bit operation
+  routes through `qrCompat` (`u32`, `shl`, `uShr`, `aShr`, …). Never compare a
+  packed word to a negative literal; `-1` is `4294967295`.
+- **Static tables initialise lazily** via a `<mod>_ensure` guard that runs
+  `<mod>_init` once (mirrors the PHP `::Init()` pattern). See `genericGF`,
+  `version`, `formatInformation`.
+- **Exceptions are tagged strings:** `throw "Format: …"`, `"NotFound: …"`,
+  `"Checksum: …"` / `"RS: …"`. The public API catches these and returns empty +
+  an `["error"]` field; they never escape (spec §6.6, §9).
+- **Cross-module dependencies** are listed in each file's header comment and
+  respected in the `include` order in the entry pages (dependencies first). A few
+  small helpers are duplicated locally to avoid a cross-module dependency — an
+  acceptable trade-off for load-order simplicity.
+
+---
+
+## 4. xTalk engine rules the parser enforces
+
+These are not stylistic — the engine **rejects** the alternatives, often with a
+parse error that takes down the whole file (and anything that `include`s it). The
+linter (`tools/lint_lcs.py`) checks most of them.
+
+### Reserved words are the biggest hazard
+
+xTalk reserves a large vocabulary of property, function, keyword, and
+abbreviation names. Some are not in the published grammar yet are still rejected
+by the engine (e.g. `centers`, and object-type shorthands like
+`ac`/`bg`/`cd`/`btn`/`fld`/`img`/`snd`), so no static list is provably complete.
+
+**Convention: prefix every local with `t` and every parameter with `p`** (`tDim`,
+`pVersion`). A `t`/`p`-prefixed camelCase identifier cannot collide with a
+reserved word. Single letters (`i`, `j`, `n`, `x`, `y`, `c`, `r`, `b`, `e`, `p`)
+are safe for loop counters.
+
+### Other engine-confirmed rules
+
+1. **No `0x..` hex literals.** Write decimal; put the hex in a comment.
+   `constant` takes only literals, not expressions (no `2^32`).
+2. **Bitwise operators have LOW precedence.** `i bitAnd 1 = 0` parses as
+   `i bitAnd (1 = 0)`. **Parenthesize every bitwise sub-expression:**
+   `(i bitAnd 1) = 0`.
+3. **No bare `return`.** A valueless `return` errors with "missing factor". Use
+   `return <expr>` to yield a value, or `exit <handlerName>` to leave early.
+4. **Variable names are case-insensitive.** Declaring param `R` and local `r` in
+   the same handler is a redeclaration error.
+5. **`end` keywords must match their opener type.** An `if/else` block closed with
+   `end try` is a structural error the engine catches late.
+6. **`set the itemDelimiter` inside `repeat for each item` is unreliable** — the
+   loop caches the delimiter at entry. Index with `repeat with i` and re-set the
+   delimiter each iteration. Same for `lineDelimiter` + `repeat for each line`.
+7. **`shl` must be precision-safe.** `u32(a * 2ⁿ)` overflows 2⁵³ and silently
+   drops low bits when shifting a full 32-bit word; `qrCompat.shl` discards
+   out-shifted high bits *before* multiplying. Don't "simplify" it.
+8. **`<?lc … ?>` wraps every server file**, and loose top-level statements must
+   come **after** all handler definitions (the "main" block at the bottom).
+9. **`include` may need an absolute path.** Some builds leave `the defaultFolder`
+   pointing elsewhere; the entry pages resolve their own directory from several
+   `$_SERVER` candidates. See `qrFindBase()`.
+10. **Under `explicitVariables`**, every `local`, parameter, and loop variable
+    must be declared. We declare them all defensively.
+11. **No `repeat … step N`.** `repeat with` has only `to` / `down to`. To stride,
+    iterate an index and compute the offset (`put (c * 2) into x`).
+12. **Never put `else` after an inline `if … then <statement>`.** The engine binds
+    the trailing `else` to the inline `if`, silently wrecking the block nest, and
+    then mis-blames a distant `end repeat`/`end if`. Expand any inline-if that
+    needs an `else` into a full `if / else / end if`.
+13. **No literal×literal product as a `div`/`mod` right operand.** `div (4 * 57)`
+    is rejected; precompute the literal (`div 228`).
+14. **Prefer constructs the codebase already uses.** A few dictionary-valid
+    operators (`is among the keys of`, `is an array`) are unexercised here; prefer
+    the long-form equivalents that are proven (`is among the lines of the keys
+    of`, `the keys of X is not empty`).
+
+### Reading a parse error
+
+The engine's reported token is often the one **after** the real problem — the
+parser aborts the statement, then names what it tried to execute next. When a
+fix shifts the column but the token name stays the same, believe the token name,
+not the line number, and look earlier in the same handler for a block-structure
+desync (an inline-if+else, or a mismatched `end`).
+
+---
+
+## 5. The linter
+
+`tools/lint_lcs.py` is a heuristic static checker that front-runs the engine for
+the classes of error above. Run it before every commit:
+
+```sh
+python3 tools/lint_lcs.py        # checks every qr/*.lc; non-zero exit gates CI
+```
+
+It checks block-type matching, reserved words, bare `return`, case-insensitive
+collisions, undeclared loop/written variables, the delimiter pitfall, and the
+SPDX header. It is conservative and intentionally incomplete — when the engine
+reveals a new reserved word, add it to the `RESERVED` set. The linter is not a
+substitute for an engine run; it catches the cheap mistakes locally.
+
+---
+
+## 6. Testing philosophy
+
+Every layer is validated in two ways before it is trusted:
+
+1. **Verify the data/logic against an independent oracle first** (ZXing, the
+   Python `qrcode` library, ISO/IEC 18004) before porting a table or algorithm.
+   This catches transcription errors that a single wrong table value would
+   otherwise hide.
+2. **Then verify on a real engine** via a `suite_*.lc` panel in `qr_tester.lc`.
+
+Two rules that matter:
+
+- **Never assert an expected value you haven't independently derived.** A
+  fabricated fixture can pass a *broken* decoder.
+- **Always include a multi-part / edge case**, not just the happy path. (A
+  single-segment test can pass by luck when trailing bits read as a terminator; a
+  multi-segment input — e.g. ECI + a non-ASCII byte segment — exercises the real
+  state handling.)
+
+### What's verified
+
+- **399 unit tests** across 17 `suite_*.lc` panels (run via `qr/qr_tester.lc`),
+  green on a stock xTalk engine (a 9.6.11-class community build).
+- **5 golden photographic fixtures** decode through the public API
+  (`qr/qr_golden.lc`):
+
+  | Fixture | Hints | Expected |
+  |---|---|---|
+  | `hello_world.png` | — | `Hello world!` |
+  | `empty.png` | — | (no decode) |
+  | `test.png` (776×640) | `TRY_HARDER` | gosuslugi URL |
+  | `139225861-…png` | `TRY_HARDER`, `NR_ALLOW_SKIP_ROWS=0` | gosuslugi URL |
+  | `binary-test.png` | `BINARY_MODE` | bytes `0x00..0xFF` |
+
+The detector geometry is also validated end-to-end on synthetic photos before
+any real image: a "HI" v1 matrix upscaled ×4 runs the whole detector back to a
+bit-identical matrix; a v2 "HELLO WORLD" symbol exercises the alignment-pattern
+branch.
+
+### Adding a test panel
+
+1. Write `qr/suite_<name>.lc` defining `command suite_<name>` that calls
+   `t_eq pName, pGot, pExp` (the reporter is provided by the runner).
+2. In `qr/qr_tester.lc`, add the module + suite filenames to the `tFiles` list,
+   add the two `include` lines, and add a `startSuite/suite_<name>/endSuite`
+   block in `renderPage`.
+3. Run the linter, then open `qr/qr_tester.lc` on an engine.
+
+---
+
+## 7. The script-only library build
+
+`lib/xtQRdecoder.livecodescript` is a single-file build of the whole decoder,
+generated from the `qr/*.lc` modules by `tools/build_livecodescript.py`. The
+modules are the single source of truth — never edit the combined file by hand.
+After changing any library module:
+
+```sh
+python3 tools/build_livecodescript.py            # rewrite the combined stack
+python3 tools/build_livecodescript.py --check     # verify it's in sync (CI gate)
+```
+
+The combined build is safe because the xTalk server's `include` already inlines
+the same modules into one shared script scope; the combined stack uses the
+identical namespace (no duplicate handler/constant names, uniquely named
+script-locals).
+
+---
+
+## 8. Scope and limitations
+
+- **Decoder only** — xtQRdecoder reads QR codes; it does not generate them.
+- **Kanji (Shift-JIS) / Hanzi (GB2312)** modes are not decoded.
+  `decodedBitStreamParser` raises a documented "not supported" error for them
+  (xTalk `textDecode` has no Shift-JIS/GB2312 codec). Numeric, Alphanumeric, and
+  Byte (ASCII / ISO-8859-1 / UTF-8) — the overwhelming majority of real QR codes,
+  including all URLs — are fully supported. To add Kanji/Hanzi later (spec §8.7),
+  bundle compact Shift-JIS↔Unicode and GB2312↔Unicode mapping tables in
+  `qr/tables/`, then convert the double-byte values to codepoints. This is a
+  self-contained sub-project; it does not block the detector.
+- **JPEG decode depends on the engine build** having a JPEG import codec. PNG /
+  GIF / BMP decode everywhere; the library reports a precise error if an image
+  doesn't decode.
+
+---
+
+## 9. File inventory
+
+```
+qr/
+  qrCompat.lc                  integer/bitwise compat (u32, shl, uShr, aShr, …)
+  genericGF.lc genericGFPoly.lc reedSolomonDecoder.lc   GF(256) + Reed–Solomon
+  bitArray.lc bitMatrix.lc bitSource.lc                 packed bit structures
+  luminanceSource.lc                                    imageData → greyscale (§7)
+  globalHistogramBinarizer.lc hybridBinarizer.lc binaryBitmap.lc   binarization
+  errorCorrectionLevel.lc mode.lc dataMask.lc formatInformation.lc version.lc   tables
+  characterSetECI.lc dataBlock.lc decodedBitStreamParser.lc   bitstream
+  bitMatrixParser.lc decoder.lc                         matrix parse + orchestration
+  mathUtils.lc resultPoint.lc                           detector helpers (§8.4)
+  perspectiveTransform.lc gridSampler.lc                geometry + grid sampling
+  finderPatternFinder.lc alignmentPatternFinder.lc detector.lc   detection
+  qrCodeReader.lc qrReader.lc                           public API (§9)
+  suite_*.lc                   one test suite per layer
+  fixtures/                    golden test PNGs
+  qr_demo.lc qr_demo.css qr_demo.js    interactive scanner page + assets (server)
+  qr_tester.lc                 browser test console (the unit tests)
+  qr_golden.lc                 golden-fixture acceptance page
+  qr_decodeprobe.lc            self-contained real-image decode (embedded PNG)
+  qr_imageprobe.lc             standalone image / imageData capability probe
+  tables/                      reserved for §8.7 Shift-JIS/GB2312 data
+lib/
+  xtQRdecoder.livecodescript     the whole library as one script-only stack
+  examples/scanButton.livecodescript   a ready-to-paste "Scan QR" button
+  examples/demoStack/          a 2-button demo stack (Decode QR + Verbose Decode)
+tools/
+  lint_lcs.py                  static checker
+  build_livecodescript.py      regenerates lib/ from the qr/ modules
+  add_spdx.py                  SPDX-header inserter
+README.md                      usage + reference (repo root)
+docs/spec.md                   authoritative port specification
+docs/ARCHITECTURE.md           this document
+docs/CONTRIBUTING.md           how to contribute
+```
+
+---
+
+## 10. Contributing checklist
+
+1. Skim `spec.md` for the module you'll touch; the PHP/ZXing source is the
+   line-level authority for behaviour.
+2. `t`-prefix all locals, `p`-prefix all params. Parenthesize bitwise ops. No
+   bare `return`. `<?lc ?>` wrapper, main block last.
+3. Verify any new table/algorithm against an oracle, and write the `suite_*`
+   expected values from that (include a multi-part/edge case).
+4. `python3 tools/lint_lcs.py` until clean.
+5. If you changed a library module, rebuild: `python3
+   tools/build_livecodescript.py` (and `--check` in CI).
+6. Run `qr/qr_tester.lc` and `qr/qr_golden.lc` on a real engine and note which
+   engine/version you verified on in your PR.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow.

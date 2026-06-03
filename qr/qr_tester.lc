@@ -1,0 +1,469 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- qr_tester.lc — user-facing WEB test console for the xTalk QR port.
+--
+-- DEPLOY: upload the whole qr/ folder into your web space (e.g.
+--   public_html/qr/) and open this file in a browser:
+--       https://yoursite/qr/qr_tester.lc
+-- It loads the actual library modules, runs every unit suite, and shows a
+-- per-module pass/fail report, an engine-environment panel, and a small
+-- interactive evaluator for the helper functions.
+--
+-- Target: a headless xTalk engine (a 9.6.3-class community build and earlier). Pure
+-- xTalk; no GUI, no externals.
+--
+-- STRUCTURE: all handlers are defined first; the loose "main" statements are
+-- at the very END of the file. That ordering is safe whether the engine
+-- compiles the whole script before running or registers handlers top-to-bottom.
+-- =====================================================================
+
+-- ---- script-local state (shared by the main code + handlers) --------------
+local tBase, tReady, tFiles, tF, tMissing
+local sHTML, sPanels, sRows
+local sPass, sFail, sCurPass, sCurFail, sCurTitle
+
+
+-- =========================  handlers  =====================================
+
+-- directory portion of a full path (strip the filename after the last "/")
+function qrDirOf pPath
+   if pPath is empty then
+      return empty
+   end if
+   set the itemDelimiter to "/"
+   if the number of items of pPath < 2 then
+      return empty
+   end if
+   delete the last item of pPath
+   return pPath
+end qrDirOf
+
+-- Best-effort: the directory that holds this script's modules, or empty.
+-- Tries several sources because headless cPanel builds populate different
+-- ones; each candidate is VERIFIED by checking qrCompat.lc actually exists.
+function qrFindBase
+   local tCands, d
+   put qrDirOf($_SERVER["SCRIPT_FILENAME"]) & cr after tCands
+   put qrDirOf($_SERVER["PATH_TRANSLATED"]) & cr after tCands
+   if ($_SERVER["DOCUMENT_ROOT"] is not empty) and ($_SERVER["SCRIPT_NAME"] is not empty) then
+      put qrDirOf($_SERVER["DOCUMENT_ROOT"] & $_SERVER["SCRIPT_NAME"]) & cr after tCands
+   end if
+   put the defaultFolder & cr after tCands
+   repeat for each line d in tCands
+      if (d is not empty) and (there is a file (d & "/qrCompat.lc")) then
+         return d
+      end if
+   end repeat
+   return empty
+end qrFindBase
+
+-- dump of the server vars we use, for diagnosing a failed file lookup
+function qrServerDiag
+   local s
+   put "SCRIPT_FILENAME = " & $_SERVER["SCRIPT_FILENAME"] & cr after s
+   put "PATH_TRANSLATED = " & $_SERVER["PATH_TRANSLATED"] & cr after s
+   put "DOCUMENT_ROOT   = " & $_SERVER["DOCUMENT_ROOT"] & cr after s
+   put "SCRIPT_NAME     = " & $_SERVER["SCRIPT_NAME"] & cr after s
+   put "REQUEST_URI     = " & $_SERVER["REQUEST_URI"] & cr after s
+   put "defaultFolder   = " & the defaultFolder & cr after s
+   return s
+end qrServerDiag
+
+command out s
+   put s & cr after sHTML
+end out
+
+command pout s
+   put s & cr after sPanels
+end pout
+
+function htmlEsc s
+   replace "&" with "&amp;" in s
+   replace "<" with "&lt;" in s
+   replace ">" with "&gt;" in s
+   replace quote with "&quot;" in s
+   replace "'" with "&#39;" in s
+   return s
+end htmlEsc
+
+-- the reporter every suite calls; tallies into the CURRENT suite + adds a row
+command t_eq pName, pGot, pExp
+   local tCls, tBadge
+   if pGot = pExp then
+      add 1 to sCurPass
+      put "ok" into tCls
+      put "PASS" into tBadge
+   else
+      add 1 to sCurFail
+      put "bad" into tCls
+      put "FAIL" into tBadge
+   end if
+   put "<tr class='" & tCls & "'><td>" & htmlEsc(pName) & \
+       "</td><td><code>" & htmlEsc(pExp) & "</code></td><td><code>" & \
+       htmlEsc(pGot) & "</code></td><td class='st'>" & tBadge & "</td></tr>" \
+       & cr after sRows
+end t_eq
+
+command startSuite pTitle
+   put pTitle into sCurTitle
+   put empty into sRows
+   put 0 into sCurPass
+   put 0 into sCurFail
+end startSuite
+
+command endSuite
+   local tn
+   add sCurPass to sPass
+   add sCurFail to sFail
+   put (sCurPass + sCurFail) into tn
+   pout "<div class='panel'><h2>" & htmlEsc(sCurTitle) & "</h2>"
+   if sCurFail = 0 then
+      pout "<p class='ph ok'>&#10003; " & sCurPass & " / " & tn & " passed</p>"
+   else
+      pout "<p class='ph bad'>&#10007; " & sCurFail & " / " & tn & " failed</p>"
+   end if
+   pout "<table><tr><th>Test</th><th>Expected</th><th>Got</th><th>Status</th></tr>"
+   pout sRows
+   pout "</table></div>"
+end endSuite
+
+-- whitelisted dispatch for the interactive evaluator (no arbitrary eval)
+function evalHelper pFn, pA, pB
+   switch pFn
+      case "u32"
+         return u32(pA)
+      case "u8"
+         return u8(pA)
+      case "shl"
+         return shl(pA, pB)
+      case "uShr"
+         return uShr(pA, pB)
+      case "aShr"
+         return aShr(pA, pB)
+      case "numberOfTrailingZeros"
+         return numberOfTrailingZeros(pA)
+      case "hashCode"
+         return hashCode(pA)
+      case "byteAt"
+         return byteAt(pA, pB)
+      case "gf_exp"
+         return gf_exp(pA)
+      case "gf_log"
+         return gf_log(pA)
+      case "gf_inverse"
+         return gf_inverse(pA)
+      case "gf_multiply"
+         return gf_multiply(pA, pB)
+      default
+         return "(choose a function)"
+   end switch
+end evalHelper
+
+function fnOption pName, pSel
+   local tS
+   if pName = pSel then
+      put " selected" into tS
+   else
+      put empty into tS
+   end if
+   return "<option value='" & pName & "'" & tS & ">" & pName & "</option>"
+end fnOption
+
+function css
+   local c
+   put "*{box-sizing:border-box}" & cr after c
+   put "body{font:15px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;background:#0f1117;color:#e6e6e6}" & cr after c
+   put ".wrap{max-width:940px;margin:0 auto;padding:26px 20px}" & cr after c
+   put "h1{font-size:22px;margin:0 0 3px}.sub{color:#9aa4b2;margin:0 0 22px;font-size:14px}" & cr after c
+   put ".banner{padding:15px 20px;border-radius:10px;font-size:18px;font-weight:600;margin:18px 0}" & cr after c
+   put ".banner.ok{background:#0f3d2e;color:#5ee6a8;border:1px solid #1c6b4f}" & cr after c
+   put ".banner.bad{background:#3d1414;color:#ff8a8a;border:1px solid #6b1c1c}" & cr after c
+   put ".panel{background:#161922;border:1px solid #232734;border-radius:10px;padding:16px 18px;margin:18px 0}" & cr after c
+   put ".panel h2{font-size:13px;margin:0 0 6px;color:#cdd6f4;font-family:ui-monospace,Menlo,Consolas,monospace}" & cr after c
+   put ".ph{margin:0 0 12px;font-size:13px;font-weight:600}.ph.ok{color:#5ee6a8}.ph.bad{color:#ff8a8a}" & cr after c
+   put "table{width:100%;border-collapse:collapse;font-size:13.5px}" & cr after c
+   put "th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #232734;vertical-align:top}" & cr after c
+   put "th{color:#9aa4b2;font-weight:600}" & cr after c
+   put "code{background:#1a1d27;padding:1px 6px;border-radius:4px;color:#cdd6f4;font-size:12.5px}" & cr after c
+   put "tr.bad{background:#241313}.st{font-weight:700;white-space:nowrap}tr.ok .st{color:#5ee6a8}tr.bad .st{color:#ff8a8a}" & cr after c
+   put ".kv{display:grid;grid-template-columns:160px 1fr;gap:5px 14px;font-size:14px}" & cr after c
+   put ".kv b{color:#9aa4b2;font-weight:600}" & cr after c
+   put "input,select{background:#0f1117;color:#e6e6e6;border:1px solid #2a2f3d;border-radius:6px;padding:8px 9px;font:inherit;margin:2px 0}" & cr after c
+   put "button{background:#3b82f6;color:#fff;border:0;border-radius:6px;padding:9px 16px;font:inherit;cursor:pointer}" & cr after c
+   put ".res{margin-top:12px;font-size:15px}.foot{color:#6b7280;font-size:12px;margin-top:32px}" & cr after c
+   return c
+end css
+
+command renderHead pTitle
+   out "<!DOCTYPE html>"
+   out "<html lang='en'><head><meta charset='utf-8'>"
+   out "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+   out "<title>" & pTitle & "</title>"
+   out "<style>" & css() & "</style>"
+   out "</head><body><div class='wrap'>"
+end renderHead
+
+command renderEnv
+   local tVer, tBuild, tPlat, tSys, tNow
+   put the version into tVer
+   put the buildNumber into tBuild
+   put the platform into tPlat
+   put the systemVersion into tSys
+   put (the long date && the long time) into tNow
+   out "<div class='panel'><h2>Engine environment</h2><div class='kv'>"
+   out "<b>xTalk engine version</b><span>" & htmlEsc(tVer) & "</span>"
+   out "<b>Build number</b><span>" & htmlEsc(tBuild) & "</span>"
+   out "<b>Platform</b><span>" & htmlEsc(tPlat) & "</span>"
+   out "<b>System version</b><span>" & htmlEsc(tSys) & "</span>"
+   out "<b>Server time</b><span>" & htmlEsc(tNow) & "</span>"
+   out "</div></div>"
+end renderEnv
+
+command renderEvaluator
+   local tFn, tA, tB, tRes, tExpr, e
+   put $_GET["fn"] into tFn
+   put $_GET["a"] into tA
+   put $_GET["b"] into tB
+
+   out "<div class='panel'><h2>Interactive helper evaluator</h2>"
+   out "<form method='get'>"
+   out "<select name='fn'>"
+   out "<option value=''>&mdash; choose &mdash;</option>"
+   out fnOption("u32", tFn)
+   out fnOption("u8", tFn)
+   out fnOption("shl", tFn)
+   out fnOption("uShr", tFn)
+   out fnOption("aShr", tFn)
+   out fnOption("numberOfTrailingZeros", tFn)
+   out fnOption("hashCode", tFn)
+   out fnOption("byteAt", tFn)
+   out fnOption("gf_exp", tFn)
+   out fnOption("gf_log", tFn)
+   out fnOption("gf_inverse", tFn)
+   out fnOption("gf_multiply", tFn)
+   out "</select> "
+   out "<input name='a' placeholder='arg a' value='" & htmlEsc(tA) & "'> "
+   out "<input name='b' placeholder='arg b (if needed)' value='" & htmlEsc(tB) & "'> "
+   out "<button type='submit'>Evaluate</button>"
+   out "</form>"
+
+   if tFn is not empty then
+      try
+         put evalHelper(tFn, tA, tB) into tRes
+      catch e
+         put "(error: " & e & ")" into tRes
+      end try
+      put htmlEsc(tFn) & "(" & htmlEsc(tA) into tExpr
+      if tB is not empty then put ", " & htmlEsc(tB) after tExpr
+      put ")" after tExpr
+      out "<div class='res'><code>" & tExpr & "</code> = <code>" & htmlEsc(tRes) & "</code></div>"
+   end if
+   out "</div>"
+end renderEvaluator
+
+command renderPage
+   local tTotal, tVer, tPlat
+   put empty into sHTML
+   put empty into sPanels
+   put 0 into sPass
+   put 0 into sFail
+
+   -- run every suite; each panel is accumulated in sPanels
+   startSuite "qrCompat.lc  —  integer & bitwise layer"
+   suite_qrCompat
+   endSuite
+
+   startSuite "genericGF.lc  —  GF(256) field"
+   suite_genericGF
+   endSuite
+
+   startSuite "genericGFPoly.lc  —  polynomials over GF(256)"
+   suite_genericGFPoly
+   endSuite
+
+   startSuite "reedSolomonDecoder.lc  —  RS decode (ZXing reference vector)"
+   suite_reedSolomon
+   endSuite
+
+   startSuite "bitArray.lc  —  packed bit vector"
+   suite_bitArray
+   endSuite
+
+   startSuite "bitMatrix.lc  —  packed 2-D bit grid"
+   suite_bitMatrix
+   endSuite
+
+   startSuite "bitSource.lc  —  MSB-first bit reader"
+   suite_bitSource
+   endSuite
+
+   startSuite "luminanceSource.lc  —  greyscale byte math (§7.3)"
+   suite_luminance
+   endSuite
+
+   startSuite "binarizer  —  global histogram + hybrid adaptive"
+   suite_binarizer
+   endSuite
+
+   startSuite "tables  —  ErrorCorrectionLevel / Mode / DataMask / FormatInfo / Version"
+   suite_tables
+   endSuite
+
+   startSuite "parser  —  DataBlock de-interleave + bitstream decode"
+   suite_parser
+   endSuite
+
+   startSuite "decoder  —  end-to-end matrix -> text (real v1 'HI' QR)"
+   suite_decoder
+   endSuite
+
+   startSuite "mathUtils  —  round + distance (§8.4)"
+   suite_mathUtils
+   endSuite
+
+   startSuite "resultPoint  —  point ops + orderBestPatterns (§8.4)"
+   suite_resultPoint
+   endSuite
+
+   startSuite "perspectiveTransform  —  3x3 projective maps (§8.4)"
+   suite_perspective
+   endSuite
+
+   startSuite "gridSampler  —  sample a grid through a transform (§8.4)"
+   suite_gridSampler
+   endSuite
+
+   startSuite "detector  —  synthetic photo -> finders -> sample -> 'HI' (§8.4)"
+   suite_detector
+   endSuite
+
+   startSuite "detector v2  —  alignment pattern -> 'HELLO WORLD' (§8.4)"
+   suite_detectorV2
+   endSuite
+
+   -- assemble the page
+   renderHead "xtQRdecoder — xTalk QR Port Test Console"
+   out "<h1>xtQRdecoder — xTalk QR Port Test Console</h1>"
+   out "<p class='sub'>ZXing QR <b>decoder</b> ported to pure xTalk &middot; target: a 9.6.3-class xTalk engine &middot; <a href='qr_imageprobe.lc'>image/imageData probe &rarr;</a></p>"
+
+   put (sPass + sFail) into tTotal
+   if sFail = 0 then
+      out "<div class='banner ok'>&#10003; All " & tTotal & " tests passed</div>"
+   else
+      out "<div class='banner bad'>&#10007; " & sFail & " of " & tTotal & " tests failed</div>"
+   end if
+
+   out sPanels
+   renderEnv
+   renderEvaluator
+
+   put the version into tVer
+   put the platform into tPlat
+   out "<p class='foot'>Generated by qr_tester.lc &middot; engine " & htmlEsc(tVer) & " &middot; " & htmlEsc(tPlat) & "</p>"
+   out "</div></body></html>"
+end renderPage
+
+command renderMissing pMissing
+   put empty into sHTML
+   renderHead "xtQRdecoder — setup needed"
+   out "<h1>xtQRdecoder test console</h1>"
+   out "<div class='banner bad'>&#10007; Some library / suite files were not found.</div>"
+   out "<p>Upload the whole <code>qr/</code> folder to your web space and open <code>qr/qr_tester.lc</code>, so this file sits beside the modules it loads.</p>"
+   out "<div class='panel'><h2>Missing files</h2><pre><code>" & htmlEsc(pMissing) & "</code></pre></div>"
+   out "<div class='panel'><h2>Resolved script directory</h2><pre><code>" & htmlEsc(tBase) & "</code></pre></div>"
+   out "<div class='panel'><h2>Server variables (for diagnosis)</h2><pre><code>" & htmlEsc(qrServerDiag()) & "</code></pre></div>"
+   out "</div></body></html>"
+end renderMissing
+
+
+-- =========================  main (loose statements)  ======================
+-- Kept at the END so it never calls a handler that hasn't been defined yet.
+
+-- [1] locate this script's own directory (where the modules live). cPanel
+--     headless builds vary in which $_SERVER vars they populate and leave
+--     defaultFolder pointing at the engine dir, so qrFindBase tries several
+--     sources and VERIFIES each by checking qrCompat.lc is actually there.
+put qrFindBase() into tBase
+
+-- [2] confirm the modules + suites are present (friendly error if not).
+--     Use ABSOLUTE paths (tBase & "/" & name) so we never depend on the
+--     engine's relative-path resolution.
+put "qrCompat.lc,genericGF.lc,genericGFPoly.lc,reedSolomonDecoder.lc,bitArray.lc,bitMatrix.lc,bitSource.lc,luminanceSource.lc,globalHistogramBinarizer.lc,hybridBinarizer.lc,binaryBitmap.lc,errorCorrectionLevel.lc,mode.lc,dataMask.lc,formatInformation.lc,version.lc,characterSetECI.lc,dataBlock.lc,decodedBitStreamParser.lc,bitMatrixParser.lc,decoder.lc,mathUtils.lc,resultPoint.lc,perspectiveTransform.lc,gridSampler.lc,finderPatternFinder.lc,alignmentPatternFinder.lc,detector.lc,qrCodeReader.lc,qrReader.lc,suite_qrCompat.lc,suite_genericGF.lc,suite_genericGFPoly.lc,suite_reedSolomon.lc,suite_bitArray.lc,suite_bitMatrix.lc,suite_bitSource.lc,suite_luminance.lc,suite_binarizer.lc,suite_tables.lc,suite_parser.lc,suite_decoder.lc,suite_mathUtils.lc,suite_resultPoint.lc,suite_perspective.lc,suite_gridSampler.lc,suite_detector.lc" into tFiles
+set the itemDelimiter to comma
+put empty into tMissing
+if tBase is empty then
+   put "(could not locate the script directory)" into tMissing
+else
+   repeat for each item tF in tFiles
+      if there is not a file (tBase & "/" & tF) then
+         put tF & cr after tMissing
+      end if
+   end repeat
+end if
+
+-- [3] load everything by absolute path (single-hop includes; no nested includes)
+put false into tReady
+if tMissing is empty then
+   include (tBase & "/qrCompat.lc")
+   include (tBase & "/genericGF.lc")
+   include (tBase & "/genericGFPoly.lc")
+   include (tBase & "/reedSolomonDecoder.lc")
+   include (tBase & "/bitArray.lc")
+   include (tBase & "/bitMatrix.lc")
+   include (tBase & "/bitSource.lc")
+   include (tBase & "/luminanceSource.lc")
+   include (tBase & "/globalHistogramBinarizer.lc")
+   include (tBase & "/hybridBinarizer.lc")
+   include (tBase & "/binaryBitmap.lc")
+   include (tBase & "/errorCorrectionLevel.lc")
+   include (tBase & "/mode.lc")
+   include (tBase & "/dataMask.lc")
+   include (tBase & "/formatInformation.lc")
+   include (tBase & "/version.lc")
+   include (tBase & "/characterSetECI.lc")
+   include (tBase & "/dataBlock.lc")
+   include (tBase & "/decodedBitStreamParser.lc")
+   include (tBase & "/bitMatrixParser.lc")
+   include (tBase & "/decoder.lc")
+   include (tBase & "/mathUtils.lc")
+   include (tBase & "/resultPoint.lc")
+   include (tBase & "/perspectiveTransform.lc")
+   include (tBase & "/gridSampler.lc")
+   include (tBase & "/finderPatternFinder.lc")
+   include (tBase & "/alignmentPatternFinder.lc")
+   include (tBase & "/detector.lc")
+   include (tBase & "/qrCodeReader.lc")
+   include (tBase & "/qrReader.lc")
+   include (tBase & "/suite_qrCompat.lc")
+   include (tBase & "/suite_genericGF.lc")
+   include (tBase & "/suite_genericGFPoly.lc")
+   include (tBase & "/suite_reedSolomon.lc")
+   include (tBase & "/suite_bitArray.lc")
+   include (tBase & "/suite_bitMatrix.lc")
+   include (tBase & "/suite_bitSource.lc")
+   include (tBase & "/suite_luminance.lc")
+   include (tBase & "/suite_binarizer.lc")
+   include (tBase & "/suite_tables.lc")
+   include (tBase & "/suite_parser.lc")
+   include (tBase & "/suite_decoder.lc")
+   include (tBase & "/suite_mathUtils.lc")
+   include (tBase & "/suite_resultPoint.lc")
+   include (tBase & "/suite_perspective.lc")
+   include (tBase & "/suite_gridSampler.lc")
+   include (tBase & "/suite_detector.lc")
+   put true into tReady
+end if
+
+-- [4] render
+if tReady then
+   renderPage
+   put sHTML
+else
+   renderMissing tMissing
+   put sHTML
+end if
+?>

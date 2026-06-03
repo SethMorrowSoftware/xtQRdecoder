@@ -1,0 +1,209 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- bitMatrixParser.lc — read format/version/codewords from a sampled matrix.
+-- Port of ZXing Qrcode\Decoder\BitMatrixParser. Spec §8.5.
+-- Requires: qrCompat.lc, bitMatrix.lc, version.lc, formatInformation.lc,
+--           errorCorrectionLevel.lc.
+--
+-- A parser instance is an array:
+--   p["bits"]       the sampled square BitMatrix (true = black/1)
+--   p["dimension"]  width == height (== 17 + 4*version)
+--   p["mirror"]     boolean; when true, get(x,y) is read transposed
+--   p["fmt"]        cached {ecLevel,dataMask} once read
+--   p["version"]    cached version number once read
+--
+-- Reading conventions match ZXing: bit (i,j) with i = row (y), j = column (x).
+-- =====================================================================
+
+function bmp_new pBits
+   local p, tDim
+   put bitMatrix_getHeight(pBits) into tDim
+   if (tDim < 21) or ((tDim bitAnd 3) <> 1) then
+      throw "Format: dimension " & tDim & " is not 4k+1 / >=21"
+   end if
+   put pBits into p["bits"]
+   put tDim into p["dimension"]
+   put false into p["mirror"]
+   return p
+end bmp_new
+
+-- module accessor honouring the mirror flag (transpose when mirrored)
+function bmp_get pParser, x, y
+   if pParser["mirror"] then
+      return bitMatrix_get(pParser["bits"], y, x)
+   end if
+   return bitMatrix_get(pParser["bits"], x, y)
+end bmp_get
+
+command bmp_setMirror @pParser, pMirror
+   put pMirror into pParser["mirror"]
+end bmp_setMirror
+
+-- copy a bit from (fromX,fromY) ... helper for readCodewords masking removed;
+-- the actual data-mask is applied later by the decoder via dataMask_unmask.
+
+-- read the 15-bit format information (two copies) -> {ecLevel,dataMask}.
+function bmp_readFormatInformation pParser
+   local tDim, fmtInfo1, fmtInfo2, i, j, tRes
+   put pParser["dimension"] into tDim
+
+   -- copy 1: top-left.  bits along row 8 (cols 0..5, then 7,8) and
+   -- col 8 (rows 7,5,4,3,2,1,0)  -- ZXing order builds MSB-first.
+   put 0 into fmtInfo1
+   repeat with i = 0 to 5
+      put bmp_copyBit(pParser, i, 8, fmtInfo1) into fmtInfo1
+   end repeat
+   put bmp_copyBit(pParser, 7, 8, fmtInfo1) into fmtInfo1
+   put bmp_copyBit(pParser, 8, 8, fmtInfo1) into fmtInfo1
+   put bmp_copyBit(pParser, 8, 7, fmtInfo1) into fmtInfo1
+   repeat with j = 5 down to 0
+      put bmp_copyBit(pParser, 8, j, fmtInfo1) into fmtInfo1
+   end repeat
+
+   -- copy 2: split around the other two finders.
+   put 0 into fmtInfo2
+   repeat with i = tDim - 1 down to tDim - 7
+      put bmp_copyBit(pParser, 8, i, fmtInfo2) into fmtInfo2
+   end repeat
+   repeat with j = tDim - 8 to tDim - 1
+      put bmp_copyBit(pParser, j, 8, fmtInfo2) into fmtInfo2
+   end repeat
+
+   put fmt_decode(fmtInfo1, fmtInfo2) into tRes
+   if tRes is empty then throw "Format: could not decode format information"
+   return tRes
+end bmp_readFormatInformation
+
+-- shift one module bit into an accumulator: acc = (acc<<1) | bit(x,y)
+function bmp_copyBit pParser, x, y, pAcc
+   local b
+   if bmp_get(pParser, x, y) then
+      put 1 into b
+   else
+      put 0 into b
+   end if
+   return ((pAcc * 2) bitOr b)
+end bmp_copyBit
+
+-- version: derive from dimension for v1-6; read the two version blocks for v7+.
+function bmp_readVersion pParser
+   local tDim, provVer, versionBits, i, j, tVer
+   put pParser["dimension"] into tDim
+   put ((tDim - 17) div 4) into provVer
+   if provVer <= 6 then
+      return provVer
+   end if
+   -- v7+: read the two 18-bit version-info blocks (bottom-left + top-right)
+   put 0 into versionBits
+   repeat with i = 5 down to 0
+      repeat with j = tDim - 9 down to tDim - 11
+         put bmp_copyBit(pParser, i, j, versionBits) into versionBits
+      end repeat
+   end repeat
+   put ver_decodeVersionInformation(versionBits) into tVer
+   if tVer is not empty then return tVer
+   -- second copy (transpose of the read coordinates)
+   put 0 into versionBits
+   repeat with j = 5 down to 0
+      repeat with i = tDim - 9 down to tDim - 11
+         put bmp_copyBit(pParser, i, j, versionBits) into versionBits
+      end repeat
+   end repeat
+   put ver_decodeVersionInformation(versionBits) into tVer
+   if tVer is not empty then return tVer
+   throw "Format: could not read version"
+end bmp_readVersion
+
+-- build the function-pattern mask for a version: a BitMatrix where true = a
+-- module that is NOT data (finders, separators, timing, alignment, format,
+-- version, dark module). Codeword reading skips these.
+function bmp_buildFunctionPattern pVersion
+   local tDim, fp, i, tCenters, tAlignC, tAlignR, n, r, c
+   put ver_getDimensionForVersion(pVersion) into tDim
+   put bitMatrix_new(tDim) into fp
+
+   -- top-left, top-right, bottom-left finder + separator (8x8 reserved)
+   bitMatrix_setRegion fp, 0, 0, 9, 9
+   bitMatrix_setRegion fp, tDim - 8, 0, 8, 9
+   bitMatrix_setRegion fp, 0, tDim - 8, 9, 8
+
+   -- timing patterns (row 6 and col 6), interior span
+   bitMatrix_setRegion fp, 9, 6, tDim - 17, 1
+   bitMatrix_setRegion fp, 6, 9, 1, tDim - 17
+
+   -- alignment patterns (v2+): 5x5 at each centre pair, except those that
+   -- overlap the finders.
+   put ver_getAlignmentCenters(pVersion) into tCenters
+   if tCenters is not empty then
+      set the itemDelimiter to comma
+      put the number of items of tCenters into n
+      repeat with r = 1 to n
+         repeat with c = 1 to n
+            put (item r of tCenters) into tAlignR
+            put (item c of tCenters) into tAlignC
+            -- skip the three that coincide with finder patterns
+            if ((tAlignC = 6) and (tAlignR = 6)) then next repeat
+            if ((tAlignC = 6) and (tAlignR = (item n of tCenters))) then next repeat
+            if ((tAlignC = (item n of tCenters)) and (tAlignR = 6)) then next repeat
+            bitMatrix_setRegion fp, tAlignC - 2, tAlignR - 2, 5, 5
+         end repeat
+      end repeat
+   end if
+
+   -- version info blocks (v7+)
+   if pVersion >= 7 then
+      bitMatrix_setRegion fp, tDim - 11, 0, 3, 6
+      bitMatrix_setRegion fp, 0, tDim - 11, 6, 3
+   end if
+
+   return fp
+end bmp_buildFunctionPattern
+
+-- read all data codewords in the standard zig-zag, skipping function modules.
+-- Returns a dense 0-based array of byte values. (The data mask is NOT applied
+-- here; the decoder applies it to the matrix first, matching ZXing's flow when
+-- it uses readCodewords after unmasking — see decoder.lc.)
+function bmp_readCodewords pParser, pVersion
+   local fp, tDim, tRes, idx, bitsRead, currentByte
+   local col, row, readingUp, c, i
+   put bmp_buildFunctionPattern(pVersion) into fp
+   put pParser["dimension"] into tDim
+   put 0 into idx                 -- codeword index
+   put 0 into bitsRead
+   put 0 into currentByte
+   put true into readingUp
+   put (tDim - 1) into col
+   repeat while col > 0
+      if col = 6 then subtract 1 from col      -- skip the timing column
+      repeat with i = 0 to (tDim - 1)
+         if readingUp then
+            put (tDim - 1 - i) into row
+         else
+            put i into row
+         end if
+         repeat with c = 0 to 1
+            if not bitMatrix_get(fp, (col - c), row) then
+               add 1 to bitsRead
+               put (currentByte * 2) into currentByte
+               if bmp_get(pParser, (col - c), row) then
+                  add 1 to currentByte
+               end if
+               if bitsRead = 8 then
+                  put currentByte into tRes[idx]
+                  add 1 to idx
+                  put 0 into bitsRead
+                  put 0 into currentByte
+               end if
+            end if
+         end repeat
+      end repeat
+      put not readingUp into readingUp
+      subtract 2 from col
+   end repeat
+   return tRes
+end bmp_readCodewords
+?>

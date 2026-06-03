@@ -1,0 +1,114 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- qrCodeReader.lc — wire detector -> decoder; PURE_BARCODE fast path. Spec §9.
+-- Port of ZXing Qrcode\QRCodeReader. Requires: bitMatrix.lc, binaryBitmap.lc,
+--   detector.lc, decoder.lc.
+--
+-- qcr_decode(binaryBitmap, hints) -> decoder result array (from dec_decode):
+--   ["text"], ["bytes"], ["error"], ["ecLevel"], ["version"], ["mask"],
+--   plus ["points"] from the detector. On a NotFound the detector throws;
+--   on Format/Checksum dec_decode returns ["error"] set.
+-- =====================================================================
+
+function qcr_decode pBitmap, pHints
+   local tBits, tDetectorResult, tDecoderResult, tPure
+   -- a missing key (or non-array pHints) reads as empty, so "is true" is false.
+   put (pHints["PURE_BARCODE"] is true) into tPure
+   if tPure then
+      put qcr_extractPureBits(binaryBitmap_getBlackMatrix(pBitmap)) into tBits
+      put dec_decode(tBits) into tDecoderResult
+   else
+      put dt_detect(binaryBitmap_getBlackMatrix(pBitmap), pHints) into tDetectorResult
+      put dec_decode(tDetectorResult["bits"]) into tDecoderResult
+      put tDetectorResult["points"] into tDecoderResult["points"]
+   end if
+   return tDecoderResult
+end qcr_decode
+
+-- estimate module size by counting transitions along the top-left diagonal
+function qcr_moduleSize pLeftTopBlack, pImage
+   local tHeight, tWidth, x, y, tInBlack, tTransitions
+   put bitMatrix_getHeight(pImage) into tHeight
+   put bitMatrix_getWidth(pImage) into tWidth
+   put pLeftTopBlack[0] into x
+   put pLeftTopBlack[1] into y
+   put true into tInBlack
+   put 0 into tTransitions
+   repeat while (x < tWidth) and (y < tHeight)
+      if tInBlack <> bitMatrix_get(pImage, round(x), round(y)) then
+         add 1 to tTransitions
+         if tTransitions = 5 then exit repeat
+         put (not tInBlack) into tInBlack
+      end if
+      add 1 to x
+      add 1 to y
+   end repeat
+   if (x = tWidth) or (y = tHeight) then
+      throw "NotFound: pure barcode module size not found"
+   end if
+   return ((x - pLeftTopBlack[0]) / 7)
+end qcr_moduleSize
+
+-- fast path for a clean, unrotated, bordered "pure" QR image
+function qcr_extractPureBits pImage
+   local tLeftTop, tRightBottom, tModuleSize, tTop, tBottom, tLeft, tRight
+   local tMatrixWidth, tMatrixHeight, tNudge, tNudgedRight, tNudgedDown
+   local tBits, y, x, tIOffset
+   put bitMatrix_getTopLeftOnBit(pImage) into tLeftTop
+   put bitMatrix_getBottomRightOnBit(pImage) into tRightBottom
+   if (tLeftTop is empty) or (tRightBottom is empty) then
+      throw "NotFound: top left or bottom right on bit not found"
+   end if
+   put qcr_moduleSize(tLeftTop, pImage) into tModuleSize
+   put tLeftTop[1] into tTop
+   put tRightBottom[1] into tBottom
+   put tLeftTop[0] into tLeft
+   put tRightBottom[0] into tRight
+   if (tLeft >= tRight) or (tTop >= tBottom) then
+      throw "NotFound: pure barcode sanity violated"
+   end if
+   if (tBottom - tTop) <> (tRight - tLeft) then
+      -- bottom-right module wasn't black; assume square, use height as width
+      put (tLeft + (tBottom - tTop)) into tRight
+   end if
+   put round(((tRight - tLeft) + 1) / tModuleSize) into tMatrixWidth
+   put round(((tBottom - tTop) + 1) / tModuleSize) into tMatrixHeight
+   if (tMatrixWidth <= 0) or (tMatrixHeight <= 0) then
+      throw "NotFound: matrix dimensions <= 0"
+   end if
+   if tMatrixHeight <> tMatrixWidth then
+      throw "NotFound: matrix not square"
+   end if
+   put trunc(tModuleSize / 2) into tNudge
+   add tNudge to tTop
+   add tNudge to tLeft
+   put ((tLeft + trunc((tMatrixWidth - 1) * tModuleSize)) - tRight) into tNudgedRight
+   if tNudgedRight > 0 then
+      if tNudgedRight > tNudge then
+         throw "NotFound: nudge too far right"
+      end if
+      subtract tNudgedRight from tLeft
+   end if
+   put ((tTop + trunc((tMatrixHeight - 1) * tModuleSize)) - tBottom) into tNudgedDown
+   if tNudgedDown > 0 then
+      if tNudgedDown > tNudge then
+         throw "NotFound: nudge too far down"
+      end if
+      subtract tNudgedDown from tTop
+   end if
+   put bitMatrix_new(tMatrixWidth, tMatrixHeight) into tBits
+   repeat with y = 0 to (tMatrixHeight - 1)
+      put (tTop + trunc(y * tModuleSize)) into tIOffset
+      repeat with x = 0 to (tMatrixWidth - 1)
+         if bitMatrix_get(pImage, (tLeft + trunc(x * tModuleSize)), tIOffset) then
+            bitMatrix_set tBits, x, y
+         end if
+      end repeat
+   end repeat
+   return tBits
+end qcr_extractPureBits
+?>

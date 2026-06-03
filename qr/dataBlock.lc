@@ -1,0 +1,100 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- dataBlock.lc — de-interleave codewords into Reed–Solomon blocks. Spec §8.5.
+-- Port of ZXing Qrcode\Decoder\DataBlock. Requires: qrCompat.lc, version.lc,
+-- errorCorrectionLevel.lc.
+--
+-- db_getDataBlocks(rawCodewords, version, ecOrdinal) -> an array of blocks,
+-- 0-based:  blocks[b]["numData"] = data-codeword count for block b
+--           blocks[b]["cw"][i]   = codeword i (data then EC), 0-based
+-- The blocks are returned in the order ZXing produces (shorter blocks first as
+-- laid out by the version table, all instances expanded).
+--
+-- ZXing's two-pass fill (spec: "critical and easy to get wrong"):
+--   pass 1 — distribute DATA codewords round-robin across all blocks, filling
+--            the common (shorter) length first, then the one extra data
+--            codeword that the longer blocks each carry.
+--   pass 2 — distribute EC codewords round-robin across all blocks, where the
+--            longer blocks' EC region starts one slot later.
+-- =====================================================================
+
+-- returns an array: ["n"] = number of blocks, [b] = block array (0-based)
+function db_getDataBlocks pRaw, pVersion, pEcOrdinal
+   local tEcwPerBlock, tBlockSpec, tLn, cnt, dat
+   local tBlocks, tNum, b, i, j
+   local tMaxData, tShorterNumData, tLongerStart, tRawIndex, tMaxLen, tIdx
+
+   put ver_getEcCodewordsPerBlock(pVersion, pEcOrdinal) into tEcwPerBlock
+   put ver_getEcBlocks(pVersion, pEcOrdinal) into tBlockSpec   -- lines "count,data"
+
+   -- expand the spec into per-instance blocks (shorter blocks come first in
+   -- the version table, which is the order ZXing wants).
+   put 0 into tNum
+   set the lineDelimiter to lf
+   repeat for each line tLn in tBlockSpec
+      if tLn is empty then next repeat
+      set the itemDelimiter to comma
+      put (item 1 of tLn) into cnt
+      put (item 2 of tLn) into dat
+      repeat with b = 1 to cnt
+         put dat into tBlocks[tNum]["numData"]
+         put (dat + tEcwPerBlock) into tBlocks[tNum]["len"]
+         add 1 to tNum
+      end repeat
+   end repeat
+
+   -- largest data length; "shorter" blocks have tMaxData-1 ... but per ZXing the
+   -- shorter length is the FIRST block's numData; longer blocks carry +1.
+   put tBlocks[0]["numData"] into tShorterNumData
+   put 0 into tMaxData
+   repeat with b = 0 to (tNum - 1)
+      if tBlocks[b]["numData"] > tMaxData then put tBlocks[b]["numData"] into tMaxData
+   end repeat
+   -- index of the first "longer" block (numData == tMaxData)
+   put tNum into tLongerStart
+   repeat with b = 0 to (tNum - 1)
+      if tBlocks[b]["numData"] = tMaxData then
+         put b into tLongerStart
+         exit repeat
+      end if
+   end repeat
+
+   -- PASS 1: data codewords. Fill the common shorter-length columns for all
+   -- blocks, then the one extra data codeword for each longer block.
+   put 0 into tRawIndex
+   repeat with i = 0 to (tShorterNumData - 1)
+      repeat with j = 0 to (tNum - 1)
+         put pRaw[tRawIndex] into tBlocks[j]["cw"][i]
+         add 1 to tRawIndex
+      end repeat
+   end repeat
+   repeat with j = tLongerStart to (tNum - 1)
+      put pRaw[tRawIndex] into tBlocks[j]["cw"][tShorterNumData]
+      add 1 to tRawIndex
+   end repeat
+
+   -- PASS 2: EC codewords. They run from column tShorterNumData (shorter blocks)
+   -- / tShorterNumData+1 (longer blocks) up to each block's full length.
+   put tBlocks[(tNum - 1)]["len"] into tMaxLen
+   repeat with i = tShorterNumData to (tMaxLen - 1)
+      repeat with j = 0 to (tNum - 1)
+         if j < tLongerStart then
+            put i into tIdx
+         else
+            put (i + 1) into tIdx
+         end if
+         if tIdx < tBlocks[j]["len"] then
+            put pRaw[tRawIndex] into tBlocks[j]["cw"][tIdx]
+            add 1 to tRawIndex
+         end if
+      end repeat
+   end repeat
+
+   put tNum into tBlocks["n"]
+   return tBlocks
+end db_getDataBlocks
+?>

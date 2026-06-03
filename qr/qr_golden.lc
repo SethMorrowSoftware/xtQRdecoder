@@ -1,0 +1,237 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- qr_golden.lc — acceptance suite: the upstream ZXing golden photos.
+--
+-- Runs the 5 official khanamiryan/php-qrcode-detector-decoder test fixtures
+-- through the public API (qrDecodeFromData) with the same hints the PHP suite
+-- uses, and checks each decoded result against the documented expected value:
+--
+--   hello_world.png   (no hints)                 -> "Hello world!"
+--   empty.png         (no hints)                 -> (failure: empty)
+--   test.png          (TRY_HARDER)               -> the gosuslugi URL
+--   139225861-...png  (TRY_HARDER, NR_ALLOW_SKIP_ROWS=0)  -> the gosuslugi URL
+--   binary-test.png   (BINARY_MODE)              -> bytes 0x00..0xFF (256-byte ramp)
+--
+-- DEPLOY: upload the qr/ folder (which now includes qr/fixtures/*.png) and open:
+--     https://yoursite/qr/qr_golden.lc
+-- The fixtures are read from qr/fixtures/ via binfile relative to this script.
+--
+-- This is the real proof on photos (not synthetic matrices). The expected
+-- values are transcribed from tests/QrReaderTest.php in the upstream repo.
+-- =====================================================================
+
+local tBase, tReady, tFiles, tF, tMissing
+local sHTML
+local sPass, sFail, sRows
+
+function qrDirOf pPath
+   if pPath is empty then return empty
+   set the itemDelimiter to "/"
+   if the number of items of pPath < 2 then return empty
+   delete the last item of pPath
+   return pPath
+end qrDirOf
+
+function qrFindBase
+   local tCands, d
+   put qrDirOf($_SERVER["SCRIPT_FILENAME"]) & cr after tCands
+   put qrDirOf($_SERVER["PATH_TRANSLATED"]) & cr after tCands
+   if ($_SERVER["DOCUMENT_ROOT"] is not empty) and ($_SERVER["SCRIPT_NAME"] is not empty) then
+      put qrDirOf($_SERVER["DOCUMENT_ROOT"] & $_SERVER["SCRIPT_NAME"]) & cr after tCands
+   end if
+   put the defaultFolder & cr after tCands
+   repeat for each line d in tCands
+      if (d is not empty) and (there is a file (d & "/qrCompat.lc")) then
+         return d
+      end if
+   end repeat
+   return empty
+end qrFindBase
+
+command out s
+   put s & cr after sHTML
+end out
+
+function htmlEsc s
+   replace "&" with "&amp;" in s
+   replace "<" with "&lt;" in s
+   replace ">" with "&gt;" in s
+   replace quote with "&quot;" in s
+   return s
+end htmlEsc
+
+-- the 256-byte ramp 0x00..0xFF as a byte string, for the BINARY_MODE fixture
+function rampBytes
+   local s, i
+   put empty into s
+   repeat with i = 0 to 255
+      put numToByte(i) after s
+   end repeat
+   return s
+end rampBytes
+
+-- record one fixture row; pGot/pExp compared verbatim
+command goldRow pName, pGot, pExp
+   local tCls, tBadge, tShownGot, tShownExp
+   if pGot = pExp then
+      add 1 to sPass
+      put "ok" into tCls
+      put "PASS" into tBadge
+   else
+      add 1 to sFail
+      put "bad" into tCls
+      put "FAIL" into tBadge
+   end if
+   -- show byte length for binary payloads; text otherwise
+   if the number of bytes of pExp > 120 then
+      put (the number of bytes of pGot) & " bytes" into tShownGot
+      put (the number of bytes of pExp) & " bytes" into tShownExp
+   else
+      put pGot into tShownGot
+      put pExp into tShownExp
+   end if
+   put "<tr class='" & tCls & "'><td>" & htmlEsc(pName) & "</td><td><code>" & \
+       htmlEsc(tShownExp) & "</code></td><td><code>" & htmlEsc(tShownGot) & \
+       "</code></td><td class='st'>" & tBadge & "</td></tr>" & cr after sRows
+end goldRow
+
+-- decode a fixture by filename (read from tBase/fixtures/) with the given hints
+function goldDecode pFile, pHints
+   local tPath, tBytes, e
+   put tBase & "/fixtures/" & pFile into tPath
+   if there is not a file tPath then
+      return "(missing fixture: " & pFile & ")"
+   end if
+   put url ("binfile:" & tPath) into tBytes
+   return qrDecodeFromData(tBytes, pHints)
+end goldDecode
+
+function css
+   local c
+   put "body{font:15px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0f1117;color:#e6e6e6}" & cr after c
+   put ".wrap{max-width:900px;margin:0 auto;padding:26px 20px}" & cr after c
+   put "h1{font-size:21px;margin:0 0 14px}" & cr after c
+   put ".banner{padding:15px 18px;border-radius:10px;font-size:18px;font-weight:600;margin:16px 0}" & cr after c
+   put ".banner.ok{background:#0f3d2e;color:#5ee6a8;border:1px solid #1c6b4f}" & cr after c
+   put ".banner.bad{background:#3d1414;color:#ff8a8a;border:1px solid #6b1c1c}" & cr after c
+   put ".panel{background:#161922;border:1px solid #232734;border-radius:10px;padding:14px 16px;margin:14px 0}" & cr after c
+   put "table{width:100%;border-collapse:collapse;font-size:13px}" & cr after c
+   put "th,td{text-align:left;padding:6px 9px;border-bottom:1px solid #232734;vertical-align:top;word-break:break-all}" & cr after c
+   put "code{background:#1a1d27;padding:1px 6px;border-radius:4px;color:#cdd6f4;font-size:12px}" & cr after c
+   put "tr.bad{background:#241313}.st{font-weight:700}tr.ok .st{color:#5ee6a8}tr.bad .st{color:#ff8a8a}" & cr after c
+   return c
+end css
+
+-- run all five fixtures and assemble the report
+command runGolden
+   local tUrl, tEmptyRes, tBin, tTotal
+   put empty into sRows
+   put 0 into sPass
+   put 0 into sFail
+   put "https://www.gosuslugi.ru/covid-cert/verify/9770000014233333?lang=ru&ck=733a9d218d312fe134f1c2cc06e1a800" into tUrl
+
+   goldRow "hello_world.png", goldDecode("hello_world.png", empty), "Hello world!"
+
+   -- empty.png: no QR present -> qrDecodeFromData returns empty
+   put goldDecode("empty.png", empty) into tEmptyRes
+   goldRow "empty.png (expect no decode)", tEmptyRes, empty
+
+   goldRow "test.png (TRY_HARDER)", goldDecode("test.png", "TRY_HARDER"), tUrl
+   goldRow "139225861-...png (TRY_HARDER, NR_ALLOW_SKIP_ROWS=0)", \
+      goldDecode("139225861-398ccbbd-2bfd-4736-889b-878c10573888.png", "TRY_HARDER,NR_ALLOW_SKIP_ROWS=0"), tUrl
+
+   -- binary-test.png: BINARY_MODE returns the raw 256-byte ramp
+   put goldDecode("binary-test.png", "BINARY_MODE") into tBin
+   goldRow "binary-test.png (BINARY_MODE)", tBin, rampBytes()
+
+   put (sPass + sFail) into tTotal
+   out "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+   out "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+   out "<title>xtQRdecoder -- golden photo fixtures</title><style>" & css() & "</style>"
+   out "</head><body><div class='wrap'>"
+   out "<h1>xtQRdecoder -- golden photographic fixtures</h1>"
+   out "<p>The 5 official upstream test images decoded through <code>qrDecodeFromData</code> with the spec hints.</p>"
+   if sFail = 0 then
+      out "<div class='banner ok'>&#10003; All " & tTotal & " golden fixtures decoded as expected.</div>"
+   else
+      out "<div class='banner bad'>&#10007; " & sFail & " of " & tTotal & " fixtures failed.</div>"
+   end if
+   out "<div class='panel'><table><tr><th>Fixture</th><th>Expected</th><th>Got</th><th>Status</th></tr>"
+   out sRows
+   out "</table></div>"
+   out "<p style='color:#6b7280;font-size:12px'>Generated by qr_golden.lc &middot; <a href='qr_tester.lc'>unit console</a> &middot; <a href='qr_decodeprobe.lc'>decode probe</a></p>"
+   out "</div></body></html>"
+end runGolden
+
+command renderMissing
+   out "<!DOCTYPE html><html><head><meta charset='utf-8'><title>xtQRdecoder setup</title>"
+   out "<style>" & css() & "</style></head><body><div class='wrap'>"
+   out "<h1>xtQRdecoder golden fixtures -- setup needed</h1>"
+   out "<div class='banner bad'>Missing library files; upload the whole qr/ folder (including qr/fixtures/).</div>"
+   out "<div class='panel'><pre><code>" & htmlEsc(tMissing) & "</code></pre></div>"
+   out "</div></body></html>"
+end renderMissing
+
+
+-- =========================  main  =========================================
+put qrFindBase() into tBase
+put "qrCompat.lc,genericGF.lc,genericGFPoly.lc,reedSolomonDecoder.lc,bitArray.lc,bitMatrix.lc,bitSource.lc,luminanceSource.lc,globalHistogramBinarizer.lc,hybridBinarizer.lc,binaryBitmap.lc,errorCorrectionLevel.lc,mode.lc,dataMask.lc,formatInformation.lc,version.lc,characterSetECI.lc,dataBlock.lc,decodedBitStreamParser.lc,bitMatrixParser.lc,decoder.lc,mathUtils.lc,resultPoint.lc,perspectiveTransform.lc,gridSampler.lc,finderPatternFinder.lc,alignmentPatternFinder.lc,detector.lc,qrCodeReader.lc,qrReader.lc" into tFiles
+set the itemDelimiter to comma
+put empty into tMissing
+if tBase is empty then
+   put "(could not locate the script directory)" into tMissing
+else
+   repeat for each item tF in tFiles
+      if there is not a file (tBase & "/" & tF) then
+         put tF & cr after tMissing
+      end if
+   end repeat
+end if
+
+put false into tReady
+if tMissing is empty then
+   include (tBase & "/qrCompat.lc")
+   include (tBase & "/genericGF.lc")
+   include (tBase & "/genericGFPoly.lc")
+   include (tBase & "/reedSolomonDecoder.lc")
+   include (tBase & "/bitArray.lc")
+   include (tBase & "/bitMatrix.lc")
+   include (tBase & "/bitSource.lc")
+   include (tBase & "/luminanceSource.lc")
+   include (tBase & "/globalHistogramBinarizer.lc")
+   include (tBase & "/hybridBinarizer.lc")
+   include (tBase & "/binaryBitmap.lc")
+   include (tBase & "/errorCorrectionLevel.lc")
+   include (tBase & "/mode.lc")
+   include (tBase & "/dataMask.lc")
+   include (tBase & "/formatInformation.lc")
+   include (tBase & "/version.lc")
+   include (tBase & "/characterSetECI.lc")
+   include (tBase & "/dataBlock.lc")
+   include (tBase & "/decodedBitStreamParser.lc")
+   include (tBase & "/bitMatrixParser.lc")
+   include (tBase & "/decoder.lc")
+   include (tBase & "/mathUtils.lc")
+   include (tBase & "/resultPoint.lc")
+   include (tBase & "/perspectiveTransform.lc")
+   include (tBase & "/gridSampler.lc")
+   include (tBase & "/finderPatternFinder.lc")
+   include (tBase & "/alignmentPatternFinder.lc")
+   include (tBase & "/detector.lc")
+   include (tBase & "/qrCodeReader.lc")
+   include (tBase & "/qrReader.lc")
+   put true into tReady
+end if
+
+put empty into sHTML
+if tReady then
+   runGolden
+else
+   renderMissing
+end if
+put sHTML
+?>

@@ -1,0 +1,85 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- bitSource.lc — MSB-first bit reader over a byte array.
+-- Port of ZXing Common\BitSource. Spec §8.3. Requires: qrCompat.lc.
+--
+-- Instance (Pattern A):
+--   pObj["bytes"][k]    — dense 0-based array of byte values 0..255
+--   pObj["byteOffset"]  — current byte index
+--   pObj["bitOffset"]   — current bit within that byte (0 = MSB)
+--
+-- readBits is a COMMAND (it mutates the offsets) that returns its value via
+-- `the result` (spec §5 convention: mutators are commands). Call site:
+--     bitSource_readBits tSrc, 4
+--     put the result into tValue
+-- This drives DecodedBitStreamParser.
+-- =====================================================================
+
+function bitSource_new pBytes
+   local tObj
+   put pBytes into tObj["bytes"]
+   put 0 into tObj["byteOffset"]
+   put 0 into tObj["bitOffset"]
+   return tObj
+end bitSource_new
+
+function bitSource_getByteOffset pObj
+   return pObj["byteOffset"]
+end bitSource_getByteOffset
+
+function bitSource_getBitOffset pObj
+   return pObj["bitOffset"]
+end bitSource_getBitOffset
+
+function bitSource_available pObj
+   return ((8 * ((the number of elements of pObj["bytes"]) - pObj["byteOffset"])) - pObj["bitOffset"])
+end bitSource_available
+
+command bitSource_readBits @pObj, pNumBits
+   local n, tResult, bitsLeft, toRead, bitsToNotRead, tMask, curByte
+   put pNumBits into n
+   if (n < 1) or (n > 32) or (n > bitSource_available(pObj)) then
+      throw "BitSource: illegal numBits " & n
+   end if
+   put 0 into tResult
+
+   -- (1) finish the current partial byte, if any
+   if pObj["bitOffset"] > 0 then
+      put (8 - pObj["bitOffset"]) into bitsLeft
+      put min(n, bitsLeft) into toRead
+      put (bitsLeft - toRead) into bitsToNotRead
+      put shl((255 div (2 ^ (8 - toRead))), bitsToNotRead) into tMask
+      put pObj["bytes"][pObj["byteOffset"]] into curByte
+      put uShr((curByte bitAnd tMask), bitsToNotRead) into tResult
+      subtract toRead from n
+      add toRead to pObj["bitOffset"]
+      if pObj["bitOffset"] = 8 then
+         put 0 into pObj["bitOffset"]
+         add 1 to pObj["byteOffset"]
+      end if
+   end if
+
+   -- (2) whole bytes, then a trailing partial byte
+   if n > 0 then
+      repeat while n >= 8
+         put pObj["bytes"][pObj["byteOffset"]] into curByte
+         put u32((shl(tResult, 8)) bitOr (curByte bitAnd 255)) into tResult
+         add 1 to pObj["byteOffset"]
+         subtract 8 from n
+      end repeat
+      if n > 0 then
+         put (8 - n) into bitsToNotRead
+         put shl((255 div (2 ^ bitsToNotRead)), bitsToNotRead) into tMask
+         put pObj["bytes"][pObj["byteOffset"]] into curByte
+         put u32((shl(tResult, n)) bitOr uShr((curByte bitAnd tMask), bitsToNotRead)) into tResult
+         add n to pObj["bitOffset"]
+      end if
+   end if
+
+   return tResult
+end bitSource_readBits
+?>

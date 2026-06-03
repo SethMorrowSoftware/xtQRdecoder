@@ -1,0 +1,53 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_genericGF.lc — GF(256) field tests (spec §10.2).
+-- Defines: command suite_genericGF  (calls t_eq provided by the runner).
+-- Requires loaded: qrCompat.lc, genericGF.lc, genericGFPoly.lc.
+--
+-- Expected values are the standard QR GF(256) antilog/log tables
+-- (primitive 0x011D, generator 2), independently published and matching ZXing.
+-- =====================================================================
+
+command suite_genericGF
+   -- exp (antilog) table spot checks ---------------------------------
+   t_eq "gf_exp 0", gf_exp(0), 1
+   t_eq "gf_exp 1", gf_exp(1), 2
+   t_eq "gf_exp 7", gf_exp(7), 128
+   t_eq "gf_exp 8 (wrap via primitive)", gf_exp(8), 29
+   t_eq "gf_exp 12", gf_exp(12), 205
+   t_eq "gf_exp 254", gf_exp(254), 142
+   t_eq "gf_exp 255 (period)", gf_exp(255), 1
+
+   -- log table spot checks -------------------------------------------
+   t_eq "gf_log 1", gf_log(1), 0
+   t_eq "gf_log 2", gf_log(2), 1
+   t_eq "gf_log 29", gf_log(29), 8
+   t_eq "gf_log 142", gf_log(142), 254
+
+   -- addOrSubtract == XOR --------------------------------------------
+   t_eq "gf_addOrSubtract 5,3", gf_addOrSubtract(5, 3), 6
+   t_eq "gf_addOrSubtract 255,255", gf_addOrSubtract(255, 255), 0
+   t_eq "gf_addOrSubtract 0,123", gf_addOrSubtract(0, 123), 123
+
+   -- multiply --------------------------------------------------------
+   t_eq "gf_multiply 0,5", gf_multiply(0, 5), 0
+   t_eq "gf_multiply 5,0", gf_multiply(5, 0), 0
+   t_eq "gf_multiply 1,5", gf_multiply(1, 5), 5
+   t_eq "gf_multiply 2,2", gf_multiply(2, 2), 4
+   t_eq "gf_multiply 2,4", gf_multiply(2, 4), 8
+   t_eq "gf_multiply 128,2", gf_multiply(128, 2), 29
+   t_eq "gf_multiply 3,3 ((x+1)^2=x^2+1)", gf_multiply(3, 3), 5
+   t_eq "gf_multiply 2,142 (=1)", gf_multiply(2, 142), 1
+
+   -- inverse ---------------------------------------------------------
+   t_eq "gf_inverse 1", gf_inverse(1), 1
+   t_eq "gf_inverse 2", gf_inverse(2), 142
+   t_eq "gf_multiply 7,inv(7)", gf_multiply(7, gf_inverse(7)), 1
+   t_eq "gf_multiply 200,inv(200)", gf_multiply(200, gf_inverse(200)), 1
+   t_eq "gf_multiply 255,inv(255)", gf_multiply(255, gf_inverse(255)), 1
+end suite_genericGF
+?>

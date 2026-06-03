@@ -1,0 +1,53 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_perspective.lc — PerspectiveTransform tests (spec §8.4).
+-- Defines: command suite_perspective. Requires loaded: perspectiveTransform.lc.
+-- Expected point maps independently computed in Python from the ZXing logic.
+-- round(...,6) neutralises any IEEE-754 display noise (values are exact here).
+-- =====================================================================
+
+command suite_perspective
+   local tXform, tPa, tPb, tPc
+
+   -- affine: unit square -> unit square is the identity
+   put pt_squareToQuadrilateral(0, 0, 1, 0, 1, 1, 0, 1) into tXform
+   put 0.5 into tPa[0]
+   put 0.5 into tPa[1]
+   put 0.25 into tPa[2]
+   put 0.75 into tPa[3]
+   pt_transformPoints tPa, tXform
+   t_eq "identity (0.5,0.5) x", round(tPa[0], 6), 0.5
+   t_eq "identity (0.5,0.5) y", round(tPa[1], 6), 0.5
+   t_eq "identity (0.25,0.75) x", round(tPa[2], 6), 0.25
+   t_eq "identity (0.25,0.75) y", round(tPa[3], 6), 0.75
+
+   -- affine: unit square -> rectangle (10,20)-(30,60)
+   put pt_squareToQuadrilateral(10, 20, 30, 20, 30, 60, 10, 60) into tXform
+   put 0 into tPb[0]
+   put 0 into tPb[1]
+   put 1 into tPb[2]
+   put 1 into tPb[3]
+   put 0.5 into tPb[4]
+   put 0.5 into tPb[5]
+   pt_transformPoints tPb, tXform
+   t_eq "rect (0,0) x 10", round(tPb[0], 6), 10
+   t_eq "rect (0,0) y 20", round(tPb[1], 6), 20
+   t_eq "rect (1,1) x 30", round(tPb[2], 6), 30
+   t_eq "rect (1,1) y 60", round(tPb[3], 6), 60
+   t_eq "rect centre x 20", round(tPb[4], 6), 20
+   t_eq "rect centre y 40", round(tPb[5], 6), 40
+
+   -- perspective: unit square -> trapezoid (0,0),(10,0),(8,10),(2,10)
+   put pt_quadrilateralToQuadrilateral(0, 0, 1, 0, 1, 1, 0, 1, \
+      0, 0, 10, 0, 8, 10, 2, 10) into tXform
+   put 0.5 into tPc[0]
+   put 0.5 into tPc[1]
+   pt_transformPoints tPc, tXform
+   t_eq "trapezoid centre x 5", round(tPc[0], 6), 5
+   t_eq "trapezoid centre y 6.25", round(tPc[1], 6), 6.25
+end suite_perspective
+?>

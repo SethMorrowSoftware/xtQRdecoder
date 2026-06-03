@@ -1,0 +1,107 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_binarizer.lc — global + hybrid binarizer tests (spec §10.5).
+-- Defines: command suite_binarizer.
+-- Requires loaded: qrCompat.lc, bitMatrix.lc, luminanceSource.lc,
+--                  globalHistogramBinarizer.lc, hybridBinarizer.lc.
+--
+-- Works on SYNTHETIC luminance arrays (no image object). The image-decode
+-- front-end is probed separately by qr_imageprobe.lc.
+-- =====================================================================
+
+-- dense 32-bucket histogram, all zero
+function binz_zeroBuckets
+   local b, i
+   repeat with i = 0 to 31
+      put 0 into b[i]
+   end repeat
+   return b
+end binz_zeroBuckets
+
+-- a left/right split luminance source: x < pSplit => pLeft, else pRight
+function binz_split pW, pH, pSplit, pLeft, pRight
+   local tLum, x, y, idx
+   put 0 into idx
+   repeat with y = 0 to (pH - 1)
+      repeat with x = 0 to (pW - 1)
+         if x < pSplit then
+            put pLeft into tLum[idx]
+         else
+            put pRight into tLum[idx]
+         end if
+         add 1 to idx
+      end repeat
+   end repeat
+   return luminanceSource_newFromLuminances(pW, pH, tLum)
+end binz_split
+
+-- a uniform luminance source
+function binz_uniform pW, pH, pVal
+   local tLum, n, i
+   put (pW * pH) into n
+   repeat with i = 0 to (n - 1)
+      put pVal into tLum[i]
+   end repeat
+   return luminanceSource_newFromLuminances(pW, pH, tLum)
+end binz_uniform
+
+command suite_binarizer
+   local b, bp, src, m, tThrew, e
+
+   -- estimateBlackPoint: clean bimodal (bucket 0 and bucket 31) -------
+   -- hand-computed: peaks at 0 and 31, valley at x=21, blackPoint = 21<<3 = 168
+   put binz_zeroBuckets() into b
+   put 48 into b[0]
+   put 48 into b[31]
+   put ghb_estimateBlackPoint(b) into bp
+   t_eq "estimateBlackPoint bimodal = 168", bp, 168
+
+   -- estimateBlackPoint: all in one bucket -> too little range -> throw
+   put binz_zeroBuckets() into b
+   put 100 into b[0]
+   put false into tThrew
+   try
+      get ghb_estimateBlackPoint(b)
+   catch e
+      put true into tThrew
+   end try
+   t_eq "estimateBlackPoint flat throws", tThrew, true
+
+   -- global binarizer on a 40x40 bimodal image ----------------------
+   put binz_split(40, 40, 20, 255, 0) into src
+   put ghb_getBlackMatrix(src) into m
+   t_eq "ghb white pixel (5,10) not black", bitMatrix_get(m, 5, 10), false
+   t_eq "ghb black pixel (30,10) black", bitMatrix_get(m, 30, 10), true
+   t_eq "ghb white pixel (19,39) not black", bitMatrix_get(m, 19, 39), false
+   t_eq "ghb black pixel (20,0) black", bitMatrix_get(m, 20, 0), true
+
+   -- global binarizer on all-black image -> NotFound throw ----------
+   put binz_uniform(40, 40, 0) into src
+   put false into tThrew
+   try
+      get ghb_getBlackMatrix(src)
+   catch e
+      put true into tThrew
+   end try
+   t_eq "ghb all-black throws NotFound", tThrew, true
+
+   -- hybrid falls back to global for small images (<40px) -----------
+   put binz_split(30, 30, 15, 255, 0) into src
+   put hb_getBlackMatrix(src) into m
+   t_eq "hybrid<40 white (2,2) not black", bitMatrix_get(m, 2, 2), false
+   t_eq "hybrid<40 black (27,27) black", bitMatrix_get(m, 27, 27), true
+
+   -- hybrid proper on a large (>=40px) bimodal image ----------------
+   -- 80x80, left 40 white / right 40 black; assert deep-region pixels
+   put binz_split(80, 80, 40, 255, 0) into src
+   put hb_getBlackMatrix(src) into m
+   t_eq "hybrid deep-white (8,40) not black", bitMatrix_get(m, 8, 40), false
+   t_eq "hybrid deep-black (72,40) black", bitMatrix_get(m, 72, 40), true
+   t_eq "hybrid matrix width", m["width"], 80
+   t_eq "hybrid matrix height", m["height"], 80
+end suite_binarizer
+?>
