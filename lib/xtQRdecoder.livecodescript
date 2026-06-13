@@ -1328,17 +1328,33 @@ function luminanceSource_decodeResampled pImageData, pMaxDim
    put luminanceSource_stepForDims(tW, tH, pMaxDim) into tStep
    put (((tW - 1) div tStep) + 1) into tOutW
    put (((tH - 1) div tStep) + 1) into tOutH
-   if (tOutW < tW) or (tOutH < tH) then
-      resizeImage image tName to tOutW, tOutH        -- COMPILED resample (C, not xTalk)
-      put the formattedWidth of image tName into tOutW    -- use the actual result size
-      put the formattedHeight of image tName into tOutH
+   -- Resample in the engine's COMPILED resizeImage, invoked via `do` so that a
+   -- build LACKING the command fails at RUNTIME (caught here) rather than at
+   -- COMPILE time -- a bare `resizeImage` would be a parse error that takes down
+   -- the whole library on engines without it. If the resize does not happen, the
+   -- code below falls back to the interpreted downsample, so ENGINE_RESAMPLE is
+   -- always safe (just not faster on builds without resizeImage).
+   if tStep > 1 then
+      try
+         do ("resizeImage image" && quote & tName & quote && "to" && tOutW & "," & tOutH)
+      catch e
+         -- resizeImage unavailable on this build; leave the image full-resolution
+      end try
    end if
+   put the formattedWidth of image tName into tW    -- actual size now (resized or not)
+   put the formattedHeight of image tName into tH
    put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
    delete image tName
-   if (the number of bytes of tRaw) < (tOutW * tOutH * 4) then
-      throw "NotFound: image resampled to " & tOutW & " x " & tOutH & " but pixel data was incomplete (image codec problem)"
+   if (the number of bytes of tRaw) < (tW * tH * 4) then
+      throw "NotFound: image pixel data incomplete after decode/resample (image codec problem)"
    end if
-   return luminanceSource_newFromImageData(tOutW, tOutH, tRaw)
+   -- Engine resized -> tW/tH are already the target, so this is a straight
+   -- greyscale. Engine could NOT resize -> tW/tH are still full size, so do the
+   -- interpreted downsample (identical to the default path -- no benefit, no harm).
+   if (tW > tOutW) or (tH > tOutH) then
+      return luminanceSource_downsampleRaw(tW, tH, tRaw, tStep)
+   end if
+   return luminanceSource_newFromImageData(tW, tH, tRaw)
 end luminanceSource_decodeResampled
 
 -- the integer nearest-neighbour downsample step so neither side exceeds pMaxDim
