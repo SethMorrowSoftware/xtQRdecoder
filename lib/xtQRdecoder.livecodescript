@@ -1330,64 +1330,28 @@ function luminanceSource_newFromData pImageData, pMaxDim
    return luminanceSource_fromRawPlane(tPlane, pMaxDim)
 end luminanceSource_newFromData
 
--- Build a luminance source from a 4-byte/pixel raw plane, sampling every pStep-th
--- pixel in x and y (nearest-neighbour downsample). FUSED single pass: extract each
--- kept source row with ONE chunk read, walk it with the fast `repeat for each
--- byte` iterator, and compute the §7.3 greyscale inline -- no intermediate reduced
--- 4-bpp string and no second pass. This is the dominant cost on large photos
--- (spec §11): the previous form did a `byte (o+1) to (o+4) of pRaw` chunk read AND
--- a `put after` for every kept pixel, then re-walked the reassembled plane.
--- Output is bit-identical (verified by simulation): lum[p] is still grey(R,G,B) of
--- source pixel (sx*pStep, sy*pStep), emitted in the same row-major order.
---
--- NOTE: the column-keep test is a FULL `if/end if`, not an inline `if ... then`,
--- on purpose -- an inline-if directly before the `else if` of the phase chain would
--- bind that `else` to the inline-if and wreck the block nest (ARCHITECTURE §4.12).
+-- Build a luminance source from a 4-byte/pixel raw plane, sampling every
+-- pStep-th pixel in x and y (nearest-neighbour downsample). Reuses the verified
+-- §7.3 greyscale by reassembling a reduced 4-bpp raw and calling newFromImageData.
 function luminanceSource_downsampleRaw pW, pH, pRaw, pStep
-   local tOutW, tOutH, sy, tObj, tLum, p
-   local tRowBytes, tRowStart, tRowStr, tColPhase, tColMod, r, g, b, tB
+   local tOutW, tOutH, sx, sy, tOStep, o, tReduced
    put (((pW - 1) div pStep) + 1) into tOutW
    put (((pH - 1) div pStep) + 1) into tOutH
-   put (pW * 4) into tRowBytes
-   put 0 into p
+   put empty into tReduced
+   -- Carry the source byte offset incrementally. Within a row each kept pixel is
+   -- pStep source pixels (= pStep*4 bytes) past the previous one, so advance o by
+   -- a constant add instead of recomputing ((sy*pStep)*pW + sx*pStep)*4 for every
+   -- output pixel. The byte ranges copied are identical (same idiom as the
+   -- per-pixel `add 4` in luminanceSource_newFromImageData).
+   put (pStep * 4) into tOStep
    repeat with sy = 0 to (tOutH - 1)
-      -- one chunk read per KEPT row (was: one per kept pixel)
-      put ((sy * pStep) * tRowBytes) into tRowStart
-      put (byte (tRowStart + 1) to (tRowStart + tRowBytes) of pRaw) into tRowStr
-      -- 4-phase counter regroups the row's bytes into pixels (1=alpha,2=R,3=G,4=B);
-      -- tColMod cycles 0..pStep-1 so only every pStep-th column is kept (mod 0).
-      put 0 into tColPhase
-      put 0 into tColMod
-      repeat for each byte tB in tRowStr
-         add 1 to tColPhase
-         if tColPhase = 2 then
-            if tColMod = 0 then
-               put byteToNum(tB) into r
-            end if
-         else if tColPhase = 3 then
-            if tColMod = 0 then
-               put byteToNum(tB) into g
-            end if
-         else if tColPhase = 4 then
-            if tColMod = 0 then
-               put byteToNum(tB) into b
-               if (r = g) and (g = b) then
-                  put r into tLum[p]
-               else
-                  put trunc((r + (2 * g) + b) / 4) into tLum[p]
-               end if
-               add 1 to p
-            end if
-            put 0 into tColPhase
-            add 1 to tColMod
-            if tColMod = pStep then put 0 into tColMod
-         end if
+      put (((sy * pStep) * pW) * 4) into o
+      repeat with sx = 0 to (tOutW - 1)
+         put (byte (o + 1) to (o + 4) of pRaw) after tReduced
+         add tOStep to o
       end repeat
    end repeat
-   put tOutW into tObj["width"]
-   put tOutH into tObj["height"]
-   put tLum into tObj["lum"]
-   return tObj
+   return luminanceSource_newFromImageData(tOutW, tOutH, tReduced)
 end luminanceSource_downsampleRaw
 
 function luminanceSource_getWidth pObj
