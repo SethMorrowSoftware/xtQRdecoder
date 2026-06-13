@@ -78,7 +78,7 @@ end ghb_estimateBlackPoint
 function ghb_getBlackMatrix pSrc
    local tW, tH, tLum, tMatrix, x, y, tRow, tRight, tLeft, tPixel
    local tBuckets, b, blackPoint, tOffset, tRowBase
-   local tRowSize, tMatRowBase, tIdx
+   local tRowSize, tMatRowBase, w, tXEnd, tWord, tBitVal, xx
    put pSrc["width"] into tW
    put pSrc["height"] into tH
    put pSrc["lum"] into tLum
@@ -104,19 +104,27 @@ function ghb_getBlackMatrix pSrc
 
    put ghb_estimateBlackPoint(tBuckets) into blackPoint
 
-   -- threshold the whole image: pixel < blackPoint => black. Inline the set
-   -- (instead of calling bitMatrix_set for every black pixel of the whole image)
-   -- to drop the per-pixel handler dispatch on this O(W*H) loop; the word index
-   -- and bit are exactly bitMatrix_set's, and shl(1,k) == 2^k for k in 0..31, so
-   -- the matrix is bit-identical. tMatRowBase hoists the per-row word base.
+   -- threshold the whole image: pixel < blackPoint => black. Build each 32-bit
+   -- matrix word from up to 32 pixels and write it ONCE per word (skipping all-
+   -- white words), instead of an array read+write per black pixel on this O(W*H)
+   -- loop. Bit-identical to setting each pixel individually: within word w,
+   -- column (32w + t) carries bit value 2^t -- exactly bitMatrix_set's bit -- and
+   -- OR over distinct bits is addition. tWord is built up from zero, so it is
+   -- already a valid unsigned 32-bit value (max 2^32-1); no u32() needed.
    repeat with y = 0 to (tH - 1)
       put (y * tW) into tOffset
       put (y * tRowSize) into tMatRowBase
-      repeat with x = 0 to (tW - 1)
-         if tLum[tOffset + x] < blackPoint then
-            put (tMatRowBase + (x div 32)) into tIdx
-            put u32(tMatrix["bits"][tIdx] bitOr (2 ^ (x bitAnd 31))) into tMatrix["bits"][tIdx]
-         end if
+      repeat with w = 0 to (tRowSize - 1)
+         put (w * 32) into x
+         put (x + 32) into tXEnd
+         if tXEnd > tW then put tW into tXEnd
+         put 0 into tWord
+         put 1 into tBitVal
+         repeat with xx = x to (tXEnd - 1)
+            if tLum[tOffset + xx] < blackPoint then add tBitVal to tWord
+            put (tBitVal * 2) into tBitVal
+         end repeat
+         if tWord <> 0 then put tWord into tMatrix["bits"][tMatRowBase + w]
       end repeat
    end repeat
 

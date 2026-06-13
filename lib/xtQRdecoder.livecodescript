@@ -1471,7 +1471,7 @@ end ghb_estimateBlackPoint
 function ghb_getBlackMatrix pSrc
    local tW, tH, tLum, tMatrix, x, y, tRow, tRight, tLeft, tPixel
    local tBuckets, b, blackPoint, tOffset, tRowBase
-   local tRowSize, tMatRowBase, tIdx
+   local tRowSize, tMatRowBase, w, tXEnd, tWord, tBitVal, xx
    put pSrc["width"] into tW
    put pSrc["height"] into tH
    put pSrc["lum"] into tLum
@@ -1497,19 +1497,27 @@ function ghb_getBlackMatrix pSrc
 
    put ghb_estimateBlackPoint(tBuckets) into blackPoint
 
-   -- threshold the whole image: pixel < blackPoint => black. Inline the set
-   -- (instead of calling bitMatrix_set for every black pixel of the whole image)
-   -- to drop the per-pixel handler dispatch on this O(W*H) loop; the word index
-   -- and bit are exactly bitMatrix_set's, and shl(1,k) == 2^k for k in 0..31, so
-   -- the matrix is bit-identical. tMatRowBase hoists the per-row word base.
+   -- threshold the whole image: pixel < blackPoint => black. Build each 32-bit
+   -- matrix word from up to 32 pixels and write it ONCE per word (skipping all-
+   -- white words), instead of an array read+write per black pixel on this O(W*H)
+   -- loop. Bit-identical to setting each pixel individually: within word w,
+   -- column (32w + t) carries bit value 2^t -- exactly bitMatrix_set's bit -- and
+   -- OR over distinct bits is addition. tWord is built up from zero, so it is
+   -- already a valid unsigned 32-bit value (max 2^32-1); no u32() needed.
    repeat with y = 0 to (tH - 1)
       put (y * tW) into tOffset
       put (y * tRowSize) into tMatRowBase
-      repeat with x = 0 to (tW - 1)
-         if tLum[tOffset + x] < blackPoint then
-            put (tMatRowBase + (x div 32)) into tIdx
-            put u32(tMatrix["bits"][tIdx] bitOr (2 ^ (x bitAnd 31))) into tMatrix["bits"][tIdx]
-         end if
+      repeat with w = 0 to (tRowSize - 1)
+         put (w * 32) into x
+         put (x + 32) into tXEnd
+         if tXEnd > tW then put tW into tXEnd
+         put 0 into tWord
+         put 1 into tBitVal
+         repeat with xx = x to (tXEnd - 1)
+            if tLum[tOffset + xx] < blackPoint then add tBitVal to tWord
+            put (tBitVal * 2) into tBitVal
+         end repeat
+         if tWord <> 0 then put tWord into tMatrix["bits"][tMatRowBase + w]
       end repeat
    end repeat
 
@@ -3751,6 +3759,7 @@ function fpf_find pImg, pHints
    local tTryHarder, tPure, tNrSkip, tAllowedDev, tMaxVar
    local tMaxI, tMaxJ, tISkip, tDone, i, j, tSC, tCurState, tEndRow
    local tConfirmed, tRowSkip, tInfo, tPats, tFinder
+   local tRowSize, tRowBase, tWord, tCurBlack
    -- hints: read each key directly. A missing key (or a non-array pHints)
    -- yields empty in xTalk, so we just test the read value -- no need for
    -- "is an array" / "is among the keys of" (both unexercised on this engine).
@@ -3776,6 +3785,7 @@ function fpf_find pImg, pHints
    end if
    put bitMatrix_getHeight(pImg) into tMaxI
    put bitMatrix_getWidth(pImg) into tMaxJ
+   put pImg["rowSize"] into tRowSize       -- words per row, for the inlined scan
    -- iSkip = (3*maxI) / (4*MAX_MODULES). MAX_MODULES=57, so 4*57=228 (inlined as
    -- a literal: the engine dislikes a literal*literal product as a div operand).
    put ((3 * tMaxI) div 228) into tISkip
@@ -3795,8 +3805,20 @@ function fpf_find pImg, pHints
       put 0 into tSC[4]
       put 0 into tCurState
       put false into tEndRow
+      put (i * tRowSize) into tRowBase
       repeat with j = 0 to (tMaxJ - 1)
-         if bitMatrix_get(pImg, j, i) then
+         -- Inline + cache the row's BitMatrix words: load one 32-bit word every 32
+         -- columns and shift it right one bit per pixel, so each pixel test is a
+         -- (bitAnd 1) instead of a bitMatrix_get() call + uShr() call. Same bit --
+         -- column j is bit (j bitAnd 31) of word (tRowBase + j div 32); after that
+         -- many right-shifts it is the low bit -- so this is bit-identical to
+         -- bitMatrix_get(pImg, j, i) for every pixel on the (sequential) row scan.
+         if (j bitAnd 31) = 0 then
+            put pImg["bits"][tRowBase + (j div 32)] into tWord
+         end if
+         put ((tWord bitAnd 1) <> 0) into tCurBlack
+         put (tWord div 2) into tWord
+         if tCurBlack then
             -- black pixel
             if (tCurState bitAnd 1) = 1 then add 1 to tCurState
             add 1 to tSC[tCurState]
@@ -4442,7 +4464,7 @@ end qrDecodeResult
 -- through (TRY_HARDER, BINARY_MODE, NR_ALLOW_SKIP_ROWS, ...).
 function qrDecodeResultRobust pImageData, pHints, pMaxDim
    local tHintsArr, tPlane, tStrats, tN, k, tBin, tDim, tBaseDim, tHiDim
-   local tSource, tBitmap, tResult, tLast, e, tErr
+   local tSrcByDim, tBuilt, tBitmap, tResult, tLast, e, tErr
    put qr_parseHints(pHints) into tHintsArr
 
    if (pMaxDim is empty) or (pMaxDim <= 0) then
@@ -4469,23 +4491,37 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
    put ("global," & tHiDim) into tStrats[3]
    put 4 into tN
 
+   -- Build the (downsampled) luminance source for each scale ONCE and reuse it
+   -- across binarizers. The strategies pair two binarizers at each scale
+   -- (hybrid+global @ base, then @ hi), and the downsample+greyscale IS the
+   -- decode cost centre (spec §11) -- without caching it would run twice per
+   -- scale (4x total) for a photo that needs the global fallback. The source is
+   -- read-only downstream (binaryBitmap copies it in; the binarizers only read
+   -- ["lum"]), so reuse is behaviour-preserving. tSrcByDim is keyed by tDim and
+   -- tBuilt is a cheap boolean guard (avoids inspecting the large source array),
+   -- so the reuse is order-independent: only distinct scales pay the build.
    put empty into tLast
    repeat with k = 0 to (tN - 1)
       set the itemDelimiter to comma
       put (item 1 of tStrats[k]) into tBin
       put (item 2 of tStrats[k]) into tDim
-      put empty into tSource
+      put empty into tResult
       try
-         put luminanceSource_fromRawPlane(tPlane, tDim) into tSource
-         put binaryBitmap_new(tSource, tBin) into tBitmap
+         if tBuilt[tDim] is not true then
+            put luminanceSource_fromRawPlane(tPlane, tDim) into tSrcByDim[tDim]
+            put true into tBuilt[tDim]
+         end if
+         put binaryBitmap_new(tSrcByDim[tDim], tBin) into tBitmap
          put qcr_decode(tBitmap, tHintsArr) into tResult
       catch e
          put empty into tResult
          put e into tResult["error"]
       end try
       put tBin into tResult["strategy"]
-      put tSource["width"] into tResult["procW"]
-      put tSource["height"] into tResult["procH"]
+      if tBuilt[tDim] is true then
+         put tSrcByDim[tDim]["width"] into tResult["procW"]
+         put tSrcByDim[tDim]["height"] into tResult["procH"]
+      end if
       if tResult["error"] is empty then
          return tResult
       end if

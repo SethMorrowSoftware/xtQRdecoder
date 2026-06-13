@@ -8,23 +8,43 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Performance
 - **Further reduced the interpreted hot-loop cost (the documented decode cost
-  centre, `docs/spec.md` §11) with no change to decode output.** Output is
-  bit-identical — verified by simulating the old vs. new logic over thousands of
-  random pixel buffers and bit-matrices — so the 399 unit tests and 5 golden
-  fixtures are unaffected:
-  - `luminanceSource_newFromImageData` (one iteration per pixel) now walks the
+  centre, `docs/spec.md` §11) with no change to decode output.** Each change is
+  bit-identical — verified by simulating the old vs. new logic against the exact
+  packing model over thousands of random pixel buffers, images, and bit-matrices
+  — so the 399 unit tests and 5 golden fixtures are unaffected:
+  - **Luminance (per-pixel).** `luminanceSource_newFromImageData` now walks the
     raw pixel plane with a `repeat for each byte` **sequential iterator** and a
     4-phase counter, instead of three indexed `byte (o+k) of pRaw` reads per
     pixel. Indexed chunk access re-resolves the chunk on every read; `repeat for
     each` advances an internal pointer and hands each byte over directly — the
-    single biggest interpreted-loop lever in xTalk. (This also speeds the
-    downsample path, which feeds the same handler.)
-  - The two binarizers no longer invoke the `bitMatrix_set` **command** once per
-    black pixel on their O(W·H) threshold loops (`hb_thresholdBlock` and
-    `globalHistogramBinarizer`'s whole-image threshold). The bit-set is inlined,
-    removing the per-pixel handler dispatch and the `shl` call (`shl(1, k)` is
-    exactly `2 ^ k` for k in 0..31). The computed word index and set bit are
-    unchanged, so the resulting `BitMatrix` is bit-identical.
+    single biggest interpreted-loop lever in xTalk. (Also speeds the downsample
+    path, which feeds the same handler.)
+  - **Global binarizer (per-pixel → per-word).** `globalHistogramBinarizer`'s
+    whole-image threshold now builds each 32-bit `BitMatrix` word from up to 32
+    pixels and writes it **once per word** (skipping all-white words), instead of
+    a `bitMatrix_set` **command** call — and an array read+write — per black
+    pixel on the O(W·H) loop.
+  - **Hybrid binarizer (per-pixel).** `hb_thresholdBlock` inlines the black-pixel
+    set instead of calling `bitMatrix_set` per pixel, removing the per-pixel
+    handler dispatch and the `shl` call (`shl(1, k)` is exactly `2 ^ k` for k in
+    0..31) across the thousands of 8×8 blocks.
+  - **Detector row scan (per-pixel).** `finderPatternFinder`'s main row scan now
+    loads one 32-bit row word per 32 columns and shifts it one bit per pixel, so
+    each pixel test is a `bitAnd`/`div 2` instead of a `bitMatrix_get` function
+    call plus a `uShr` call. Bit-identical for the sequential row walk.
+  - **Robust path (per scale).** `qrDecodeResultRobust` now builds the
+    downsampled luminance source **once per scale** and reuses it across
+    binarizers, instead of recomputing the downsample+greyscale (the cost centre)
+    for each `(binarizer, scale)` strategy — halving that work on photos that
+    need the global fallback. The source is read-only downstream, so reuse is
+    behaviour-preserving.
+
+### Added
+- **Continuous-integration workflow** (`.github/workflows/ci.yml`) running the two
+  static gates the docs describe — `tools/lint_lcs.py` over the modules and the
+  combined library, and `build_livecodescript.py --check` for combined-build sync
+  — on every push to `main` and every pull request. (Pure Python stdlib; this is
+  the workflow the README's CI badge already points at.)
 
 ## [0.1.0] — 2026-06-03
 
