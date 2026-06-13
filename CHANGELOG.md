@@ -4,6 +4,28 @@ All notable changes to xtQRdecoder are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Performance
+- **Further reduced the interpreted hot-loop cost (the documented decode cost
+  centre, `docs/spec.md` §11) with no change to decode output.** Output is
+  bit-identical — verified by simulating the old vs. new logic over thousands of
+  random pixel buffers and bit-matrices — so the 399 unit tests and 5 golden
+  fixtures are unaffected:
+  - `luminanceSource_newFromImageData` (one iteration per pixel) now walks the
+    raw pixel plane with a `repeat for each byte` **sequential iterator** and a
+    4-phase counter, instead of three indexed `byte (o+k) of pRaw` reads per
+    pixel. Indexed chunk access re-resolves the chunk on every read; `repeat for
+    each` advances an internal pointer and hands each byte over directly — the
+    single biggest interpreted-loop lever in xTalk. (This also speeds the
+    downsample path, which feeds the same handler.)
+  - The two binarizers no longer invoke the `bitMatrix_set` **command** once per
+    black pixel on their O(W·H) threshold loops (`hb_thresholdBlock` and
+    `globalHistogramBinarizer`'s whole-image threshold). The bit-set is inlined,
+    removing the per-pixel handler dispatch and the `shl` call (`shl(1, k)` is
+    exactly `2 ^ k` for k in 0..31). The computed word index and set bit are
+    unchanged, so the resulting `BitMatrix` is bit-identical.
+
 ## [0.1.0] — 2026-06-03
 
 Second public release. Builds on `0.0.1` with a modern interactive scanner, the

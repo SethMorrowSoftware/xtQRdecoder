@@ -1192,30 +1192,41 @@ end bitSource_readBits
 -- §7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
 -- raw layout per §7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
 function luminanceSource_newFromImageData pW, pH, pRaw
-   local tObj, p, o, r, g, b, n, tLum
+   local tObj, p, r, g, b, n, tLum, tPhase, tB
    put pW into tObj["width"]
    put pH into tObj["height"]
    put (pW * pH) into n
-   -- Hot loop (one iteration per pixel). Three behaviour-preserving speedups vs
-   -- the naive form (spec §11 -- this is the documented cost centre):
-   --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE
-   --     at the end, so each iteration does one array-key write instead of a
-   --     nested tObj["lum"][idx] lookup-then-write;
-   --   * use the loop counter p directly as the 0-based pixel index (idx == p);
-   --   * carry the byte offset o with `add 4` instead of recomputing p*4.
-   -- Result is bit-identical: pixel p reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
-   -- byte1=alpha,2=R,3=G,4=B layout of §7.2) and writes lum[p].
-   put 0 into o
-   repeat with p = 0 to (n - 1)
-      put byteToNum(byte (o + 2) of pRaw) into r
-      put byteToNum(byte (o + 3) of pRaw) into g
-      put byteToNum(byte (o + 4) of pRaw) into b
-      if (r = g) and (g = b) then
-         put r into tLum[p]
-      else
-         put trunc((r + (2 * g) + b) / 4) into tLum[p]
+   -- Hot loop (one iteration per pixel). This is the documented decode cost
+   -- centre (spec §11), so it walks the raw plane the FAST xTalk way: a
+   -- `repeat for each byte` sequential iterator, NOT `byte (o+k) of pRaw`
+   -- indexed access. Indexed chunk access re-resolves the chunk on every read
+   -- (three reads per pixel); `repeat for each` advances an internal pointer and
+   -- hands each byte over directly -- the single biggest interpreted-loop lever.
+   --
+   -- A 4-phase counter regroups the flat byte stream into pixels: byte 1 of each
+   -- group is alpha (skipped), 2=R, 3=G, 4=B (the §7.2 layout). So pixel p still
+   -- reads bytes 4p+2/4p+3/4p+4 and writes lum[p] -- bit-identical to the
+   -- indexed form. Other preserved speedups: accumulate into a FLAT local (tLum)
+   -- assigned to tObj["lum"] once, and index it by the pixel counter p directly.
+   put 0 into tPhase
+   put 0 into p
+   repeat for each byte tB in pRaw
+      add 1 to tPhase
+      if tPhase = 2 then
+         put byteToNum(tB) into r
+      else if tPhase = 3 then
+         put byteToNum(tB) into g
+      else if tPhase = 4 then
+         put byteToNum(tB) into b
+         if (r = g) and (g = b) then
+            put r into tLum[p]
+         else
+            put trunc((r + (2 * g) + b) / 4) into tLum[p]
+         end if
+         add 1 to p
+         if p >= n then exit repeat        -- stop at W*H pixels (ignore any pad)
+         put 0 into tPhase
       end if
-      add 4 to o
    end repeat
    put tLum into tObj["lum"]
    return tObj
@@ -1460,10 +1471,12 @@ end ghb_estimateBlackPoint
 function ghb_getBlackMatrix pSrc
    local tW, tH, tLum, tMatrix, x, y, tRow, tRight, tLeft, tPixel
    local tBuckets, b, blackPoint, tOffset, tRowBase
+   local tRowSize, tMatRowBase, tIdx
    put pSrc["width"] into tW
    put pSrc["height"] into tH
    put pSrc["lum"] into tLum
    put bitMatrix_new(tW, tH) into tMatrix
+   put tMatrix["rowSize"] into tRowSize
 
    -- histogram from 4 sampled rows (y = 1..4 of fifths), centre columns
    repeat with b = 0 to (kLumBuckets - 1)
@@ -1484,11 +1497,19 @@ function ghb_getBlackMatrix pSrc
 
    put ghb_estimateBlackPoint(tBuckets) into blackPoint
 
-   -- threshold the whole image: pixel < blackPoint => black
+   -- threshold the whole image: pixel < blackPoint => black. Inline the set
+   -- (instead of calling bitMatrix_set for every black pixel of the whole image)
+   -- to drop the per-pixel handler dispatch on this O(W*H) loop; the word index
+   -- and bit are exactly bitMatrix_set's, and shl(1,k) == 2^k for k in 0..31, so
+   -- the matrix is bit-identical. tMatRowBase hoists the per-row word base.
    repeat with y = 0 to (tH - 1)
       put (y * tW) into tOffset
+      put (y * tRowSize) into tMatRowBase
       repeat with x = 0 to (tW - 1)
-         if tLum[tOffset + x] < blackPoint then bitMatrix_set tMatrix, x, y
+         if tLum[tOffset + x] < blackPoint then
+            put (tMatRowBase + (x div 32)) into tIdx
+            put u32(tMatrix["bits"][tIdx] bitOr (2 ^ (x bitAnd 31))) into tMatrix["bits"][tIdx]
+         end if
       end repeat
    end repeat
 
@@ -1585,7 +1606,7 @@ end hb_calculateBlackPoints
 -- thousands of times on a big image). Same big-array-by-ref idiom as arraycopy.
 command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
    local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx, tPixel
-   local tNbBase, tRowY, tRowBase
+   local tNbBase, tRowY, tRowBase, tRowSize, tMatRowBase, tPx, tIdx
    put (tBx * kBlockSize) into tXoff
    if (tXoff + kBlockSize) > pW then put (pW - kBlockSize) into tXoff
    put (tBy * kBlockSize) into tYoff
@@ -1602,15 +1623,26 @@ command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
    end repeat
    put (tSum div 25) into tAvg
 
-   -- hoist the pixel-row base (and the row's y, reused as the set() y-arg) out of
-   -- the inner loop: per-pixel index arithmetic drops to a single add (tRowBase +
-   -- xx). The flat index and the (x,y) passed to bitMatrix_set are unchanged.
+   -- hoist the pixel-row base (and the row's y) out of the inner loop, and INLINE
+   -- the black-pixel set instead of calling bitMatrix_set per pixel: this command
+   -- runs up to kBlockSize*kBlockSize times per block over thousands of blocks, so
+   -- the per-pixel handler-dispatch dominates. The inlined word index and bit are
+   -- exactly bitMatrix_set's (tMatRowBase = tRowY*rowSize; word = +(x div 32); bit
+   -- = x bitAnd 31), and shl(1,k) == 2^k for k in 0..31, so the result is
+   -- bit-identical. pMatrix is by-ref, so writing pMatrix["bits"] mutates the
+   -- caller's matrix.
+   put pMatrix["rowSize"] into tRowSize
    repeat with yy = 0 to (kBlockSize - 1)
       put (tYoff + yy) into tRowY
       put ((tRowY * pW) + tXoff) into tRowBase
+      put (tRowY * tRowSize) into tMatRowBase
       repeat with xx = 0 to (kBlockSize - 1)
          put pLum[tRowBase + xx] into tPixel
-         if tPixel <= tAvg then bitMatrix_set pMatrix, (tXoff + xx), tRowY
+         if tPixel <= tAvg then
+            put (tXoff + xx) into tPx
+            put (tMatRowBase + (tPx div 32)) into tIdx
+            put u32(pMatrix["bits"][tIdx] bitOr (2 ^ (tPx bitAnd 31))) into pMatrix["bits"][tIdx]
+         end if
       end repeat
    end repeat
 end hb_thresholdBlock
