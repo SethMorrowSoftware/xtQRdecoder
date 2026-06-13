@@ -412,6 +412,7 @@ function fpf_find pImg, pHints
    local tTryHarder, tPure, tNrSkip, tAllowedDev, tMaxVar
    local tMaxI, tMaxJ, tISkip, tDone, i, j, tSC, tCurState, tEndRow
    local tConfirmed, tRowSkip, tInfo, tPats, tFinder
+   local tRowSize, tRowBase, tWord, tCurBlack
    -- hints: read each key directly. A missing key (or a non-array pHints)
    -- yields empty in xTalk, so we just test the read value -- no need for
    -- "is an array" / "is among the keys of" (both unexercised on this engine).
@@ -437,6 +438,7 @@ function fpf_find pImg, pHints
    end if
    put bitMatrix_getHeight(pImg) into tMaxI
    put bitMatrix_getWidth(pImg) into tMaxJ
+   put pImg["rowSize"] into tRowSize       -- words per row, for the inlined scan
    -- iSkip = (3*maxI) / (4*MAX_MODULES). MAX_MODULES=57, so 4*57=228 (inlined as
    -- a literal: the engine dislikes a literal*literal product as a div operand).
    put ((3 * tMaxI) div 228) into tISkip
@@ -456,8 +458,20 @@ function fpf_find pImg, pHints
       put 0 into tSC[4]
       put 0 into tCurState
       put false into tEndRow
+      put (i * tRowSize) into tRowBase
       repeat with j = 0 to (tMaxJ - 1)
-         if bitMatrix_get(pImg, j, i) then
+         -- Inline + cache the row's BitMatrix words: load one 32-bit word every 32
+         -- columns and shift it right one bit per pixel, so each pixel test is a
+         -- (bitAnd 1) instead of a bitMatrix_get() call + uShr() call. Same bit --
+         -- column j is bit (j bitAnd 31) of word (tRowBase + j div 32); after that
+         -- many right-shifts it is the low bit -- so this is bit-identical to
+         -- bitMatrix_get(pImg, j, i) for every pixel on the (sequential) row scan.
+         if (j bitAnd 31) = 0 then
+            put pImg["bits"][tRowBase + (j div 32)] into tWord
+         end if
+         put ((tWord bitAnd 1) <> 0) into tCurBlack
+         put (tWord div 2) into tWord
+         if tCurBlack then
             -- black pixel
             if (tCurState bitAnd 1) = 1 then add 1 to tCurState
             add 1 to tSC[tCurState]

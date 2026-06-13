@@ -87,8 +87,12 @@ end qrDecodeResult
 -- through (TRY_HARDER, BINARY_MODE, NR_ALLOW_SKIP_ROWS, ...).
 function qrDecodeResultRobust pImageData, pHints, pMaxDim
    local tHintsArr, tPlane, tStrats, tN, k, tBin, tDim, tBaseDim, tHiDim
-   local tSource, tBitmap, tResult, tLast, e, tErr
+   local tSrcByDim, tBuilt, tBitmap, tResult, tLast, e, tErr, tEngineResample
    put qr_parseHints(pHints) into tHintsArr
+   -- opt-in: resample in the engine's compiled resizeImage instead of the
+   -- interpreted per-pixel downsample (much faster on large photos; changes the
+   -- resampling filter, so it is OFF by default -- see decodeResampled).
+   put (tHintsArr["ENGINE_RESAMPLE"] is true) into tEngineResample
 
    if (pMaxDim is empty) or (pMaxDim <= 0) then
       put 1200 into tBaseDim
@@ -97,14 +101,18 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
    end if
    put trunc((tBaseDim * 4) / 3) into tHiDim     -- ~1.33x for the hi-res retry
 
-   -- decode the image once; the per-strategy downsample (fromRawPlane) derives
-   -- the working scales from this plane. A decode failure here is terminal.
-   try
-      put luminanceSource_decodeRawPlane(pImageData) into tPlane
-   catch e
-      put e into tErr["error"]
-      return tErr
-   end try
+   -- decode the image once for the interpreted path; the per-strategy downsample
+   -- (fromRawPlane) derives the working scales from this plane. A decode failure
+   -- here is terminal. The engine-resample path decodes+resamples per scale in
+   -- compiled code instead, so it skips this costly full-resolution decode.
+   if not tEngineResample then
+      try
+         put luminanceSource_decodeRawPlane(pImageData) into tPlane
+      catch e
+         put e into tErr["error"]
+         return tErr
+      end try
+   end if
 
    -- strategy order: default+fast first (zero change for easy images), then a
    -- different binarizer, then more resolution. Each entry is "binarizer,maxdim".
@@ -114,23 +122,41 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
    put ("global," & tHiDim) into tStrats[3]
    put 4 into tN
 
+   -- Build the (downsampled) luminance source for each scale ONCE and reuse it
+   -- across binarizers. The strategies pair two binarizers at each scale
+   -- (hybrid+global @ base, then @ hi), and the downsample+greyscale IS the
+   -- decode cost centre (spec §11) -- without caching it would run twice per
+   -- scale (4x total) for a photo that needs the global fallback. The source is
+   -- read-only downstream (binaryBitmap copies it in; the binarizers only read
+   -- ["lum"]), so reuse is behaviour-preserving. tSrcByDim is keyed by tDim and
+   -- tBuilt is a cheap boolean guard (avoids inspecting the large source array),
+   -- so the reuse is order-independent: only distinct scales pay the build.
    put empty into tLast
    repeat with k = 0 to (tN - 1)
       set the itemDelimiter to comma
       put (item 1 of tStrats[k]) into tBin
       put (item 2 of tStrats[k]) into tDim
-      put empty into tSource
+      put empty into tResult
       try
-         put luminanceSource_fromRawPlane(tPlane, tDim) into tSource
-         put binaryBitmap_new(tSource, tBin) into tBitmap
+         if tBuilt[tDim] is not true then
+            if tEngineResample then
+               put luminanceSource_decodeResampled(pImageData, tDim) into tSrcByDim[tDim]
+            else
+               put luminanceSource_fromRawPlane(tPlane, tDim) into tSrcByDim[tDim]
+            end if
+            put true into tBuilt[tDim]
+         end if
+         put binaryBitmap_new(tSrcByDim[tDim], tBin) into tBitmap
          put qcr_decode(tBitmap, tHintsArr) into tResult
       catch e
          put empty into tResult
          put e into tResult["error"]
       end try
       put tBin into tResult["strategy"]
-      put tSource["width"] into tResult["procW"]
-      put tSource["height"] into tResult["procH"]
+      if tBuilt[tDim] is true then
+         put tSrcByDim[tDim]["width"] into tResult["procW"]
+         put tSrcByDim[tDim]["height"] into tResult["procH"]
+      end if
       if tResult["error"] is empty then
          return tResult
       end if

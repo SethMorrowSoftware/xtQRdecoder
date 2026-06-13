@@ -24,30 +24,41 @@
 -- §7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
 -- raw layout per §7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
 function luminanceSource_newFromImageData pW, pH, pRaw
-   local tObj, p, o, r, g, b, n, tLum
+   local tObj, p, r, g, b, n, tLum, tPhase, tB
    put pW into tObj["width"]
    put pH into tObj["height"]
    put (pW * pH) into n
-   -- Hot loop (one iteration per pixel). Three behaviour-preserving speedups vs
-   -- the naive form (spec §11 -- this is the documented cost centre):
-   --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE
-   --     at the end, so each iteration does one array-key write instead of a
-   --     nested tObj["lum"][idx] lookup-then-write;
-   --   * use the loop counter p directly as the 0-based pixel index (idx == p);
-   --   * carry the byte offset o with `add 4` instead of recomputing p*4.
-   -- Result is bit-identical: pixel p reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
-   -- byte1=alpha,2=R,3=G,4=B layout of §7.2) and writes lum[p].
-   put 0 into o
-   repeat with p = 0 to (n - 1)
-      put byteToNum(byte (o + 2) of pRaw) into r
-      put byteToNum(byte (o + 3) of pRaw) into g
-      put byteToNum(byte (o + 4) of pRaw) into b
-      if (r = g) and (g = b) then
-         put r into tLum[p]
-      else
-         put trunc((r + (2 * g) + b) / 4) into tLum[p]
+   -- Hot loop (one iteration per pixel). This is the documented decode cost
+   -- centre (spec §11), so it walks the raw plane the FAST xTalk way: a
+   -- `repeat for each byte` sequential iterator, NOT `byte (o+k) of pRaw`
+   -- indexed access. Indexed chunk access re-resolves the chunk on every read
+   -- (three reads per pixel); `repeat for each` advances an internal pointer and
+   -- hands each byte over directly -- the single biggest interpreted-loop lever.
+   --
+   -- A 4-phase counter regroups the flat byte stream into pixels: byte 1 of each
+   -- group is alpha (skipped), 2=R, 3=G, 4=B (the §7.2 layout). So pixel p still
+   -- reads bytes 4p+2/4p+3/4p+4 and writes lum[p] -- bit-identical to the
+   -- indexed form. Other preserved speedups: accumulate into a FLAT local (tLum)
+   -- assigned to tObj["lum"] once, and index it by the pixel counter p directly.
+   put 0 into tPhase
+   put 0 into p
+   repeat for each byte tB in pRaw
+      add 1 to tPhase
+      if tPhase = 2 then
+         put byteToNum(tB) into r
+      else if tPhase = 3 then
+         put byteToNum(tB) into g
+      else if tPhase = 4 then
+         put byteToNum(tB) into b
+         if (r = g) and (g = b) then
+            put r into tLum[p]
+         else
+            put trunc((r + (2 * g) + b) / 4) into tLum[p]
+         end if
+         add 1 to p
+         if p >= n then exit repeat        -- stop at W*H pixels (ignore any pad)
+         put 0 into tPhase
       end if
-      add 4 to o
    end repeat
    put tLum into tObj["lum"]
    return tObj
@@ -112,6 +123,71 @@ function luminanceSource_decodeRawPlane pImageData, pMaxDim
    put tRaw into tPlane["raw"]
    return tPlane
 end luminanceSource_decodeRawPlane
+
+-- ENGINE-RESAMPLE fast path (OPT-IN, via the ENGINE_RESAMPLE hint). Decodes the
+-- image and resamples it to the target scale with the engine's COMPILED
+-- resizeImage, then reads the already-small imageData -- skipping the interpreted
+-- per-pixel downsample entirely (the STEP 2 cost centre). Returns a luminance
+-- source directly, at the same integer-step dimensions the interpreted path
+-- produces, so the detector geometry is unchanged (only the resampling filter
+-- differs).
+--
+-- TRADE-OFF: the engine's resampler is not the interpreted nearest-neighbour
+-- sampler, so pixel values differ -- this CHANGES decode behaviour and is
+-- therefore opt-in (default stays bit-identical). Re-verify qr_golden.lc on the
+-- target engine. Also requires a build whose image object supports resizeImage
+-- (desktop/mobile do; some headless server builds may not).
+function luminanceSource_decodeResampled pImageData, pMaxDim
+   local tW, tH, tStep, tOutW, tOutH, tRaw, tName, e
+   -- ensure a host stack exists (ignore if a default one already does)
+   try
+      if there is not a stack "qrHostStack" then
+         create invisible stack "qrHostStack"
+      end if
+   catch e
+      -- a default stack may already be available; proceed regardless
+   end try
+   put "qrSrc_" & the milliseconds into tName       -- created and deleted in-handler
+   create invisible image tName
+   set the lockLoc of image tName to true
+   put pImageData into image tName                  -- decode PNG/JPG/GIF/BMP
+   put the formattedWidth of image tName into tW
+   put the formattedHeight of image tName into tH
+   if (tW <= 0) or (tH <= 0) then
+      delete image tName
+      throw "NotFound: image did not decode (0 x 0) -- unsupported format? this engine build may lack a JPEG codec; try a PNG"
+   end if
+   put luminanceSource_stepForDims(tW, tH, pMaxDim) into tStep
+   put (((tW - 1) div tStep) + 1) into tOutW
+   put (((tH - 1) div tStep) + 1) into tOutH
+   -- Resample in the engine's COMPILED resizeImage, invoked via `do` so that a
+   -- build LACKING the command fails at RUNTIME (caught here) rather than at
+   -- COMPILE time -- a bare `resizeImage` would be a parse error that takes down
+   -- the whole library on engines without it. If the resize does not happen, the
+   -- code below falls back to the interpreted downsample, so ENGINE_RESAMPLE is
+   -- always safe (just not faster on builds without resizeImage).
+   if tStep > 1 then
+      try
+         do ("resizeImage image" && quote & tName & quote && "to" && tOutW & "," & tOutH)
+      catch e
+         -- resizeImage unavailable on this build; leave the image full-resolution
+      end try
+   end if
+   put the formattedWidth of image tName into tW    -- actual size now (resized or not)
+   put the formattedHeight of image tName into tH
+   put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
+   delete image tName
+   if (the number of bytes of tRaw) < (tW * tH * 4) then
+      throw "NotFound: image pixel data incomplete after decode/resample (image codec problem)"
+   end if
+   -- Engine resized -> tW/tH are already the target, so this is a straight
+   -- greyscale. Engine could NOT resize -> tW/tH are still full size, so do the
+   -- interpreted downsample (identical to the default path -- no benefit, no harm).
+   if (tW > tOutW) or (tH > tOutH) then
+      return luminanceSource_downsampleRaw(tW, tH, tRaw, tStep)
+   end if
+   return luminanceSource_newFromImageData(tW, tH, tRaw)
+end luminanceSource_decodeResampled
 
 -- the integer nearest-neighbour downsample step so neither side exceeds pMaxDim
 -- (1 = no downsample). Empty/<=0 pMaxDim means full resolution.

@@ -92,7 +92,7 @@ end hb_calculateBlackPoints
 -- thousands of times on a big image). Same big-array-by-ref idiom as arraycopy.
 command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
    local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx, tPixel
-   local tNbBase, tRowY, tRowBase
+   local tNbBase, tRowY, tRowBase, tRowSize, tMatRowBase, tPx, tIdx
    put (tBx * kBlockSize) into tXoff
    if (tXoff + kBlockSize) > pW then put (pW - kBlockSize) into tXoff
    put (tBy * kBlockSize) into tYoff
@@ -109,15 +109,26 @@ command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
    end repeat
    put (tSum div 25) into tAvg
 
-   -- hoist the pixel-row base (and the row's y, reused as the set() y-arg) out of
-   -- the inner loop: per-pixel index arithmetic drops to a single add (tRowBase +
-   -- xx). The flat index and the (x,y) passed to bitMatrix_set are unchanged.
+   -- hoist the pixel-row base (and the row's y) out of the inner loop, and INLINE
+   -- the black-pixel set instead of calling bitMatrix_set per pixel: this command
+   -- runs up to kBlockSize*kBlockSize times per block over thousands of blocks, so
+   -- the per-pixel handler-dispatch dominates. The inlined word index and bit are
+   -- exactly bitMatrix_set's (tMatRowBase = tRowY*rowSize; word = +(x div 32); bit
+   -- = x bitAnd 31), and shl(1,k) == 2^k for k in 0..31, so the result is
+   -- bit-identical. pMatrix is by-ref, so writing pMatrix["bits"] mutates the
+   -- caller's matrix.
+   put pMatrix["rowSize"] into tRowSize
    repeat with yy = 0 to (kBlockSize - 1)
       put (tYoff + yy) into tRowY
       put ((tRowY * pW) + tXoff) into tRowBase
+      put (tRowY * tRowSize) into tMatRowBase
       repeat with xx = 0 to (kBlockSize - 1)
          put pLum[tRowBase + xx] into tPixel
-         if tPixel <= tAvg then bitMatrix_set pMatrix, (tXoff + xx), tRowY
+         if tPixel <= tAvg then
+            put (tXoff + xx) into tPx
+            put (tMatRowBase + (tPx div 32)) into tIdx
+            put u32(pMatrix["bits"][tIdx] bitOr (2 ^ (tPx bitAnd 31))) into pMatrix["bits"][tIdx]
+         end if
       end repeat
    end repeat
 end hb_thresholdBlock

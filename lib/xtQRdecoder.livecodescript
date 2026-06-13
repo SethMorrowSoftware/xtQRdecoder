@@ -1192,30 +1192,41 @@ end bitSource_readBits
 -- §7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
 -- raw layout per §7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
 function luminanceSource_newFromImageData pW, pH, pRaw
-   local tObj, p, o, r, g, b, n, tLum
+   local tObj, p, r, g, b, n, tLum, tPhase, tB
    put pW into tObj["width"]
    put pH into tObj["height"]
    put (pW * pH) into n
-   -- Hot loop (one iteration per pixel). Three behaviour-preserving speedups vs
-   -- the naive form (spec §11 -- this is the documented cost centre):
-   --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE
-   --     at the end, so each iteration does one array-key write instead of a
-   --     nested tObj["lum"][idx] lookup-then-write;
-   --   * use the loop counter p directly as the 0-based pixel index (idx == p);
-   --   * carry the byte offset o with `add 4` instead of recomputing p*4.
-   -- Result is bit-identical: pixel p reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
-   -- byte1=alpha,2=R,3=G,4=B layout of §7.2) and writes lum[p].
-   put 0 into o
-   repeat with p = 0 to (n - 1)
-      put byteToNum(byte (o + 2) of pRaw) into r
-      put byteToNum(byte (o + 3) of pRaw) into g
-      put byteToNum(byte (o + 4) of pRaw) into b
-      if (r = g) and (g = b) then
-         put r into tLum[p]
-      else
-         put trunc((r + (2 * g) + b) / 4) into tLum[p]
+   -- Hot loop (one iteration per pixel). This is the documented decode cost
+   -- centre (spec §11), so it walks the raw plane the FAST xTalk way: a
+   -- `repeat for each byte` sequential iterator, NOT `byte (o+k) of pRaw`
+   -- indexed access. Indexed chunk access re-resolves the chunk on every read
+   -- (three reads per pixel); `repeat for each` advances an internal pointer and
+   -- hands each byte over directly -- the single biggest interpreted-loop lever.
+   --
+   -- A 4-phase counter regroups the flat byte stream into pixels: byte 1 of each
+   -- group is alpha (skipped), 2=R, 3=G, 4=B (the §7.2 layout). So pixel p still
+   -- reads bytes 4p+2/4p+3/4p+4 and writes lum[p] -- bit-identical to the
+   -- indexed form. Other preserved speedups: accumulate into a FLAT local (tLum)
+   -- assigned to tObj["lum"] once, and index it by the pixel counter p directly.
+   put 0 into tPhase
+   put 0 into p
+   repeat for each byte tB in pRaw
+      add 1 to tPhase
+      if tPhase = 2 then
+         put byteToNum(tB) into r
+      else if tPhase = 3 then
+         put byteToNum(tB) into g
+      else if tPhase = 4 then
+         put byteToNum(tB) into b
+         if (r = g) and (g = b) then
+            put r into tLum[p]
+         else
+            put trunc((r + (2 * g) + b) / 4) into tLum[p]
+         end if
+         add 1 to p
+         if p >= n then exit repeat        -- stop at W*H pixels (ignore any pad)
+         put 0 into tPhase
       end if
-      add 4 to o
    end repeat
    put tLum into tObj["lum"]
    return tObj
@@ -1280,6 +1291,71 @@ function luminanceSource_decodeRawPlane pImageData, pMaxDim
    put tRaw into tPlane["raw"]
    return tPlane
 end luminanceSource_decodeRawPlane
+
+-- ENGINE-RESAMPLE fast path (OPT-IN, via the ENGINE_RESAMPLE hint). Decodes the
+-- image and resamples it to the target scale with the engine's COMPILED
+-- resizeImage, then reads the already-small imageData -- skipping the interpreted
+-- per-pixel downsample entirely (the STEP 2 cost centre). Returns a luminance
+-- source directly, at the same integer-step dimensions the interpreted path
+-- produces, so the detector geometry is unchanged (only the resampling filter
+-- differs).
+--
+-- TRADE-OFF: the engine's resampler is not the interpreted nearest-neighbour
+-- sampler, so pixel values differ -- this CHANGES decode behaviour and is
+-- therefore opt-in (default stays bit-identical). Re-verify qr_golden.lc on the
+-- target engine. Also requires a build whose image object supports resizeImage
+-- (desktop/mobile do; some headless server builds may not).
+function luminanceSource_decodeResampled pImageData, pMaxDim
+   local tW, tH, tStep, tOutW, tOutH, tRaw, tName, e
+   -- ensure a host stack exists (ignore if a default one already does)
+   try
+      if there is not a stack "qrHostStack" then
+         create invisible stack "qrHostStack"
+      end if
+   catch e
+      -- a default stack may already be available; proceed regardless
+   end try
+   put "qrSrc_" & the milliseconds into tName       -- created and deleted in-handler
+   create invisible image tName
+   set the lockLoc of image tName to true
+   put pImageData into image tName                  -- decode PNG/JPG/GIF/BMP
+   put the formattedWidth of image tName into tW
+   put the formattedHeight of image tName into tH
+   if (tW <= 0) or (tH <= 0) then
+      delete image tName
+      throw "NotFound: image did not decode (0 x 0) -- unsupported format? this engine build may lack a JPEG codec; try a PNG"
+   end if
+   put luminanceSource_stepForDims(tW, tH, pMaxDim) into tStep
+   put (((tW - 1) div tStep) + 1) into tOutW
+   put (((tH - 1) div tStep) + 1) into tOutH
+   -- Resample in the engine's COMPILED resizeImage, invoked via `do` so that a
+   -- build LACKING the command fails at RUNTIME (caught here) rather than at
+   -- COMPILE time -- a bare `resizeImage` would be a parse error that takes down
+   -- the whole library on engines without it. If the resize does not happen, the
+   -- code below falls back to the interpreted downsample, so ENGINE_RESAMPLE is
+   -- always safe (just not faster on builds without resizeImage).
+   if tStep > 1 then
+      try
+         do ("resizeImage image" && quote & tName & quote && "to" && tOutW & "," & tOutH)
+      catch e
+         -- resizeImage unavailable on this build; leave the image full-resolution
+      end try
+   end if
+   put the formattedWidth of image tName into tW    -- actual size now (resized or not)
+   put the formattedHeight of image tName into tH
+   put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
+   delete image tName
+   if (the number of bytes of tRaw) < (tW * tH * 4) then
+      throw "NotFound: image pixel data incomplete after decode/resample (image codec problem)"
+   end if
+   -- Engine resized -> tW/tH are already the target, so this is a straight
+   -- greyscale. Engine could NOT resize -> tW/tH are still full size, so do the
+   -- interpreted downsample (identical to the default path -- no benefit, no harm).
+   if (tW > tOutW) or (tH > tOutH) then
+      return luminanceSource_downsampleRaw(tW, tH, tRaw, tStep)
+   end if
+   return luminanceSource_newFromImageData(tW, tH, tRaw)
+end luminanceSource_decodeResampled
 
 -- the integer nearest-neighbour downsample step so neither side exceeds pMaxDim
 -- (1 = no downsample). Empty/<=0 pMaxDim means full resolution.
@@ -1460,10 +1536,12 @@ end ghb_estimateBlackPoint
 function ghb_getBlackMatrix pSrc
    local tW, tH, tLum, tMatrix, x, y, tRow, tRight, tLeft, tPixel
    local tBuckets, b, blackPoint, tOffset, tRowBase
+   local tRowSize, tMatRowBase, w, tXEnd, tWord, tBitVal, xx
    put pSrc["width"] into tW
    put pSrc["height"] into tH
    put pSrc["lum"] into tLum
    put bitMatrix_new(tW, tH) into tMatrix
+   put tMatrix["rowSize"] into tRowSize
 
    -- histogram from 4 sampled rows (y = 1..4 of fifths), centre columns
    repeat with b = 0 to (kLumBuckets - 1)
@@ -1484,11 +1562,27 @@ function ghb_getBlackMatrix pSrc
 
    put ghb_estimateBlackPoint(tBuckets) into blackPoint
 
-   -- threshold the whole image: pixel < blackPoint => black
+   -- threshold the whole image: pixel < blackPoint => black. Build each 32-bit
+   -- matrix word from up to 32 pixels and write it ONCE per word (skipping all-
+   -- white words), instead of an array read+write per black pixel on this O(W*H)
+   -- loop. Bit-identical to setting each pixel individually: within word w,
+   -- column (32w + t) carries bit value 2^t -- exactly bitMatrix_set's bit -- and
+   -- OR over distinct bits is addition. tWord is built up from zero, so it is
+   -- already a valid unsigned 32-bit value (max 2^32-1); no u32() needed.
    repeat with y = 0 to (tH - 1)
       put (y * tW) into tOffset
-      repeat with x = 0 to (tW - 1)
-         if tLum[tOffset + x] < blackPoint then bitMatrix_set tMatrix, x, y
+      put (y * tRowSize) into tMatRowBase
+      repeat with w = 0 to (tRowSize - 1)
+         put (w * 32) into x
+         put (x + 32) into tXEnd
+         if tXEnd > tW then put tW into tXEnd
+         put 0 into tWord
+         put 1 into tBitVal
+         repeat with xx = x to (tXEnd - 1)
+            if tLum[tOffset + xx] < blackPoint then add tBitVal to tWord
+            put (tBitVal * 2) into tBitVal
+         end repeat
+         if tWord <> 0 then put tWord into tMatrix["bits"][tMatRowBase + w]
       end repeat
    end repeat
 
@@ -1585,7 +1679,7 @@ end hb_calculateBlackPoints
 -- thousands of times on a big image). Same big-array-by-ref idiom as arraycopy.
 command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
    local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx, tPixel
-   local tNbBase, tRowY, tRowBase
+   local tNbBase, tRowY, tRowBase, tRowSize, tMatRowBase, tPx, tIdx
    put (tBx * kBlockSize) into tXoff
    if (tXoff + kBlockSize) > pW then put (pW - kBlockSize) into tXoff
    put (tBy * kBlockSize) into tYoff
@@ -1602,15 +1696,26 @@ command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
    end repeat
    put (tSum div 25) into tAvg
 
-   -- hoist the pixel-row base (and the row's y, reused as the set() y-arg) out of
-   -- the inner loop: per-pixel index arithmetic drops to a single add (tRowBase +
-   -- xx). The flat index and the (x,y) passed to bitMatrix_set are unchanged.
+   -- hoist the pixel-row base (and the row's y) out of the inner loop, and INLINE
+   -- the black-pixel set instead of calling bitMatrix_set per pixel: this command
+   -- runs up to kBlockSize*kBlockSize times per block over thousands of blocks, so
+   -- the per-pixel handler-dispatch dominates. The inlined word index and bit are
+   -- exactly bitMatrix_set's (tMatRowBase = tRowY*rowSize; word = +(x div 32); bit
+   -- = x bitAnd 31), and shl(1,k) == 2^k for k in 0..31, so the result is
+   -- bit-identical. pMatrix is by-ref, so writing pMatrix["bits"] mutates the
+   -- caller's matrix.
+   put pMatrix["rowSize"] into tRowSize
    repeat with yy = 0 to (kBlockSize - 1)
       put (tYoff + yy) into tRowY
       put ((tRowY * pW) + tXoff) into tRowBase
+      put (tRowY * tRowSize) into tMatRowBase
       repeat with xx = 0 to (kBlockSize - 1)
          put pLum[tRowBase + xx] into tPixel
-         if tPixel <= tAvg then bitMatrix_set pMatrix, (tXoff + xx), tRowY
+         if tPixel <= tAvg then
+            put (tXoff + xx) into tPx
+            put (tMatRowBase + (tPx div 32)) into tIdx
+            put u32(pMatrix["bits"][tIdx] bitOr (2 ^ (tPx bitAnd 31))) into pMatrix["bits"][tIdx]
+         end if
       end repeat
    end repeat
 end hb_thresholdBlock
@@ -3719,6 +3824,7 @@ function fpf_find pImg, pHints
    local tTryHarder, tPure, tNrSkip, tAllowedDev, tMaxVar
    local tMaxI, tMaxJ, tISkip, tDone, i, j, tSC, tCurState, tEndRow
    local tConfirmed, tRowSkip, tInfo, tPats, tFinder
+   local tRowSize, tRowBase, tWord, tCurBlack
    -- hints: read each key directly. A missing key (or a non-array pHints)
    -- yields empty in xTalk, so we just test the read value -- no need for
    -- "is an array" / "is among the keys of" (both unexercised on this engine).
@@ -3744,6 +3850,7 @@ function fpf_find pImg, pHints
    end if
    put bitMatrix_getHeight(pImg) into tMaxI
    put bitMatrix_getWidth(pImg) into tMaxJ
+   put pImg["rowSize"] into tRowSize       -- words per row, for the inlined scan
    -- iSkip = (3*maxI) / (4*MAX_MODULES). MAX_MODULES=57, so 4*57=228 (inlined as
    -- a literal: the engine dislikes a literal*literal product as a div operand).
    put ((3 * tMaxI) div 228) into tISkip
@@ -3763,8 +3870,20 @@ function fpf_find pImg, pHints
       put 0 into tSC[4]
       put 0 into tCurState
       put false into tEndRow
+      put (i * tRowSize) into tRowBase
       repeat with j = 0 to (tMaxJ - 1)
-         if bitMatrix_get(pImg, j, i) then
+         -- Inline + cache the row's BitMatrix words: load one 32-bit word every 32
+         -- columns and shift it right one bit per pixel, so each pixel test is a
+         -- (bitAnd 1) instead of a bitMatrix_get() call + uShr() call. Same bit --
+         -- column j is bit (j bitAnd 31) of word (tRowBase + j div 32); after that
+         -- many right-shifts it is the low bit -- so this is bit-identical to
+         -- bitMatrix_get(pImg, j, i) for every pixel on the (sequential) row scan.
+         if (j bitAnd 31) = 0 then
+            put pImg["bits"][tRowBase + (j div 32)] into tWord
+         end if
+         put ((tWord bitAnd 1) <> 0) into tCurBlack
+         put (tWord div 2) into tWord
+         if tCurBlack then
             -- black pixel
             if (tCurState bitAnd 1) = 1 then add 1 to tCurState
             add 1 to tSC[tCurState]
@@ -4410,8 +4529,12 @@ end qrDecodeResult
 -- through (TRY_HARDER, BINARY_MODE, NR_ALLOW_SKIP_ROWS, ...).
 function qrDecodeResultRobust pImageData, pHints, pMaxDim
    local tHintsArr, tPlane, tStrats, tN, k, tBin, tDim, tBaseDim, tHiDim
-   local tSource, tBitmap, tResult, tLast, e, tErr
+   local tSrcByDim, tBuilt, tBitmap, tResult, tLast, e, tErr, tEngineResample
    put qr_parseHints(pHints) into tHintsArr
+   -- opt-in: resample in the engine's compiled resizeImage instead of the
+   -- interpreted per-pixel downsample (much faster on large photos; changes the
+   -- resampling filter, so it is OFF by default -- see decodeResampled).
+   put (tHintsArr["ENGINE_RESAMPLE"] is true) into tEngineResample
 
    if (pMaxDim is empty) or (pMaxDim <= 0) then
       put 1200 into tBaseDim
@@ -4420,14 +4543,18 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
    end if
    put trunc((tBaseDim * 4) / 3) into tHiDim     -- ~1.33x for the hi-res retry
 
-   -- decode the image once; the per-strategy downsample (fromRawPlane) derives
-   -- the working scales from this plane. A decode failure here is terminal.
-   try
-      put luminanceSource_decodeRawPlane(pImageData) into tPlane
-   catch e
-      put e into tErr["error"]
-      return tErr
-   end try
+   -- decode the image once for the interpreted path; the per-strategy downsample
+   -- (fromRawPlane) derives the working scales from this plane. A decode failure
+   -- here is terminal. The engine-resample path decodes+resamples per scale in
+   -- compiled code instead, so it skips this costly full-resolution decode.
+   if not tEngineResample then
+      try
+         put luminanceSource_decodeRawPlane(pImageData) into tPlane
+      catch e
+         put e into tErr["error"]
+         return tErr
+      end try
+   end if
 
    -- strategy order: default+fast first (zero change for easy images), then a
    -- different binarizer, then more resolution. Each entry is "binarizer,maxdim".
@@ -4437,23 +4564,41 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
    put ("global," & tHiDim) into tStrats[3]
    put 4 into tN
 
+   -- Build the (downsampled) luminance source for each scale ONCE and reuse it
+   -- across binarizers. The strategies pair two binarizers at each scale
+   -- (hybrid+global @ base, then @ hi), and the downsample+greyscale IS the
+   -- decode cost centre (spec §11) -- without caching it would run twice per
+   -- scale (4x total) for a photo that needs the global fallback. The source is
+   -- read-only downstream (binaryBitmap copies it in; the binarizers only read
+   -- ["lum"]), so reuse is behaviour-preserving. tSrcByDim is keyed by tDim and
+   -- tBuilt is a cheap boolean guard (avoids inspecting the large source array),
+   -- so the reuse is order-independent: only distinct scales pay the build.
    put empty into tLast
    repeat with k = 0 to (tN - 1)
       set the itemDelimiter to comma
       put (item 1 of tStrats[k]) into tBin
       put (item 2 of tStrats[k]) into tDim
-      put empty into tSource
+      put empty into tResult
       try
-         put luminanceSource_fromRawPlane(tPlane, tDim) into tSource
-         put binaryBitmap_new(tSource, tBin) into tBitmap
+         if tBuilt[tDim] is not true then
+            if tEngineResample then
+               put luminanceSource_decodeResampled(pImageData, tDim) into tSrcByDim[tDim]
+            else
+               put luminanceSource_fromRawPlane(tPlane, tDim) into tSrcByDim[tDim]
+            end if
+            put true into tBuilt[tDim]
+         end if
+         put binaryBitmap_new(tSrcByDim[tDim], tBin) into tBitmap
          put qcr_decode(tBitmap, tHintsArr) into tResult
       catch e
          put empty into tResult
          put e into tResult["error"]
       end try
       put tBin into tResult["strategy"]
-      put tSource["width"] into tResult["procW"]
-      put tSource["height"] into tResult["procH"]
+      if tBuilt[tDim] is true then
+         put tSrcByDim[tDim]["width"] into tResult["procW"]
+         put tSrcByDim[tDim]["height"] into tResult["procH"]
+      end if
       if tResult["error"] is empty then
          return tResult
       end if

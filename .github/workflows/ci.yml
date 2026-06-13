@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Seth Morrow
+# Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+#
+# Static CI gates for the xTalk sources. These are the checks docs/ARCHITECTURE.md
+# §5 and §7 describe as the CI gates:
+#   * tools/lint_lcs.py        — the heuristic xTalk syntax linter (front-runs the
+#                                engine for block matching, reserved words, bare
+#                                return, case collisions, loop/undeclared vars, SPDX)
+#   * build_livecodescript.py --check — fails if lib/xtQRdecoder.livecodescript is
+#                                stale, i.e. a qr/*.lc module changed without
+#                                rebuilding the combined script-only library.
+#
+# Both tools are pure Python 3 stdlib (no dependencies). They cannot run the xTalk
+# engine itself, so qr/qr_tester.lc (399 unit tests) and qr/qr_golden.lc (5 golden
+# fixtures) are still verified on a real engine before a release — see the docs.
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    name: xTalk lint + combined-build sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Lint the xTalk modules and the combined library
+        run: python3 tools/lint_lcs.py qr lib/xtQRdecoder.livecodescript
+      - name: Verify the combined library is in sync with the modules
+        run: python3 tools/build_livecodescript.py --check

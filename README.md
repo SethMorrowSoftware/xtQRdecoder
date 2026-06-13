@@ -316,6 +316,7 @@ a **comma-separated string** of `"KEY"` / `"KEY=VALUE"` tokens
 | `NR_ALLOW_SKIP_ROWS` | int | Override the finder's row-skip heuristic. `0` forces every row to be scanned (slowest, most thorough). |
 | `ALLOWED_DEVIATION` | float | Module-size deviation tolerance when selecting finder candidates (default `0.05`). |
 | `MAX_VARIANCE` | float | Tolerance for the 1:1:3:1:1 finder-pattern ratio test (default `0.5`). |
+| `ENGINE_RESAMPLE` | flag | *(robust path)* Downsample large images with the engine's **compiled** `resizeImage` instead of the interpreted per-pixel loop — much faster on big photos. Changes the resampling filter, so it's **off by default**; re-verify your images decode. Needs a build whose image object supports `resizeImage` (desktop/mobile). |
 
 ---
 
