@@ -17,8 +17,14 @@ follow [Semantic Versioning](https://semver.org/).
     4-phase counter, instead of three indexed `byte (o+k) of pRaw` reads per
     pixel. Indexed chunk access re-resolves the chunk on every read; `repeat for
     each` advances an internal pointer and hands each byte over directly — the
-    single biggest interpreted-loop lever in xTalk. (Also speeds the downsample
-    path, which feeds the same handler.)
+    single biggest interpreted-loop lever in xTalk.
+  - **Downsample (the cost centre for large photos).** `luminanceSource_downsampleRaw`
+    is now a fused single pass: it extracts each kept source row with **one** chunk
+    read and walks it with `repeat for each byte`, computing the greyscale inline —
+    instead of doing a `byte (o+1) to (o+4) of pRaw` chunk read *and* a `put after`
+    for every kept pixel and then re-walking a reassembled reduced plane. On a
+    typical phone photo (downsampled before decode) this is the dominant cost, so
+    the saving is large; output is bit-identical (verified by simulation).
   - **Global binarizer (per-pixel → per-word).** `globalHistogramBinarizer`'s
     whole-image threshold now builds each 32-bit `BitMatrix` word from up to 32
     pixels and writes it **once per word** (skipping all-white words), instead of
