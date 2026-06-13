@@ -18,13 +18,6 @@ follow [Semantic Versioning](https://semver.org/).
     pixel. Indexed chunk access re-resolves the chunk on every read; `repeat for
     each` advances an internal pointer and hands each byte over directly — the
     single biggest interpreted-loop lever in xTalk.
-  - **Downsample (the cost centre for large photos).** `luminanceSource_downsampleRaw`
-    is now a fused single pass: it extracts each kept source row with **one** chunk
-    read and walks it with `repeat for each byte`, computing the greyscale inline —
-    instead of doing a `byte (o+1) to (o+4) of pRaw` chunk read *and* a `put after`
-    for every kept pixel and then re-walking a reassembled reduced plane. On a
-    typical phone photo (downsampled before decode) this is the dominant cost, so
-    the saving is large; output is bit-identical (verified by simulation).
   - **Global binarizer (per-pixel → per-word).** `globalHistogramBinarizer`'s
     whole-image threshold now builds each 32-bit `BitMatrix` word from up to 32
     pixels and writes it **once per word** (skipping all-white words), instead of
@@ -46,6 +39,15 @@ follow [Semantic Versioning](https://semver.org/).
     behaviour-preserving.
 
 ### Added
+- **`ENGINE_RESAMPLE` decode hint (opt-in fast path).** On `qrDecodeResultRobust`,
+  downsampling large images is the dominant interpreted cost; with this hint the
+  image is resampled by the engine's **compiled** `resizeImage` and the already-
+  small `imageData` is read, skipping the per-pixel downsample loop entirely.
+  Because the engine's resampling filter differs from the interpreted nearest-
+  neighbour sampler, it changes decode behaviour and is therefore **off by
+  default** (the default path stays bit-identical); enable it per-call and
+  re-verify your images decode. Requires a build whose image object supports
+  `resizeImage` (desktop/mobile).
 - **Continuous-integration workflow** (`.github/workflows/ci.yml`) running the two
   static gates the docs describe — `tools/lint_lcs.py` over the modules and the
   combined library, and `build_livecodescript.py --check` for combined-build sync

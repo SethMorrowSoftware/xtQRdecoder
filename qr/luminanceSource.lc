@@ -124,6 +124,55 @@ function luminanceSource_decodeRawPlane pImageData, pMaxDim
    return tPlane
 end luminanceSource_decodeRawPlane
 
+-- ENGINE-RESAMPLE fast path (OPT-IN, via the ENGINE_RESAMPLE hint). Decodes the
+-- image and resamples it to the target scale with the engine's COMPILED
+-- resizeImage, then reads the already-small imageData -- skipping the interpreted
+-- per-pixel downsample entirely (the STEP 2 cost centre). Returns a luminance
+-- source directly, at the same integer-step dimensions the interpreted path
+-- produces, so the detector geometry is unchanged (only the resampling filter
+-- differs).
+--
+-- TRADE-OFF: the engine's resampler is not the interpreted nearest-neighbour
+-- sampler, so pixel values differ -- this CHANGES decode behaviour and is
+-- therefore opt-in (default stays bit-identical). Re-verify qr_golden.lc on the
+-- target engine. Also requires a build whose image object supports resizeImage
+-- (desktop/mobile do; some headless server builds may not).
+function luminanceSource_decodeResampled pImageData, pMaxDim
+   local tW, tH, tStep, tOutW, tOutH, tRaw, tName, e
+   -- ensure a host stack exists (ignore if a default one already does)
+   try
+      if there is not a stack "qrHostStack" then
+         create invisible stack "qrHostStack"
+      end if
+   catch e
+      -- a default stack may already be available; proceed regardless
+   end try
+   put "qrSrc_" & the milliseconds into tName       -- created and deleted in-handler
+   create invisible image tName
+   set the lockLoc of image tName to true
+   put pImageData into image tName                  -- decode PNG/JPG/GIF/BMP
+   put the formattedWidth of image tName into tW
+   put the formattedHeight of image tName into tH
+   if (tW <= 0) or (tH <= 0) then
+      delete image tName
+      throw "NotFound: image did not decode (0 x 0) -- unsupported format? this engine build may lack a JPEG codec; try a PNG"
+   end if
+   put luminanceSource_stepForDims(tW, tH, pMaxDim) into tStep
+   put (((tW - 1) div tStep) + 1) into tOutW
+   put (((tH - 1) div tStep) + 1) into tOutH
+   if (tOutW < tW) or (tOutH < tH) then
+      resizeImage image tName to tOutW, tOutH        -- COMPILED resample (C, not xTalk)
+      put the formattedWidth of image tName into tOutW    -- use the actual result size
+      put the formattedHeight of image tName into tOutH
+   end if
+   put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
+   delete image tName
+   if (the number of bytes of tRaw) < (tOutW * tOutH * 4) then
+      throw "NotFound: image resampled to " & tOutW & " x " & tOutH & " but pixel data was incomplete (image codec problem)"
+   end if
+   return luminanceSource_newFromImageData(tOutW, tOutH, tRaw)
+end luminanceSource_decodeResampled
+
 -- the integer nearest-neighbour downsample step so neither side exceeds pMaxDim
 -- (1 = no downsample). Empty/<=0 pMaxDim means full resolution.
 function luminanceSource_stepForDims pW, pH, pMaxDim

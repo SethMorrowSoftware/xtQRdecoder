@@ -1292,6 +1292,55 @@ function luminanceSource_decodeRawPlane pImageData, pMaxDim
    return tPlane
 end luminanceSource_decodeRawPlane
 
+-- ENGINE-RESAMPLE fast path (OPT-IN, via the ENGINE_RESAMPLE hint). Decodes the
+-- image and resamples it to the target scale with the engine's COMPILED
+-- resizeImage, then reads the already-small imageData -- skipping the interpreted
+-- per-pixel downsample entirely (the STEP 2 cost centre). Returns a luminance
+-- source directly, at the same integer-step dimensions the interpreted path
+-- produces, so the detector geometry is unchanged (only the resampling filter
+-- differs).
+--
+-- TRADE-OFF: the engine's resampler is not the interpreted nearest-neighbour
+-- sampler, so pixel values differ -- this CHANGES decode behaviour and is
+-- therefore opt-in (default stays bit-identical). Re-verify qr_golden.lc on the
+-- target engine. Also requires a build whose image object supports resizeImage
+-- (desktop/mobile do; some headless server builds may not).
+function luminanceSource_decodeResampled pImageData, pMaxDim
+   local tW, tH, tStep, tOutW, tOutH, tRaw, tName, e
+   -- ensure a host stack exists (ignore if a default one already does)
+   try
+      if there is not a stack "qrHostStack" then
+         create invisible stack "qrHostStack"
+      end if
+   catch e
+      -- a default stack may already be available; proceed regardless
+   end try
+   put "qrSrc_" & the milliseconds into tName       -- created and deleted in-handler
+   create invisible image tName
+   set the lockLoc of image tName to true
+   put pImageData into image tName                  -- decode PNG/JPG/GIF/BMP
+   put the formattedWidth of image tName into tW
+   put the formattedHeight of image tName into tH
+   if (tW <= 0) or (tH <= 0) then
+      delete image tName
+      throw "NotFound: image did not decode (0 x 0) -- unsupported format? this engine build may lack a JPEG codec; try a PNG"
+   end if
+   put luminanceSource_stepForDims(tW, tH, pMaxDim) into tStep
+   put (((tW - 1) div tStep) + 1) into tOutW
+   put (((tH - 1) div tStep) + 1) into tOutH
+   if (tOutW < tW) or (tOutH < tH) then
+      resizeImage image tName to tOutW, tOutH        -- COMPILED resample (C, not xTalk)
+      put the formattedWidth of image tName into tOutW    -- use the actual result size
+      put the formattedHeight of image tName into tOutH
+   end if
+   put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
+   delete image tName
+   if (the number of bytes of tRaw) < (tOutW * tOutH * 4) then
+      throw "NotFound: image resampled to " & tOutW & " x " & tOutH & " but pixel data was incomplete (image codec problem)"
+   end if
+   return luminanceSource_newFromImageData(tOutW, tOutH, tRaw)
+end luminanceSource_decodeResampled
+
 -- the integer nearest-neighbour downsample step so neither side exceeds pMaxDim
 -- (1 = no downsample). Empty/<=0 pMaxDim means full resolution.
 function luminanceSource_stepForDims pW, pH, pMaxDim
@@ -4464,8 +4513,12 @@ end qrDecodeResult
 -- through (TRY_HARDER, BINARY_MODE, NR_ALLOW_SKIP_ROWS, ...).
 function qrDecodeResultRobust pImageData, pHints, pMaxDim
    local tHintsArr, tPlane, tStrats, tN, k, tBin, tDim, tBaseDim, tHiDim
-   local tSrcByDim, tBuilt, tBitmap, tResult, tLast, e, tErr
+   local tSrcByDim, tBuilt, tBitmap, tResult, tLast, e, tErr, tEngineResample
    put qr_parseHints(pHints) into tHintsArr
+   -- opt-in: resample in the engine's compiled resizeImage instead of the
+   -- interpreted per-pixel downsample (much faster on large photos; changes the
+   -- resampling filter, so it is OFF by default -- see decodeResampled).
+   put (tHintsArr["ENGINE_RESAMPLE"] is true) into tEngineResample
 
    if (pMaxDim is empty) or (pMaxDim <= 0) then
       put 1200 into tBaseDim
@@ -4474,14 +4527,18 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
    end if
    put trunc((tBaseDim * 4) / 3) into tHiDim     -- ~1.33x for the hi-res retry
 
-   -- decode the image once; the per-strategy downsample (fromRawPlane) derives
-   -- the working scales from this plane. A decode failure here is terminal.
-   try
-      put luminanceSource_decodeRawPlane(pImageData) into tPlane
-   catch e
-      put e into tErr["error"]
-      return tErr
-   end try
+   -- decode the image once for the interpreted path; the per-strategy downsample
+   -- (fromRawPlane) derives the working scales from this plane. A decode failure
+   -- here is terminal. The engine-resample path decodes+resamples per scale in
+   -- compiled code instead, so it skips this costly full-resolution decode.
+   if not tEngineResample then
+      try
+         put luminanceSource_decodeRawPlane(pImageData) into tPlane
+      catch e
+         put e into tErr["error"]
+         return tErr
+      end try
+   end if
 
    -- strategy order: default+fast first (zero change for easy images), then a
    -- different binarizer, then more resolution. Each entry is "binarizer,maxdim".
@@ -4508,7 +4565,11 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
       put empty into tResult
       try
          if tBuilt[tDim] is not true then
-            put luminanceSource_fromRawPlane(tPlane, tDim) into tSrcByDim[tDim]
+            if tEngineResample then
+               put luminanceSource_decodeResampled(pImageData, tDim) into tSrcByDim[tDim]
+            else
+               put luminanceSource_fromRawPlane(tPlane, tDim) into tSrcByDim[tDim]
+            end if
             put true into tBuilt[tDim]
          end if
          put binaryBitmap_new(tSrcByDim[tDim], tBin) into tBitmap

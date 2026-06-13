@@ -87,8 +87,12 @@ end qrDecodeResult
 -- through (TRY_HARDER, BINARY_MODE, NR_ALLOW_SKIP_ROWS, ...).
 function qrDecodeResultRobust pImageData, pHints, pMaxDim
    local tHintsArr, tPlane, tStrats, tN, k, tBin, tDim, tBaseDim, tHiDim
-   local tSrcByDim, tBuilt, tBitmap, tResult, tLast, e, tErr
+   local tSrcByDim, tBuilt, tBitmap, tResult, tLast, e, tErr, tEngineResample
    put qr_parseHints(pHints) into tHintsArr
+   -- opt-in: resample in the engine's compiled resizeImage instead of the
+   -- interpreted per-pixel downsample (much faster on large photos; changes the
+   -- resampling filter, so it is OFF by default -- see decodeResampled).
+   put (tHintsArr["ENGINE_RESAMPLE"] is true) into tEngineResample
 
    if (pMaxDim is empty) or (pMaxDim <= 0) then
       put 1200 into tBaseDim
@@ -97,14 +101,18 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
    end if
    put trunc((tBaseDim * 4) / 3) into tHiDim     -- ~1.33x for the hi-res retry
 
-   -- decode the image once; the per-strategy downsample (fromRawPlane) derives
-   -- the working scales from this plane. A decode failure here is terminal.
-   try
-      put luminanceSource_decodeRawPlane(pImageData) into tPlane
-   catch e
-      put e into tErr["error"]
-      return tErr
-   end try
+   -- decode the image once for the interpreted path; the per-strategy downsample
+   -- (fromRawPlane) derives the working scales from this plane. A decode failure
+   -- here is terminal. The engine-resample path decodes+resamples per scale in
+   -- compiled code instead, so it skips this costly full-resolution decode.
+   if not tEngineResample then
+      try
+         put luminanceSource_decodeRawPlane(pImageData) into tPlane
+      catch e
+         put e into tErr["error"]
+         return tErr
+      end try
+   end if
 
    -- strategy order: default+fast first (zero change for easy images), then a
    -- different binarizer, then more resolution. Each entry is "binarizer,maxdim".
@@ -131,7 +139,11 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
       put empty into tResult
       try
          if tBuilt[tDim] is not true then
-            put luminanceSource_fromRawPlane(tPlane, tDim) into tSrcByDim[tDim]
+            if tEngineResample then
+               put luminanceSource_decodeResampled(pImageData, tDim) into tSrcByDim[tDim]
+            else
+               put luminanceSource_fromRawPlane(tPlane, tDim) into tSrcByDim[tDim]
+            end if
             put true into tBuilt[tDim]
          end if
          put binaryBitmap_new(tSrcByDim[tDim], tBin) into tBitmap
