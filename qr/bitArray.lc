@@ -198,12 +198,16 @@ end bitArray_xor
 
 -- read pNumBytes bytes (MSB-first) starting at bit pBitOffset; returns dense 0-based array
 function bitArray_toBytes pObj, pBitOffset, pNumBytes
-   local tOut, i, j, theByte, bo
+   local tOut, i, j, theByte, bo, tBits
+   -- Hoist the dense word array once and inline the per-bit test (exactly
+   -- bitArray_get's body) so the 8*pNumBytes reads don't each pay an xTalk
+   -- handler-call dispatch (and re-resolve pObj["bits"]). Bit-identical.
+   put pObj["bits"] into tBits
    put pBitOffset into bo
    repeat with i = 0 to (pNumBytes - 1)
       put 0 into theByte
       repeat with j = 0 to 7
-         if bitArray_get(pObj, bo) then put u32(theByte bitOr shl(1, (7 - j))) into theByte
+         if ((tBits[(bo div 32)] bitAnd shl(1, (bo bitAnd 31))) <> 0) then put u32(theByte bitOr shl(1, (7 - j))) into theByte
          add 1 to bo
       end repeat
       put theByte into tOut[i]

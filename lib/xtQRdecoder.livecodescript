@@ -804,12 +804,16 @@ end bitArray_xor
 
 -- read pNumBytes bytes (MSB-first) starting at bit pBitOffset; returns dense 0-based array
 function bitArray_toBytes pObj, pBitOffset, pNumBytes
-   local tOut, i, j, theByte, bo
+   local tOut, i, j, theByte, bo, tBits
+   -- Hoist the dense word array once and inline the per-bit test (exactly
+   -- bitArray_get's body) so the 8*pNumBytes reads don't each pay an xTalk
+   -- handler-call dispatch (and re-resolve pObj["bits"]). Bit-identical.
+   put pObj["bits"] into tBits
    put pBitOffset into bo
    repeat with i = 0 to (pNumBytes - 1)
       put 0 into theByte
       repeat with j = 0 to 7
-         if bitArray_get(pObj, bo) then put u32(theByte bitOr shl(1, (7 - j))) into theByte
+         if ((tBits[(bo div 32)] bitAnd shl(1, (bo bitAnd 31))) <> 0) then put u32(theByte bitOr shl(1, (7 - j))) into theByte
          add 1 to bo
       end repeat
       put theByte into tOut[i]
@@ -1192,30 +1196,40 @@ end bitSource_readBits
 -- §7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
 -- raw layout per §7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
 function luminanceSource_newFromImageData pW, pH, pRaw
-   local tObj, p, o, r, g, b, n, tLum
+   local tObj, p, r, g, b, n, tLum, tPhase, tByte
    put pW into tObj["width"]
    put pH into tObj["height"]
    put (pW * pH) into n
-   -- Hot loop (one iteration per pixel). Three behaviour-preserving speedups vs
-   -- the naive form (spec §11 -- this is the documented cost centre):
-   --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE
-   --     at the end, so each iteration does one array-key write instead of a
-   --     nested tObj["lum"][idx] lookup-then-write;
-   --   * use the loop counter p directly as the 0-based pixel index (idx == p);
-   --   * carry the byte offset o with `add 4` instead of recomputing p*4.
-   -- Result is bit-identical: pixel p reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
-   -- byte1=alpha,2=R,3=G,4=B layout of §7.2) and writes lum[p].
-   put 0 into o
-   repeat with p = 0 to (n - 1)
-      put byteToNum(byte (o + 2) of pRaw) into r
-      put byteToNum(byte (o + 3) of pRaw) into g
-      put byteToNum(byte (o + 4) of pRaw) into b
-      if (r = g) and (g = b) then
-         put r into tLum[p]
-      else
-         put trunc((r + (2 * g) + b) / 4) into tLum[p]
+   -- Hot loop, one step per BYTE (spec §11 -- this is the documented cost centre).
+   -- Behaviour-preserving speedups over the naive form:
+   --   * `repeat for each byte` keeps a single MOVING POINTER into pRaw (O(1) per
+   --     step, no re-traversal), instead of three indexed `byte (o+N) of pRaw`
+   --     chunk extractions per pixel -- the canonical LiveCode idiom for walking a
+   --     large binary string. tPhase 1..4 selects the A/R/G/B byte within a pixel.
+   --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE at
+   --     the end, so each pixel does one array-key write, not a nested lookup.
+   -- Bit-identical: pixel p still reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
+   -- byte1=alpha,2=R,3=G,4=B layout of §7.2) and writes lum[p]; the r=g=b fast
+   -- path (exact grey) is preserved for fidelity to the ZXing source.
+   put 0 into p
+   put 1 into tPhase
+   repeat for each byte tByte in pRaw
+      if tPhase = 2 then
+         put byteToNum(tByte) into r
+      else if tPhase = 3 then
+         put byteToNum(tByte) into g
+      else if tPhase = 4 then
+         put byteToNum(tByte) into b
+         if (r = g) and (g = b) then
+            put r into tLum[p]
+         else
+            put trunc((r + (2 * g) + b) / 4) into tLum[p]
+         end if
+         add 1 to p
+         if p >= n then exit repeat            -- ignore any trailing bytes past 4n
+         put 0 into tPhase
       end if
-      add 4 to o
+      add 1 to tPhase
    end repeat
    put tLum into tObj["lum"]
    return tObj
@@ -1320,27 +1334,41 @@ function luminanceSource_newFromData pImageData, pMaxDim
 end luminanceSource_newFromData
 
 -- Build a luminance source from a 4-byte/pixel raw plane, sampling every
--- pStep-th pixel in x and y (nearest-neighbour downsample). Reuses the verified
--- §7.3 greyscale by reassembling a reduced 4-bpp raw and calling newFromImageData.
+-- pStep-th pixel in x and y (nearest-neighbour downsample). The §7.3 greyscale is
+-- computed inline so the kept pixels are walked ONCE: the previous form built an
+-- intermediate reduced raw string (a ranged `byte a to b of pRaw` append per
+-- pixel) and then re-parsed every byte of it in newFromImageData -- two full
+-- passes plus a large temp allocation. Fusing reads R/G/B straight from pRaw at
+-- o+2/+3/+4 and writes lum[] directly; bit-identical (kept pixel (sx,sy) yielded
+-- bytes o+1..o+4 = A/R/G/B, and newFromImageData read +2/+3/+4 of that group).
 function luminanceSource_downsampleRaw pW, pH, pRaw, pStep
-   local tOutW, tOutH, sx, sy, tOStep, o, tReduced
+   local tOutW, tOutH, sx, sy, tOStep, o, tObj, p, r, g, b, tLum
    put (((pW - 1) div pStep) + 1) into tOutW
    put (((pH - 1) div pStep) + 1) into tOutH
-   put empty into tReduced
+   put tOutW into tObj["width"]
+   put tOutH into tObj["height"]
    -- Carry the source byte offset incrementally. Within a row each kept pixel is
    -- pStep source pixels (= pStep*4 bytes) past the previous one, so advance o by
-   -- a constant add instead of recomputing ((sy*pStep)*pW + sx*pStep)*4 for every
-   -- output pixel. The byte ranges copied are identical (same idiom as the
-   -- per-pixel `add 4` in luminanceSource_newFromImageData).
+   -- a constant add instead of recomputing ((sy*pStep)*pW + sx*pStep)*4 per pixel.
    put (pStep * 4) into tOStep
+   put 0 into p                                  -- 0-based output pixel index (row-major)
    repeat with sy = 0 to (tOutH - 1)
       put (((sy * pStep) * pW) * 4) into o
       repeat with sx = 0 to (tOutW - 1)
-         put (byte (o + 1) to (o + 4) of pRaw) after tReduced
+         put byteToNum(byte (o + 2) of pRaw) into r
+         put byteToNum(byte (o + 3) of pRaw) into g
+         put byteToNum(byte (o + 4) of pRaw) into b
+         if (r = g) and (g = b) then
+            put r into tLum[p]
+         else
+            put trunc((r + (2 * g) + b) / 4) into tLum[p]
+         end if
+         add 1 to p
          add tOStep to o
       end repeat
    end repeat
-   return luminanceSource_newFromImageData(tOutW, tOutH, tReduced)
+   put tLum into tObj["lum"]
+   return tObj
 end luminanceSource_downsampleRaw
 
 function luminanceSource_getWidth pObj
@@ -2592,11 +2620,14 @@ end dbsp_decodeBytes
 -- function (not the ICU/encoding library that textDecode needs), so it is
 -- available in a script-only stack where textDecode is not.
 function dbsp_latin1ToText pBytes
-   local tTxt, i, n
-   put the number of bytes of pBytes into n
+   local tTxt, tB
    put empty into tTxt
-   repeat with i = 1 to n
-      put numToCodepoint(byteToNum(byte i of pBytes)) after tTxt
+   -- `repeat for each byte` keeps a single moving pointer over pBytes (O(1) per
+   -- step), avoiding the per-access chunk-extraction overhead of indexed
+   -- `byte i of pBytes`. This is the common BYTE-mode path (the default charset is
+   -- ISO-8859-1, and ASCII URLs/vCards decode through here). Bit-identical.
+   repeat for each byte tB in pBytes
+      put numToCodepoint(byteToNum(tB)) after tTxt
    end repeat
    return tTxt
 end dbsp_latin1ToText
