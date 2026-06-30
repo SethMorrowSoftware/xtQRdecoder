@@ -187,11 +187,14 @@ end dbsp_decodeBytes
 -- function (not the ICU/encoding library that textDecode needs), so it is
 -- available in a script-only stack where textDecode is not.
 function dbsp_latin1ToText pBytes
-   local tTxt, i, n
-   put the number of bytes of pBytes into n
+   local tTxt, tB
    put empty into tTxt
-   repeat with i = 1 to n
-      put numToCodepoint(byteToNum(byte i of pBytes)) after tTxt
+   -- `repeat for each byte` keeps a single moving pointer over pBytes (O(1) per
+   -- step), avoiding the per-access chunk-extraction overhead of indexed
+   -- `byte i of pBytes`. This is the common BYTE-mode path (the default charset is
+   -- ISO-8859-1, and ASCII URLs/vCards decode through here). Bit-identical.
+   repeat for each byte tB in pBytes
+      put numToCodepoint(byteToNum(tB)) after tTxt
    end repeat
    return tTxt
 end dbsp_latin1ToText
