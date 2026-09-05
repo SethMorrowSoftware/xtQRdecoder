@@ -5337,16 +5337,19 @@ end qrDecodeFromFile
 -- ---- demo state ----------------------------------------------------------
 
 -- Bump when the generated UI changes so a saved stack rebuilds its controls.
-constant kQdUiVersion = "qr-kit2-2"
+constant kQdUiVersion = "qr-kit2-3"
 constant kQdWinW = 900
 constant kQdWinH = 640
 -- The sample keys, in the order the Samples tab shows them.
 constant kQdSamples = "v1num,mirror,inverted,utf8,scale1,rot25,photo"
+-- The preview box on the Decode tab (left, top, right, bottom): the loaded
+-- image is scaled to fit inside it, aspect kept.
+constant kQdPreviewBox = "48,170,228,350"
 -- Every control this script names, DERIVED by tools/sync_demo_embeds.py
 -- (--write regenerates it; --check refuses a stale list); the boot self-check
 -- asserts each one exists, because a missing control is the "Chunk: error in
 -- object expression" class and finding it at boot beats finding it on a click.
-constant kQdScControls = "about:exp,about:h,about:hint,about:log,about:selfcheck,about:status,decode:alsoInverted,decode:binaryMode,decode:copy,decode:details,decode:hintCap,decode:how,decode:imgInfo,decode:next,decode:open,decode:paste,decode:pureBarcode,decode:robust,decode:sec1,decode:sec1Line,decode:sec2,decode:sec2Line,decode:sec3,decode:sec3Line,decode:sec4,decode:sec4Line,decode:sec5,decode:sec5Line,decode:single,decode:status,decode:text,decode:tryHarder,pipe:cap,pipe:global,pipe:out,pipe:run,pipe:sec,pipe:secLine,samples:cap,samples:inverted,samples:mirror,samples:out,samples:photo,samples:rot25,samples:runAll,samples:scale1,samples:sec,samples:secLine,samples:utf8,samples:v1num,ui:panel,ui:tabAbout,ui:tabDecode,ui:tabPipe,ui:tabSamples,uiBand,uiFooter,uiStatus,uiTitle"
+constant kQdScControls = "about:exp,about:h,about:hint,about:log,about:selfcheck,about:status,decode:alsoInverted,decode:binaryMode,decode:copy,decode:details,decode:hintCap,decode:imgInfo,decode:next,decode:open,decode:paste,decode:preview,decode:previewBox,decode:pureBarcode,decode:robust,decode:sec1,decode:sec1Line,decode:sec2,decode:sec2Line,decode:sec3,decode:sec3Line,decode:sec4,decode:sec4Line,decode:sec5,decode:sec5Line,decode:single,decode:status,decode:text,decode:tryHarder,pipe:cap,pipe:global,pipe:out,pipe:run,pipe:sec,pipe:secLine,samples:cap,samples:inverted,samples:mirror,samples:out,samples:photo,samples:rot25,samples:runAll,samples:scale1,samples:sec,samples:secLine,samples:utf8,samples:v1num,ui:panel,ui:tabAbout,ui:tabDecode,ui:tabPipe,ui:tabSamples,uiBand,uiFooter,uiStatus,uiTitle"
 
 local sQdTab            -- active tab: decode | pipe | samples | about
 local sQdImage          -- the image bytes last loaded (file, paste, drop or sample)
@@ -6093,6 +6096,18 @@ command qdCheckbox pName, pRect, pLabel, pOn
    set the hilite of button pName to pOn
 end qdCheckbox
 
+-- An image control at a fixed rect: the kit builds none, and this demo shows
+-- the loaded picture in one (the same create-then-name idiom as the kit).
+-- lockLoc is what makes a later `set the rect` SCALE the picture.
+command qdImage pName, pRect
+   if there is no image pName then
+      create image
+      set the name of the last image to pName
+   end if
+   set the lockLoc of image pName to true
+   set the rect of image pName to pRect
+end qdImage
+
 -- A tab's own status line, coloured by kind ("ok", "bad", "warn", else muted).
 command qdSetStatus pName, pText, pKind
    if there is no field pName then
@@ -6186,29 +6201,43 @@ command qdClearGeneratedUI
          delete graphic tI of this card
       end if
    end repeat
+   repeat with tI = the number of images of this card down to 1
+      if the short name of image tI of this card contains ":" then
+         delete image tI of this card
+      end if
+   end repeat
    unlock screen
 end qdClearGeneratedUI
 
 command qdBuildDecodeTab
-   -- left column: the image, the hints, the two decode calls
+   -- left column: the image (with its preview), the hints, the two decode calls
    uiSection "decode:sec1", "1. Image", "48,108,430,128"
    qdButton "decode:open", "48,136,196,162", "Choose a file...", true
    qdButton "decode:paste", "202,136,318,162", "Paste image", false
    qdButton "decode:next", "324,136,430,162", "Next sample", false
-   uiCap "decode:imgInfo", "No image loaded. Choose a file, paste one, drop one on this window, or use a sample.", "48,168,430,196"
+   -- the preview: a white, hairlined box (created first, so it sits behind)
+   -- and the image control the loaded picture is scaled into
+   uiGfx "decode:previewBox", kQdPreviewBox
+   set the roundRadius of graphic "decode:previewBox" to 8
+   set the filled of graphic "decode:previewBox" to true
+   set the backgroundColor of graphic "decode:previewBox" to kUiCard
+   set the lineSize of graphic "decode:previewBox" to 1
+   set the foregroundColor of graphic "decode:previewBox" to kUiCardLine
+   set the borderColor of graphic "decode:previewBox" to kUiCardLine
+   qdImage "decode:preview", kQdPreviewBox
+   uiCap "decode:imgInfo", "No image loaded. Choose a file, paste one, drop one on this window, or click Next sample - the picture appears here.", "238,170,430,350"
 
-   uiSection "decode:sec2", "2. Hints", "48,204,430,224"
-   qdCheckbox "decode:tryHarder", "48,230,236,250", "TRY_HARDER", true
-   qdCheckbox "decode:alsoInverted", "48,254,236,274", "ALSO_INVERTED", false
-   qdCheckbox "decode:pureBarcode", "48,278,236,298", "PURE_BARCODE", false
-   qdCheckbox "decode:binaryMode", "48,302,236,322", "BINARY_MODE", false
-   uiCap "decode:hintCap", "TRY_HARDER: scan every row (photos). ALSO_INVERTED: retry white-on-black. PURE_BARCODE: the fast path for a clean, axis-aligned image. BINARY_MODE: raw bytes as hex.", "244,230,430,322"
+   uiSection "decode:sec2", "2. Hints", "48,358,430,378"
+   qdCheckbox "decode:tryHarder", "48,384,236,404", "TRY_HARDER", true
+   qdCheckbox "decode:alsoInverted", "242,384,430,404", "ALSO_INVERTED", false
+   qdCheckbox "decode:pureBarcode", "48,408,236,428", "PURE_BARCODE", false
+   qdCheckbox "decode:binaryMode", "242,408,430,428", "BINARY_MODE", false
+   uiCap "decode:hintCap", "TRY_HARDER for photographs; ALSO_INVERTED for white on black; PURE_BARCODE for a clean, axis-aligned image; BINARY_MODE shows the raw bytes as hex.", "48,432,430,460"
 
-   uiSection "decode:sec3", "3. Decode", "48,332,430,352"
-   qdButton "decode:robust", "48,358,236,386", "Decode (robust)", true
-   qdButton "decode:single", "242,358,430,386", "Single pass", false
-   uiCap "decode:how", "Robust is qrDecodeResultRobust: one image decode, then the hybrid and global binarizers over a resolution ladder, with the mirrored and inverted retries. Single pass is qrDecodeResult at full resolution.", "48,392,430,448"
-   qdLabel "decode:status", "48,456,430,590", "Load an image, then click Decode (robust).", kUiInkSoft, 12, "plain"
+   uiSection "decode:sec3", "3. Decode", "48,466,430,486"
+   qdButton "decode:robust", "48,492,236,520", "Decode (robust)", true
+   qdButton "decode:single", "242,492,430,520", "Single pass", false
+   qdLabel "decode:status", "48,526,430,590", "Load an image, then click Decode (robust): one image decode, then the binarizer and resolution ladder with the mirrored and inverted retries. Single pass is qrDecodeResult at full resolution.", kUiInkSoft, 11, "plain"
 
    -- right column: the text and every result key
    uiSection "decode:sec4", "Decoded text", "446,108,852,128"
@@ -6431,15 +6460,66 @@ command qdLoadSample pKey
 end qdLoadSample
 
 command qdSetImage pData, pName
+   local tShown, tInfo
    put pData into sQdImage
    put pName into sQdImageName
    put empty into sQdLastText
    put empty into field "decode:text"
    put empty into field "decode:details"
-   uiCap "decode:imgInfo", "Loaded " & pName & " (" & (the number of bytes of pData) & " bytes). Now click Decode (robust), or open the Pipeline tab.", "48,168,430,196"
+   put qdShowPreview(pData) into tShown
+   put "Loaded " & pName & " (" & (the number of bytes of pData) & " bytes)" into tInfo
+   if tShown then
+      put tInfo & ", " & (the formattedWidth of image "decode:preview") & " x " \
+            & (the formattedHeight of image "decode:preview") & " px. Now click Decode (robust), or open the Pipeline tab." into tInfo
+   else
+      put tInfo & ". No preview: this engine build could not render the picture (JPEG support varies); the decoder may still read it. Click Decode (robust)." into tInfo
+   end if
+   uiCap "decode:imgInfo", tInfo, "238,170,430,350"
    uiStatus "Loaded " & pName & ".", "ok"
    qdSetStatus "decode:status", "Ready to decode " & pName & ".", empty
 end qdSetImage
+
+-- Scale the loaded picture into the preview box, aspect kept and centred.
+-- Returns false when the engine could not render the bytes (the box is left
+-- blank); the decoder does not depend on this control at all.
+function qdShowPreview pData
+   local tErr, tW, tH, tOldDelim, tBoxL, tBoxT, tBoxR, tBoxB, tBoxW, tBoxH
+   local tScale, tFitW, tFitH, tL, tT
+   put the itemDelimiter into tOldDelim
+   set the itemDelimiter to comma
+   put item 1 of kQdPreviewBox into tBoxL
+   put item 2 of kQdPreviewBox into tBoxT
+   put item 3 of kQdPreviewBox into tBoxR
+   put item 4 of kQdPreviewBox into tBoxB
+   set the itemDelimiter to tOldDelim
+   put (tBoxR - tBoxL) into tBoxW
+   put (tBoxB - tBoxT) into tBoxH
+   put 0 into tW
+   put 0 into tH
+   try
+      -- unlocked, the put resizes the control to the picture's own size,
+      -- which is the size the fit below is computed from
+      set the lockLoc of image "decode:preview" to false
+      put pData into image "decode:preview"
+      put the formattedWidth of image "decode:preview" into tW
+      put the formattedHeight of image "decode:preview" into tH
+   catch tErr
+      put 0 into tW
+      put 0 into tH
+   end try
+   set the lockLoc of image "decode:preview" to true
+   if tW <= 0 or tH <= 0 then
+      set the rect of image "decode:preview" to kQdPreviewBox
+      return false
+   end if
+   put min(tBoxW / tW, tBoxH / tH) into tScale
+   put max(1, round(tW * tScale)) into tFitW
+   put max(1, round(tH * tScale)) into tFitH
+   put (tBoxL + ((tBoxW - tFitW) div 2)) into tL
+   put (tBoxT + ((tBoxH - tFitH) div 2)) into tT
+   set the rect of image "decode:preview" to (tL & comma & tT & comma & (tL + tFitW) & comma & (tT + tFitH))
+   return true
+end qdShowPreview
 
 -- The hint string the toggles spell, in the library's own comma form.
 function qdHintString
