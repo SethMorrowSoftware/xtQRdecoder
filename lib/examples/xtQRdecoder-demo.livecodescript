@@ -5337,7 +5337,7 @@ end qrDecodeFromFile
 -- ---- demo state ----------------------------------------------------------
 
 -- Bump when the generated UI changes so a saved stack rebuilds its controls.
-constant kQdUiVersion = "qr-kit2-1"
+constant kQdUiVersion = "qr-kit2-2"
 constant kQdWinW = 900
 constant kQdWinH = 640
 -- The sample keys, in the order the Samples tab shows them.
@@ -6408,14 +6408,26 @@ command qdNextSample
 end qdNextSample
 
 command qdLoadSample pKey
-   local tData
+   local tData, tHints
    put qdSampleData(pKey) into tData
    if tData is empty then
       uiStatus "There is no sample called " & pKey, "bad"
       exit qdLoadSample
    end if
    qdSetImage tData, "sample: " & pKey
-   qdSetStatus "decode:status", qdSampleLabel(pKey) & " - expected text: " & qdSampleText(pKey) & ". Hints it needs: " & qdSampleHints(pKey) & ".", empty
+   -- THE TOGGLES FOLLOW THE SAMPLE. The inverted symbol decodes only under
+   -- ALSO_INVERTED, and on this stack's first engine run (2026-09-05) that
+   -- sample, loaded with the flag unticked, reported "No QR code decoded" -
+   -- correct, and indistinguishable from a broken decoder to anyone who had
+   -- not read the status line. So loading a sample sets the hints it needs
+   -- and says so; the boxes are still yours to untick afterwards.
+   put qdSampleHints(pKey) into tHints
+   put true into sQdTryHarder
+   put (tHints contains "ALSO_INVERTED") into sQdAlsoInverted
+   put false into sQdPureBarcode
+   qdSyncToggles
+   qdSetStatus "decode:status", qdSampleLabel(pKey) & " - expected text: " & qdSampleText(pKey) \
+         & ". Hints ticked for it: " & tHints & ". Untick ALSO_INVERTED on the inverted sample to watch it fail.", empty
 end qdLoadSample
 
 command qdSetImage pData, pName
@@ -6483,8 +6495,8 @@ command qdShowResult pRes, pMs, pRobust, pHints
       put empty into field "decode:text"
       put tCall & "(image, " & quote & pHints & quote & ")" & return \
             & "error   : " & pRes["error"] & return & qdAttemptsText(pRes) into field "decode:details"
-      qdSetStatus "decode:status", "No decode in " & pMs & " ms: " & pRes["error"], "bad"
-      uiStatus "No QR code decoded from " & sQdImageName & " (" & pMs & " ms).", "bad"
+      qdSetStatus "decode:status", "No decode in " & pMs & " ms: " & pRes["error"] & qdFailureAdvice(pRes["error"]), "bad"
+      uiStatus "No QR code decoded from " & sQdImageName & " (" & pMs & " ms)." & qdFailureAdvice(pRes["error"]), "bad"
       exit qdShowResult
    end if
    put pRes["text"] into sQdLastText
@@ -6526,6 +6538,21 @@ command qdShowResult pRes, pMs, pRobust, pHints
    qdSetStatus "decode:status", "Decoded in " & pMs & " ms: version " & pRes["version"] & "-" & pRes["ecLevel"] & ", " & (the number of chars of pRes["text"]) & " chars.", "ok"
    uiStatus "Decoded " & sQdImageName & " in " & pMs & " ms.", "ok"
 end qdShowResult
+
+-- What to try next after a failed decode, from the hints NOT ticked: a
+-- NotFound with ALSO_INVERTED off may be a white-on-black symbol, and any
+-- failure with TRY_HARDER off may be a photograph the sparse scan skipped.
+function qdFailureAdvice pError
+   local tAdvice
+   put empty into tAdvice
+   if (pError begins with "NotFound") and (not sQdAlsoInverted) then
+      put " Tick ALSO_INVERTED if the symbol is white on black." after tAdvice
+   end if
+   if not sQdTryHarder then
+      put " Tick TRY_HARDER for photographs." after tAdvice
+   end if
+   return tAdvice
+end qdFailureAdvice
 
 -- The result points as "(x, y)" pairs, one decimal place; index 3 is the
 -- alignment pattern when the symbol has one.
