@@ -86,7 +86,7 @@ EMBED_BANNER = """-- Pasted from lib/xtQRdecoder.livecodescript so this demo run
 KIT_BUILDERS = ("uiLabel", "uiWrap", "uiCap", "uiSection", "uiInput", "uiArea", "uiTable",
                 "uiButton", "uiCheckbox", "uiGfx", "uiPanel", "uiPill")
 # the demo's own wrappers with the same contract
-DEMO_BUILDERS = ("qdLabel", "qdButton", "qdCheckbox")
+DEMO_BUILDERS = ("qdLabel", "qdButton", "qdCheckbox", "qdImage")
 CONTROL_WORDS = ("field", "button", "graphic", "image")
 
 
