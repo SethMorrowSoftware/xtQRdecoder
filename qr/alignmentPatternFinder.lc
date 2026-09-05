@@ -4,8 +4,8 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- alignmentPatternFinder.lc — locate the bottom-right alignment pattern (v2+).
--- Port of ZXing Qrcode\Detector\AlignmentPatternFinder. Spec §8.4.
+-- alignmentPatternFinder.lc - locate the bottom-right alignment pattern (v2+).
+-- Port of ZXing Qrcode\Detector\AlignmentPatternFinder. Spec section 8.4.
 -- Requires: qrCompat.lc, bitMatrix.lc.
 --
 -- Stateless apart from a small accumulator: apf_find searches a sub-region for

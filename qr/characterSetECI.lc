@@ -4,13 +4,13 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- characterSetECI.lc — ECI numeric value -> charset name. Spec §8.6.
+-- characterSetECI.lc - ECI numeric value -> charset name. Spec section 8.6.
 -- Port of (the used subset of) ZXing Common\CharacterSetECI.
 -- Requires: nothing.
 --
 -- Only the values likely to appear are mapped; the byte decoder
 -- (decodedBitStreamParser) only natively handles ASCII / ISO-8859-1 / UTF-8
--- (spec §8.7), so other charsets resolve to a name that decoder treats as a
+-- (spec section 8.7), so other charsets resolve to a name that decoder treats as a
 -- best-effort fallback.
 -- =====================================================================
 

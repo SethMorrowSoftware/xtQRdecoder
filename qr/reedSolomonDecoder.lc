@@ -4,13 +4,13 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- reedSolomonDecoder.lc — Euclidean Reed–Solomon decoder over GF(256).
--- Port of ZXing Common\Reedsolomon\ReedSolomonDecoder. Spec §8.5.
+-- reedSolomonDecoder.lc - Euclidean Reed-Solomon decoder over GF(256).
+-- Port of ZXing Common\Reedsolomon\ReedSolomonDecoder. Spec section 8.5.
 -- Requires: qrCompat.lc, genericGF.lc, genericGFPoly.lc.
 --
 -- rs_decode mutates the received codeword array IN PLACE (passed by @),
 -- correcting up to floor(twoS/2) errors. Throws "RS: ..." on failure
--- (the decoder layer maps that to a Checksum error per spec §6.6).
+-- (the decoder layer maps that to a Checksum error per spec section 6.6).
 -- =====================================================================
 
 -- received: dense 0-based array of codewords (0..255); twoS = number of EC codewords

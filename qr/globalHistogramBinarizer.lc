@@ -4,14 +4,14 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- globalHistogramBinarizer.lc — global black-point via 32-bucket histogram.
--- Port of ZXing GlobalHistogramBinarizer. Spec §8 / module inventory.
+-- globalHistogramBinarizer.lc - global black-point via 32-bucket histogram.
+-- Port of ZXing GlobalHistogramBinarizer. Spec section 8 / module inventory.
 -- Requires: qrCompat.lc, bitMatrix.lc, luminanceSource.lc.
 --
 -- ghb_getBlackMatrix(pSrc) -> BitMatrix (true = black). Samples 4 rows to
 -- build a 32-bucket luminance histogram, estimates a black point, then
 -- thresholds the whole image. Throws "NotFound: ..." when contrast is too low
--- (mirrors ZXing throwing NotFoundException; spec §6.6).
+-- (mirrors ZXing throwing NotFoundException; spec section 6.6).
 -- =====================================================================
 
 constant kLumBits    = 5

@@ -3,32 +3,33 @@
 # Copyright 2026 Seth Morrow
 # Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 """
-lint_lcs.py — static checks for the xTalk modules in qr/.
+lint_lcs.py - static checks for the xTalk modules in qr/.
 
 These catch the classes of error a real xTalk engine (9.6.x-era) rejects but that
 reading by eye tends to miss:
 
-  1. BLOCK MATCHING   — every `end if/repeat/switch/try` closes the right opener,
+  1. BLOCK MATCHING   - every `end if/repeat/switch/try` closes the right opener,
                         every handler `end <name>` matches, nothing unclosed.
                         (Caught an `if/else` wrongly closed with `end try`.)
-  2. RESERVED WORDS   — no xTalk builtin/property/keyword used as a local or
+  2. RESERVED WORDS   - no xTalk builtin/property/keyword used as a local or
                         parameter name. (Caught `result`, `line`, `offset`,
                         `average`, `ln`, `top`, `left`, `right`, `sum`.)
-  3. BARE RETURN      — no `return` without a value. This engine errors with
+  3. BARE RETURN      - no `return` without a value. This engine errors with
                         "missing factor"; the early-exit idiom is `exit <name>`.
-  4. UNDECLARED VARS  — every variable written via `put .. into X` / `add .. to X`
+  4. UNDECLARED VARS  - every variable written via `put .. into X` / `add .. to X`
                         is declared (file-level local, handler local, param, or
                         loop/catch var) so files parse under explicitVariables.
 
-Usage:  python3 tools/lint_lcs.py [path ...]   (defaults to ./qr)
-  Each path may be a directory (linted as <dir>/*.lc) or an explicit file --
+Usage:  python3 tools/lint_lcs.py [path ...]   (defaults to ./qr and ./lib)
+  Each path may be a directory (linted as <dir>/*.lc plus <dir>/**/*.livecodescript)
+  or an explicit file --
   e.g. `python3 tools/lint_lcs.py qr lib/xtQRdecoder.livecodescript` lints both
   the modules and the generated combined library.
 Exit code is non-zero if any check fails, so it can gate CI.
 
 NOTE: this is a heuristic linter, not an xTalk parser. It is intentionally
 conservative (prefers false positives over misses). The real engine remains
-the final authority — see qr/qr_tester.lc and qr/qr_imageprobe.lc.
+the final authority - see qr/qr_tester.lc and qr/qr_imageprobe.lc.
 """
 import re, sys, glob, os
 
@@ -80,7 +81,8 @@ paramcount params param number length offset random round trunc abs min max sum 
 sin cos tan atan exp ln sqrt log2 put into after before set get add subtract multiply divide throw
 is not and or bitand bitor bitxor bitnot mod div of by there a an file folder image stack
 toupper tolower numtobyte bytetonum base64decode base64encode binarydecode binaryencode textencode textdecode
-milliseconds formattedwidth formattedheight imagedata lockloc invisible create delete""".lower().split())
+milliseconds formattedwidth formattedheight imagedata lockloc invisible create delete
+field fld button btn image img graphic grc group grp card cd stack msg url clipboarddata""".lower().split())
 
 
 def logical_lines(path):
@@ -107,9 +109,9 @@ def opener_kind(s):
     s = strip_comment(s).strip()
     if not s:
         return None
-    m = re.match(r"^(command|function)\s+([A-Za-z_][A-Za-z0-9_]*)", s)
+    m = re.match(r"^(?:private\s+)?(?:command|function|on|getProp|setProp)\s+([A-Za-z_][A-Za-z0-9_]*)", s, re.I)
     if m:
-        return ("handler", m.group(2))
+        return ("handler", m.group(1))
     if re.match(r"^repeat\b", s):
         return ("repeat", None)
     if re.match(r"^switch\b", s):
@@ -164,9 +166,9 @@ def check_reserved_and_bare_return(path, fail):
             for v in re.split(r"\s*,\s*", m.group(1).strip()):
                 if v.strip().lower() in RESERVED:
                     fail(f"{path}:{ln}: local '{v.strip()}' is a reserved word")
-        m = re.match(r"^\s*(command|function)\s+[A-Za-z_][A-Za-z0-9_]*\s+(.+)$", cs)
+        m = re.match(r"^\s*(?:private\s+)?(?:command|function|on|getProp|setProp)\s+[A-Za-z_][A-Za-z0-9_]*\s+(.+)$", cs, re.I)
         if m:
-            for v in re.split(r"\s*,\s*", m.group(2).strip()):
+            for v in re.split(r"\s*,\s*", m.group(1).strip()):
                 vv = v.strip().lstrip("@")
                 if vv.lower() in RESERVED:
                     fail(f"{path}:{ln}: param '{vv}' is a reserved word")
@@ -180,13 +182,13 @@ def check_case_collisions(path, fail):
     lines = open(path, encoding="utf-8").read().split("\n")
     i = 0
     while i < len(lines):
-        hm = re.match(r"^\s*(command|function)\s+([A-Za-z_]\w*)\s*(.*)$", strip_comment(lines[i]))
+        hm = re.match(r"^\s*(?:private\s+)?(?:command|function|on|getProp|setProp)\s+([A-Za-z_]\w*)\s*(.*)$", strip_comment(lines[i]), re.I)
         if not hm:
             i += 1
             continue
-        hname = hm.group(2)
+        hname = hm.group(1)
         seen = {}
-        for p in re.split(r"\s*,\s*", hm.group(3).strip()):
+        for p in re.split(r"\s*,\s*", hm.group(2).strip()):
             p = p.strip().lstrip("@")
             if p:
                 seen.setdefault(p.lower(), p)
@@ -211,13 +213,13 @@ def check_loopvars_declared(path, fail):
     lines = open(path, encoding="utf-8").read().split("\n")
     i = 0
     while i < len(lines):
-        hm = re.match(r"^\s*(command|function)\s+([A-Za-z_]\w*)\s*(.*)$", strip_comment(lines[i]))
+        hm = re.match(r"^\s*(?:private\s+)?(?:command|function|on|getProp|setProp)\s+([A-Za-z_]\w*)\s*(.*)$", strip_comment(lines[i]), re.I)
         if not hm:
             i += 1
             continue
-        hname = hm.group(2)
+        hname = hm.group(1)
         declared = set()
-        for p in re.split(r"\s*,\s*", hm.group(3).strip()):
+        for p in re.split(r"\s*,\s*", hm.group(2).strip()):
             p = p.strip().lstrip("@")
             if p:
                 declared.add(p.lower())
@@ -266,7 +268,7 @@ def check_undeclared(path, fail):
     filelocals, inh = set(), False
     for raw in lines:
         s = strip_comment(raw)
-        if re.match(r"^\s*(command|function)\s", s):
+        if re.match(r"^\s*(?:private\s+)?(?:command|function|on|getProp|setProp)\s", s, re.I):
             inh = True
         if inh and re.match(r"^\s*end\s+[A-Za-z_]", s) and not re.match(r"^\s*end\s+(if|repeat|switch|try)\b", s):
             inh = False
@@ -278,13 +280,13 @@ def check_undeclared(path, fail):
                     filelocals.add(v.strip().lower())
     i = 0
     while i < len(lines):
-        hm = re.match(r"^\s*(command|function)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$", strip_comment(lines[i]))
+        hm = re.match(r"^\s*(?:private\s+)?(?:command|function|on|getProp|setProp)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$", strip_comment(lines[i]), re.I)
         if not hm:
             i += 1
             continue
-        hname = hm.group(2)
+        hname = hm.group(1)
         declared = set(filelocals)
-        for p in re.split(r"\s*,\s*", hm.group(3).strip()):
+        for p in re.split(r"\s*,\s*", hm.group(2).strip()):
             p = p.strip().lstrip("@")
             if p:
                 declared.add(p.lower())
@@ -317,6 +319,37 @@ def check_undeclared(path, fail):
         i = j
 
 
+def check_nested_local(path, fail):
+    """A `local` declared INSIDE an if/repeat/switch/try block (block depth > 0
+    within a handler) has broken OpenXTalk compilation of a whole script
+    (xtalk-suite, box2dxt gotcha 11 / holde-em). A mid-handler `local` at block
+    depth 0 is legal and stands in engine-passed code; only the nested form is
+    flagged."""
+    depth = 0
+    inh = False
+    for ln, s in logical_lines(path):
+        cs = strip_comment(s).strip()
+        if not cs:
+            continue
+        ok = opener_kind(cs)
+        ek = end_kind(cs)
+        if ok and ok[0] == "handler":
+            inh, depth = True, 0
+            continue
+        if ek and ek[0] == "handler":
+            inh, depth = False, 0
+            continue
+        if not inh:
+            continue
+        if ek and ek[0] == "ctl":
+            depth -= 1
+            continue
+        if re.match(r"^local\s", cs, re.I) and depth > 0:
+            fail(f"{path}:{ln}: `local` declared inside a block (depth {depth}); declare handler locals at block depth 0 (OpenXTalk rejects nested declarations)")
+        if ok and ok[0] in ("if", "repeat", "switch", "try"):
+            depth += 1
+
+
 def check_spdx(path, fail):
     """Every source file should carry the SPDX license header (run add_spdx.py)."""
     with open(path, encoding="utf-8") as fh:
@@ -330,11 +363,13 @@ def collect_files(args):
     (linted as <dir>/*.lc) or an explicit file path of any extension -- so the
     generated lib/xtQRdecoder.livecodescript can be linted with the same checks
     the qr/*.lc modules get. No args defaults to the qr/ directory."""
-    default = os.path.join(os.path.dirname(__file__), "..", "qr")
+    root = os.path.join(os.path.dirname(__file__), "..")
+    defaults = [os.path.join(root, "qr"), os.path.join(root, "lib")]
     files = []
-    for t in (args or [default]):
+    for t in (args or defaults):
         if os.path.isdir(t):
             files.extend(glob.glob(os.path.join(t, "*.lc")))
+            files.extend(glob.glob(os.path.join(t, "**", "*.livecodescript"), recursive=True))
         elif os.path.isfile(t):
             files.append(t)
         else:
@@ -356,13 +391,14 @@ def main():
         check_loopvars_declared(f, fail)
         check_delimiter_footgun(f, fail)
         check_undeclared(f, fail)
+        check_nested_local(f, fail)
         check_spdx(f, fail)
     if failures:
         print("xTalk lint: FAIL")
         for x in failures:
             print("  " + x)
         return 1
-    print(f"xTalk lint: clean ({len(files)} files: blocks, reserved words, bare-return, case-collisions, loop vars, undeclared vars, SPDX)")
+    print(f"xTalk lint: clean ({len(files)} files: blocks, reserved words, bare-return, case-collisions, loop vars, undeclared vars, nested locals, SPDX)")
     return 0
 
 

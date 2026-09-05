@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- version.lc — QR Version/EC-block tables (v1-40). Spec §8.5 (largest table).
+-- version.lc - QR Version/EC-block tables (v1-40). Spec section 8.5 (largest table).
 -- Port of ZXing Qrcode\Decoder\Version. Requires: qrCompat.lc, errorCorrectionLevel.lc.
 --
 -- The table below was GENERATED from the ZXing data and independently verified:
@@ -19,7 +19,7 @@
 --   sVer[v]["dimension"]   = 17 + 4v
 --   sVer[v]["align"]       = comma list of centres
 --   sVer[v]["ec"][ord]     = "ecw;count,data;count,data..."  (ord 0..3 = L,M,Q,H)
--- ECBlocks are indexed by EC ORDINAL (L,M,Q,H) per ErrorCorrectionLevel (spec §8.5).
+-- ECBlocks are indexed by EC ORDINAL (L,M,Q,H) per ErrorCorrectionLevel (spec section 8.5).
 --
 -- VERSION_DECODE_INFO: the 34 raw 18-bit version-info patterns for v7-40.
 -- =====================================================================

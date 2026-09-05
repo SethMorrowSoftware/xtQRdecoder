@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- resultPoint.lc — 2-D point + the orderBestPatterns ordering. Spec §8.4.
+-- resultPoint.lc - 2-D point + the orderBestPatterns ordering. Spec section 8.4.
 -- Port of ZXing ResultPoint. Requires: mathUtils.lc.
 --
 -- A point (Pattern A) is an array: pPt["x"], pPt["y"]. FinderPattern and

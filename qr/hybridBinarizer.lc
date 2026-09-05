@@ -4,8 +4,8 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- hybridBinarizer.lc — local adaptive threshold (the default binarizer).
--- Port of ZXing HybridBinarizer. Spec §8 / module inventory.
+-- hybridBinarizer.lc - local adaptive threshold (the default binarizer).
+-- Port of ZXing HybridBinarizer. Spec section 8 / module inventory.
 -- Requires: qrCompat.lc, bitMatrix.lc, luminanceSource.lc, globalHistogramBinarizer.lc.
 --
 -- hb_getBlackMatrix(pSrc) -> BitMatrix (true = black). Divides the image into
@@ -19,9 +19,9 @@
 -- dynamic range exceeds MIN_DYNAMIC_RANGE, sums the remaining rows without
 -- updating min/max. xTalk's `repeat with` ignores in-body changes to its
 -- loop counter, so that early-out cannot be expressed by mutating the counter
--- without double-counting. We sum all 64 pixels in a plain double loop — the
+-- without double-counting. We sum all 64 pixels in a plain double loop - the
 -- RESULT is identical (the sum is the same; once range>24 the final low-range
--- branch is skipped either way), only the per-block cost differs. (spec §11)
+-- branch is skipped either way), only the per-block cost differs. (spec section 11)
 -- =====================================================================
 
 constant kBlockSizePower = 3      -- 8x8 blocks

@@ -4,8 +4,8 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- qrReader.lc — public API: image bytes -> luminance -> binarize -> detect ->
--- decode. Spec §9. Port of ZXing QrReader facade.
+-- qrReader.lc - public API: image bytes -> luminance -> binarize -> detect ->
+-- decode. Spec section 9. Port of ZXing QrReader facade.
 -- Requires: luminanceSource.lc, binaryBitmap.lc, qrCodeReader.lc (and the
 --   whole decode stack they pull in).
 --
@@ -141,7 +141,7 @@ end qrDecodeResultRobust
 
 -- one-shot: decoded text on success, empty on any failure. With BINARY_MODE set
 -- (hint), returns the raw decoded byte string verbatim (no charset decode) --
--- needed for binary payloads like the 256-byte ramp fixture (spec §9).
+-- needed for binary payloads like the 256-byte ramp fixture (spec section 9).
 function qrDecodeFromData pImageData, pHints
    local tRes, tHintsArr
    put qrDecodeResult(pImageData, pHints) into tRes

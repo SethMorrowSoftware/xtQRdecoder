@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- dataBlock.lc — de-interleave codewords into Reed–Solomon blocks. Spec §8.5.
+-- dataBlock.lc - de-interleave codewords into Reed-Solomon blocks. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\DataBlock. Requires: qrCompat.lc, version.lc,
 -- errorCorrectionLevel.lc.
 --
@@ -15,10 +15,10 @@
 -- laid out by the version table, all instances expanded).
 --
 -- ZXing's two-pass fill (spec: "critical and easy to get wrong"):
---   pass 1 — distribute DATA codewords round-robin across all blocks, filling
+--   pass 1 - distribute DATA codewords round-robin across all blocks, filling
 --            the common (shorter) length first, then the one extra data
 --            codeword that the longer blocks each carry.
---   pass 2 — distribute EC codewords round-robin across all blocks, where the
+--   pass 2 - distribute EC codewords round-robin across all blocks, where the
 --            longer blocks' EC region starts one slot later.
 -- =====================================================================
 

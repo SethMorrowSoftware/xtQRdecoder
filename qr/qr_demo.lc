@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- qr_demo.lc — interactive demo: upload a photo of a QR code, get the text.
+-- qr_demo.lc - interactive demo: upload a photo of a QR code, get the text.
 --
 -- A friendly, modern front-end over the finished library. GET serves the
 -- single-page scanner; the browser then decodes by POSTing the chosen image

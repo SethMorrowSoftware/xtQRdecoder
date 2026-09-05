@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- formatInformation.lc — decode the 15-bit QR format info. Spec §8.5.
+-- formatInformation.lc - decode the 15-bit QR format info. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\FormatInformation.
 -- Requires: qrCompat.lc, errorCorrectionLevel.lc.
 --
@@ -17,13 +17,13 @@
 -- Returns an array: ["ecLevel"] = EC ordinal (0..3, L/M/Q/H), ["dataMask"] = 0..7.
 --
 -- FORMAT_INFO_DECODE_LOOKUP rows are "dataBits,maskedSequence" (verified by
--- regenerating from BCH gen 0x537 ^ 0x5412 — see tools/verify, 32 entries).
+-- regenerating from BCH gen 0x537 ^ 0x5412 - see tools/verify, 32 entries).
 -- dataBits high 2 bits = EC field value (M=00,L=01,H=10,Q=11), low 3 = mask ref.
 -- =====================================================================
 
 -- The QR format-info mask (0x5412). The lookup column sFmtSeq below already
 -- has this applied (entries = bch(data) XOR this), so on-symbol reads are
--- compared directly — no run-time XOR needed. Kept for documentation.
+-- compared directly - no run-time XOR needed. Kept for documentation.
 constant kFormatInfoMaskQR = 21522    -- 0x5412
 
 local sFmtReady, sFmtData, sFmtSeq

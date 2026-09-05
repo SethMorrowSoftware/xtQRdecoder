@@ -4,15 +4,15 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- binaryBitmap.lc — caches the black matrix for the reader. Spec §3, §module inv.
+-- binaryBitmap.lc - caches the black matrix for the reader. Spec section 3, sectionmodule inv.
 -- Port of ZXing BinaryBitmap. Requires: bitMatrix.lc, hybridBinarizer.lc,
 -- globalHistogramBinarizer.lc, luminanceSource.lc.
 --
 -- Instance (Pattern A):
---   pObj["src"]       — luminanceSource array
---   pObj["binarizer"] — "hybrid" (default) or "global"
---   pObj["matrix"]    — cached BitMatrix (computed lazily by the selected binarizer)
---   pObj["hasMatrix"] — whether the cache is populated
+--   pObj["src"]       - luminanceSource array
+--   pObj["binarizer"] - "hybrid" (default) or "global"
+--   pObj["matrix"]    - cached BitMatrix (computed lazily by the selected binarizer)
+--   pObj["hasMatrix"] - whether the cache is populated
 --
 -- The detector pulls the binarized BitMatrix from here; binaryBitmap_getBlackMatrix
 -- computes it once (HybridBinarizer, the default) and caches it.
@@ -61,7 +61,7 @@ function binaryBitmap_getBlackMatrix pObj
 end binaryBitmap_getBlackMatrix
 
 -- ASCII preview of the cached matrix ("X" = black, " " = white), for debugging
--- and for the §10.5 cross-oracle dump against the PHP reference.
+-- and for the section 10.5 cross-oracle dump against the PHP reference.
 function binaryBitmap_toString pObj
    local m, w, h, x, y, s, tLine
    binaryBitmap_ensureMatrix pObj

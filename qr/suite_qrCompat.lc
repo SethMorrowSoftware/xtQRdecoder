@@ -4,14 +4,14 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_qrCompat.lc — qrCompat test cases (presentation-agnostic).
+-- suite_qrCompat.lc - qrCompat test cases (presentation-agnostic).
 --
 -- Defines:  command suite_qrCompat
 -- It reports each case by calling a command the RUNNER must provide:
 --      command t_eq pName, pGot, pExp
 -- and assumes the qrCompat.lc handlers (u32, shl, ...) are already loaded.
 --
--- Runners: qr_tester.lc (web/HTML) — and any future CLI/CI runner — include
+-- Runners: qr_tester.lc (web/HTML) - and any future CLI/CI runner - include
 -- both qrCompat.lc and this file, define t_eq, then call suite_qrCompat.
 --
 -- All expected values are hand-computed and cross-checked against Java/ZXing

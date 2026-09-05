@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_gridSampler.lc — GridSampler tests (spec §8.4). Defines: command suite_gridSampler.
+-- suite_gridSampler.lc - GridSampler tests (spec section 8.4). Defines: command suite_gridSampler.
 -- Requires loaded: qrCompat.lc, bitMatrix.lc, perspectiveTransform.lc, gridSampler.lc.
 --
 -- Build a 3x3 "checkerboard" (1 0 1 / 0 1 0 / 1 0 1), upscale x8 to a 24x24

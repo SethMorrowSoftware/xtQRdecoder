@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_perspective.lc — PerspectiveTransform tests (spec §8.4).
+-- suite_perspective.lc - PerspectiveTransform tests (spec section 8.4).
 -- Defines: command suite_perspective. Requires loaded: perspectiveTransform.lc.
 -- Expected point maps independently computed in Python from the ZXing logic.
 -- round(...,6) neutralises any IEEE-754 display noise (values are exact here).

@@ -1,0 +1,13 @@
+# Python tooling
+__pycache__/
+*.pyc
+
+# editor / OS noise
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# scratch output from the headless model and local experiments
+/build/
+/tmp/

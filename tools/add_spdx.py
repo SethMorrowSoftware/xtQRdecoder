@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-add_spdx.py — one-shot: insert the SPDX/copyright header into every source file.
+add_spdx.py - one-shot: insert the SPDX/copyright header into every source file.
 
 Idempotent: a file that already contains an "SPDX-License-Identifier" line is
 left untouched. For .lc files the block is inserted right after the leading

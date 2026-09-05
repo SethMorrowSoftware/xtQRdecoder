@@ -4,16 +4,16 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- bitSource.lc — MSB-first bit reader over a byte array.
--- Port of ZXing Common\BitSource. Spec §8.3. Requires: qrCompat.lc.
+-- bitSource.lc - MSB-first bit reader over a byte array.
+-- Port of ZXing Common\BitSource. Spec section 8.3. Requires: qrCompat.lc.
 --
 -- Instance (Pattern A):
---   pObj["bytes"][k]    — dense 0-based array of byte values 0..255
---   pObj["byteOffset"]  — current byte index
---   pObj["bitOffset"]   — current bit within that byte (0 = MSB)
+--   pObj["bytes"][k]    - dense 0-based array of byte values 0..255
+--   pObj["byteOffset"]  - current byte index
+--   pObj["bitOffset"]   - current bit within that byte (0 = MSB)
 --
 -- readBits is a COMMAND (it mutates the offsets) that returns its value via
--- `the result` (spec §5 convention: mutators are commands). Call site:
+-- `the result` (spec section 5 convention: mutators are commands). Call site:
 --     bitSource_readBits tSrc, 4
 --     put the result into tValue
 -- This drives DecodedBitStreamParser.

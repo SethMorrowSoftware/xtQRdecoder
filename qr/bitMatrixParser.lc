@@ -4,8 +4,8 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- bitMatrixParser.lc — read format/version/codewords from a sampled matrix.
--- Port of ZXing Qrcode\Decoder\BitMatrixParser. Spec §8.5.
+-- bitMatrixParser.lc - read format/version/codewords from a sampled matrix.
+-- Port of ZXing Qrcode\Decoder\BitMatrixParser. Spec section 8.5.
 -- Requires: qrCompat.lc, bitMatrix.lc, version.lc, formatInformation.lc,
 --           errorCorrectionLevel.lc.
 --
@@ -166,7 +166,7 @@ end bmp_buildFunctionPattern
 -- read all data codewords in the standard zig-zag, skipping function modules.
 -- Returns a dense 0-based array of byte values. (The data mask is NOT applied
 -- here; the decoder applies it to the matrix first, matching ZXing's flow when
--- it uses readCodewords after unmasking — see decoder.lc.)
+-- it uses readCodewords after unmasking - see decoder.lc.)
 function bmp_readCodewords pParser, pVersion
    local fp, tDim, tRes, idx, bitsRead, currentByte
    local col, row, readingUp, c, i

@@ -2,21 +2,28 @@ script "xtQRdecoder"
 -- SPDX-License-Identifier: Apache-2.0
 -- Copyright 2026 Seth Morrow
 --
--- xtQRdecoder — a pure xTalk QR Code decoder, combined into a single
+-- xtQRdecoder - a pure xTalk QR Code decoder, combined into a single
 -- script-only stack for use on desktop, mobile, and server.
 --
 -- This file is GENERATED from the qr/*.lc modules by
--- tools/build_livecodescript.py — do not edit it by hand; edit the modules and
+-- tools/build_livecodescript.py - do not edit it by hand; edit the modules and
 -- rebuild. The modules are the single source of truth.
 --
 -- A line-for-line port of khanamiryan/php-qrcode-detector-decoder, itself a
 -- hand-port of ZXing (Apache-2.0). See the repository NOTICE file for full
 -- attribution.
 --
--- USAGE (desktop / mobile / server):
---   start using stack (the folder of me & "/xtQRdecoder.livecodescript")
+-- USAGE (desktop / mobile / server) - load it once, e.g. in preOpenStack,
+-- from the folder that holds your own stack file:
+--   local tDir
+--   put the effective filename of this stack into tDir
+--   set the itemDelimiter to "/"
+--   delete the last item of tDir          -- the folder of the host stack
+--   start using stack (tDir & "/xtQRdecoder.livecodescript")
 --   put qrDecodeResultRobust(url ("binfile:" & tImagePath), "TRY_HARDER") into tRes
 --   if tRes["error"] is empty then answer tRes["text"]
+-- (There is no `folder` property of a stack; `the effective filename of this
+-- stack` is the engine-proven way to locate a sibling file.)
 --
 -- PUBLIC API (see the README for the full reference):
 --   qrDecodeFromData(imageBytes [,hints])        -> text  (empty on failure)
@@ -28,12 +35,12 @@ script "xtQRdecoder"
 
 -- ===================== module: qrCompat ================
 -- =====================================================================
--- qrCompat.lc  —  Java/PHP integer + bitwise compatibility layer
+-- qrCompat.lc  -  Java/PHP integer + bitwise compatibility layer
 -- Part of the xTalk port of khanamiryan/php-qrcode-detector-decoder
 -- (itself a hand-port of ZXing, Apache-2.0).
 --
 -- Target: 9.6.3-era xTalk engines and earlier, including headless server builds.
--- Spec reference: §6, "the hard part: integer, bitwise, helper semantics".
+-- Spec reference: section 6, "the hard part: integer, bitwise, helper semantics".
 --
 -- WHY THIS MODULE EXISTS
 -- ZXing assumes Java `int` == signed 32-bit two's-complement that WRAPS on
@@ -208,9 +215,9 @@ end byteAt
 
 -- ===================== module: genericGF ===============
 -- =====================================================================
--- genericGF.lc — Galois field GF(256) for QR Reed–Solomon.
+-- genericGF.lc - Galois field GF(256) for QR Reed-Solomon.
 -- Port of ZXing Common\Reedsolomon\GenericGF (only QR_CODE_FIELD_256).
--- Spec §8.5 "ReedSolomon group". Requires: qrCompat.lc, genericGFPoly.lc.
+-- Spec section 8.5 "ReedSolomon group". Requires: qrCompat.lc, genericGFPoly.lc.
 --
 -- QR field parameters: primitive 0x011D (285), size 256, generatorBase 0.
 -- The exp/log tables are built once (lazily) and kept script-local; all
@@ -300,8 +307,8 @@ end gf_buildMonomial
 
 -- ===================== module: genericGFPoly ===========
 -- =====================================================================
--- genericGFPoly.lc — polynomials over GF(256).
--- Port of ZXing Common\Reedsolomon\GenericGFPoly. Spec §8.5.
+-- genericGFPoly.lc - polynomials over GF(256).
+-- Port of ZXing Common\Reedsolomon\GenericGFPoly. Spec section 8.5.
 -- Requires: qrCompat.lc, genericGF.lc.
 --
 -- REPRESENTATION: a polynomial is its 0-based coefficient array; index 0 is
@@ -470,13 +477,13 @@ end poly_divide
 
 -- ===================== module: reedSolomonDecoder ======
 -- =====================================================================
--- reedSolomonDecoder.lc — Euclidean Reed–Solomon decoder over GF(256).
--- Port of ZXing Common\Reedsolomon\ReedSolomonDecoder. Spec §8.5.
+-- reedSolomonDecoder.lc - Euclidean Reed-Solomon decoder over GF(256).
+-- Port of ZXing Common\Reedsolomon\ReedSolomonDecoder. Spec section 8.5.
 -- Requires: qrCompat.lc, genericGF.lc, genericGFPoly.lc.
 --
 -- rs_decode mutates the received codeword array IN PLACE (passed by @),
 -- correcting up to floor(twoS/2) errors. Throws "RS: ..." on failure
--- (the decoder layer maps that to a Checksum error per spec §6.6).
+-- (the decoder layer maps that to a Checksum error per spec section 6.6).
 -- =====================================================================
 
 -- received: dense 0-based array of codewords (0..255); twoS = number of EC codewords
@@ -610,15 +617,15 @@ end rs_findErrorMagnitudes
 
 -- ===================== module: bitArray ================
 -- =====================================================================
--- bitArray.lc — packed bit vector. Port of ZXing Common\BitArray. Spec §8.2.
+-- bitArray.lc - packed bit vector. Port of ZXing Common\BitArray. Spec section 8.2.
 -- Requires: qrCompat.lc.
 --
 -- Instance (Pattern A) is an array:
---   pObj["size"]     — number of valid bits
---   pObj["bits"][w]  — dense 0-based unsigned-32-bit words (w = 0 .. wordCount-1)
+--   pObj["size"]     - number of valid bits
+--   pObj["bits"][w]  - dense 0-based unsigned-32-bit words (w = 0 .. wordCount-1)
 -- Words are kept dense so "the number of elements of pObj['bits']" == wordCount,
 -- matching Java's bits.length (which getNextSet/Unset iterate against).
--- All packed words stay in [0, 2^32) (spec §6.1); shifts go through qrCompat.
+-- All packed words stay in [0, 2^32) (spec section 6.1); shifts go through qrCompat.
 -- =====================================================================
 
 function bitArray_new pSize
@@ -817,7 +824,7 @@ function bitArray_toBytes pObj, pBitOffset, pNumBytes
    return tOut
 end bitArray_toBytes
 
--- reverse the bit order within [0, size)  (classic bit-reversal; spec §6.2)
+-- reverse the bit order within [0, size)  (classic bit-reversal; spec section 6.2)
 command bitArray_reverse @pObj
    local tSize, tLen, tOldLen, tOrigCount, i, x, newBits
    local leftOffset, currentInt, nextInt
@@ -857,7 +864,7 @@ end bitArray_clone
 
 -- ===================== module: bitMatrix ===============
 -- =====================================================================
--- bitMatrix.lc — packed 2-D bit grid. Port of ZXing Common\BitMatrix. Spec §8.1.
+-- bitMatrix.lc - packed 2-D bit grid. Port of ZXing Common\BitMatrix. Spec section 8.1.
 -- Requires: qrCompat.lc, bitArray.lc (for getRow/setRow/rotate180).
 --
 -- Instance (Pattern A) is an array:
@@ -868,10 +875,10 @@ end bitArray_clone
 -- get/getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
 -- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.shl
 -- is precision-safe: shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
--- matching Java's overflow-discard semantics bit-for-bit (spec §6.2).
+-- matching Java's overflow-discard semantics bit-for-bit (spec section 6.2).
 --
 -- NOTE: the giant hard-coded debug array literal in PHP BitMatrix::set() is
--- dead cruft and is intentionally NOT ported (spec §8.1 warning).
+-- dead cruft and is intentionally NOT ported (spec section 8.1 warning).
 -- =====================================================================
 
 function bitMatrix_new pWidth, pHeight
@@ -1091,16 +1098,16 @@ end bitMatrix_clone
 
 -- ===================== module: bitSource ===============
 -- =====================================================================
--- bitSource.lc — MSB-first bit reader over a byte array.
--- Port of ZXing Common\BitSource. Spec §8.3. Requires: qrCompat.lc.
+-- bitSource.lc - MSB-first bit reader over a byte array.
+-- Port of ZXing Common\BitSource. Spec section 8.3. Requires: qrCompat.lc.
 --
 -- Instance (Pattern A):
---   pObj["bytes"][k]    — dense 0-based array of byte values 0..255
---   pObj["byteOffset"]  — current byte index
---   pObj["bitOffset"]   — current bit within that byte (0 = MSB)
+--   pObj["bytes"][k]    - dense 0-based array of byte values 0..255
+--   pObj["byteOffset"]  - current byte index
+--   pObj["bitOffset"]   - current bit within that byte (0 = MSB)
 --
 -- readBits is a COMMAND (it mutates the offsets) that returns its value via
--- `the result` (spec §5 convention: mutators are commands). Call site:
+-- `the result` (spec section 5 convention: mutators are commands). Call site:
 --     bitSource_readBits tSrc, 4
 --     put the result into tValue
 -- This drives DecodedBitStreamParser.
@@ -1172,39 +1179,39 @@ end bitSource_readBits
 
 -- ===================== module: luminanceSource =========
 -- =====================================================================
--- luminanceSource.lc — luminance plane for the binarizers. Spec §7.
+-- luminanceSource.lc - luminance plane for the binarizers. Spec section 7.
 -- Port of ZXing LuminanceSource / GDLuminanceSource (server variant).
 -- Requires: qrCompat.lc (only for completeness; uses builtins).
 --
 -- Instance (Pattern A):
 --   pObj["width"], pObj["height"]
---   pObj["lum"][i]   — flat 0-based greyscale 0..255, row-major (i = y*width + x)
+--   pObj["lum"][i]   - flat 0-based greyscale 0..255, row-major (i = y*width + x)
 --
 -- TWO construction paths, deliberately separated:
---   * newFromImageData(w,h,raw)  — PURE byte math (§7.3). Fully unit-testable
+--   * newFromImageData(w,h,raw)  - PURE byte math (section 7.3). Fully unit-testable
 --     with synthetic 4-byte/pixel data; no engine image object involved.
---   * newFromData(bytes)         — decodes a PNG/JPG/GIF/BMP via the engine
---     IMAGE OBJECT (§7.1). This is the ONE piece that may not work in a
+--   * newFromData(bytes)         - decodes a PNG/JPG/GIF/BMP via the engine
+--     IMAGE OBJECT (section 7.1). This is the ONE piece that may not work in a
 --     headless cPanel server; qr_imageprobe.lc tests exactly that. Not part
 --     of the unit suite.
 -- =====================================================================
 
--- §7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
--- raw layout per §7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
+-- section 7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
+-- raw layout per section 7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
 function luminanceSource_newFromImageData pW, pH, pRaw
    local tObj, p, o, r, g, b, n, tLum
    put pW into tObj["width"]
    put pH into tObj["height"]
    put (pW * pH) into n
    -- Hot loop (one iteration per pixel). Three behaviour-preserving speedups vs
-   -- the naive form (spec §11 -- this is the documented cost centre):
+   -- the naive form (spec section 11 -- this is the documented cost centre):
    --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE
    --     at the end, so each iteration does one array-key write instead of a
    --     nested tObj["lum"][idx] lookup-then-write;
    --   * use the loop counter p directly as the 0-based pixel index (idx == p);
    --   * carry the byte offset o with `add 4` instead of recomputing p*4.
    -- Result is bit-identical: pixel p reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
-   -- byte1=alpha,2=R,3=G,4=B layout of §7.2) and writes lum[p].
+   -- byte1=alpha,2=R,3=G,4=B layout of section 7.2) and writes lum[p].
    put 0 into o
    repeat with p = 0 to (n - 1)
       put byteToNum(byte (o + 2) of pRaw) into r
@@ -1230,7 +1237,7 @@ function luminanceSource_newFromLuminances pW, pH, pLum
    return tObj
 end luminanceSource_newFromLuminances
 
--- IMAGE-OBJECT PATH (§7.1). Requires a working engine image object. A headless
+-- IMAGE-OBJECT PATH (section 7.1). Requires a working engine image object. A headless
 -- engine may lack a default stack to host a control, so we ensure one exists
 -- first; qr_imageprobe.lc confirms this path on a given engine.
 --
@@ -1238,7 +1245,7 @@ end luminanceSource_newFromLuminances
 -- object, ONCE. Returns {["width"],["height"],["raw"]}. Separated from the
 -- greyscale/downsample step so a robust reader can decode the (costly) image a
 -- single time and then derive several luminance sources at different scales
--- from the same raw plane (spec §11: the image decode + pixel loops dominate).
+-- from the same raw plane (spec section 11: the image decode + pixel loops dominate).
 --
 -- pMaxDim is accepted for signature compatibility but does not resize here:
 -- downsampling is performed by the caller (luminanceSource_fromRawPlane), so this
@@ -1268,7 +1275,7 @@ function luminanceSource_decodeRawPlane pImageData, pMaxDim
    -- this format (notably JPEG on some headless xTalk server builds), the
    -- image object decodes to 0x0 / empty imageData rather than erroring -- which
    -- the rest of the pipeline would mistake for a blank photo and report as a
-   -- generic "no QR". Surface the real reason instead (spec §7.1).
+   -- generic "no QR". Surface the real reason instead (spec section 7.1).
    if (tW <= 0) or (tH <= 0) then
       throw "NotFound: image did not decode (0 x 0) -- unsupported format? this engine build may lack a JPEG codec; try a PNG"
    end if
@@ -1321,7 +1328,7 @@ end luminanceSource_newFromData
 
 -- Build a luminance source from a 4-byte/pixel raw plane, sampling every
 -- pStep-th pixel in x and y (nearest-neighbour downsample). Reuses the verified
--- §7.3 greyscale by reassembling a reduced 4-bpp raw and calling newFromImageData.
+-- section 7.3 greyscale by reassembling a reduced 4-bpp raw and calling newFromImageData.
 function luminanceSource_downsampleRaw pW, pH, pRaw, pStep
    local tOutW, tOutH, sx, sy, tOStep, o, tReduced
    put (((pW - 1) div pStep) + 1) into tOutW
@@ -1386,14 +1393,14 @@ end luminanceSource_crop
 
 -- ===================== module: globalHistogramBinarizer 
 -- =====================================================================
--- globalHistogramBinarizer.lc — global black-point via 32-bucket histogram.
--- Port of ZXing GlobalHistogramBinarizer. Spec §8 / module inventory.
+-- globalHistogramBinarizer.lc - global black-point via 32-bucket histogram.
+-- Port of ZXing GlobalHistogramBinarizer. Spec section 8 / module inventory.
 -- Requires: qrCompat.lc, bitMatrix.lc, luminanceSource.lc.
 --
 -- ghb_getBlackMatrix(pSrc) -> BitMatrix (true = black). Samples 4 rows to
 -- build a 32-bucket luminance histogram, estimates a black point, then
 -- thresholds the whole image. Throws "NotFound: ..." when contrast is too low
--- (mirrors ZXing throwing NotFoundException; spec §6.6).
+-- (mirrors ZXing throwing NotFoundException; spec section 6.6).
 -- =====================================================================
 
 constant kLumBits    = 5
@@ -1497,8 +1504,8 @@ end ghb_getBlackMatrix
 
 -- ===================== module: hybridBinarizer =========
 -- =====================================================================
--- hybridBinarizer.lc — local adaptive threshold (the default binarizer).
--- Port of ZXing HybridBinarizer. Spec §8 / module inventory.
+-- hybridBinarizer.lc - local adaptive threshold (the default binarizer).
+-- Port of ZXing HybridBinarizer. Spec section 8 / module inventory.
 -- Requires: qrCompat.lc, bitMatrix.lc, luminanceSource.lc, globalHistogramBinarizer.lc.
 --
 -- hb_getBlackMatrix(pSrc) -> BitMatrix (true = black). Divides the image into
@@ -1512,9 +1519,9 @@ end ghb_getBlackMatrix
 -- dynamic range exceeds MIN_DYNAMIC_RANGE, sums the remaining rows without
 -- updating min/max. xTalk's `repeat with` ignores in-body changes to its
 -- loop counter, so that early-out cannot be expressed by mutating the counter
--- without double-counting. We sum all 64 pixels in a plain double loop — the
+-- without double-counting. We sum all 64 pixels in a plain double loop - the
 -- RESULT is identical (the sum is the same; once range>24 the final low-range
--- branch is skipped either way), only the per-block cost differs. (spec §11)
+-- branch is skipped either way), only the per-block cost differs. (spec section 11)
 -- =====================================================================
 
 constant kBlockSizePower = 3      -- 8x8 blocks
@@ -1646,15 +1653,15 @@ end hb_getBlackMatrix
 
 -- ===================== module: binaryBitmap ============
 -- =====================================================================
--- binaryBitmap.lc — caches the black matrix for the reader. Spec §3, §module inv.
+-- binaryBitmap.lc - caches the black matrix for the reader. Spec section 3, sectionmodule inv.
 -- Port of ZXing BinaryBitmap. Requires: bitMatrix.lc, hybridBinarizer.lc,
 -- globalHistogramBinarizer.lc, luminanceSource.lc.
 --
 -- Instance (Pattern A):
---   pObj["src"]       — luminanceSource array
---   pObj["binarizer"] — "hybrid" (default) or "global"
---   pObj["matrix"]    — cached BitMatrix (computed lazily by the selected binarizer)
---   pObj["hasMatrix"] — whether the cache is populated
+--   pObj["src"]       - luminanceSource array
+--   pObj["binarizer"] - "hybrid" (default) or "global"
+--   pObj["matrix"]    - cached BitMatrix (computed lazily by the selected binarizer)
+--   pObj["hasMatrix"] - whether the cache is populated
 --
 -- The detector pulls the binarized BitMatrix from here; binaryBitmap_getBlackMatrix
 -- computes it once (HybridBinarizer, the default) and caches it.
@@ -1703,7 +1710,7 @@ function binaryBitmap_getBlackMatrix pObj
 end binaryBitmap_getBlackMatrix
 
 -- ASCII preview of the cached matrix ("X" = black, " " = white), for debugging
--- and for the §10.5 cross-oracle dump against the PHP reference.
+-- and for the section 10.5 cross-oracle dump against the PHP reference.
 function binaryBitmap_toString pObj
    local m, w, h, x, y, s, tLine
    binaryBitmap_ensureMatrix pObj
@@ -1727,10 +1734,10 @@ end binaryBitmap_toString
 
 -- ===================== module: errorCorrectionLevel ====
 -- =====================================================================
--- errorCorrectionLevel.lc — QR error-correction levels. Spec §8.5.
+-- errorCorrectionLevel.lc - QR error-correction levels. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\ErrorCorrectionLevel. Requires: nothing.
 --
--- THE ORDINAL/BIT SUBTLETY (spec §13 checklist item):
+-- THE ORDINAL/BIT SUBTLETY (spec section 13 checklist item):
 -- ZXing orders the enum L, M, Q, H (ordinals 0,1,2,3) but the 2-bit field
 -- stored in the format information is:  M=00, L=01, H=10, Q=11.
 -- The ECBlocks array in Version is indexed by getOrdinal() (the L,M,Q,H order),
@@ -1787,7 +1794,7 @@ end ecl_forBits
 
 -- ===================== module: mode ====================
 -- =====================================================================
--- mode.lc — QR encoding-mode table. Spec §8.5.
+-- mode.lc - QR encoding-mode table. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\Mode. Requires: nothing.
 --
 -- A "mode" is identified by its canonical NAME string (e.g. "NUMERIC").
@@ -1795,7 +1802,7 @@ end ecl_forBits
 -- mode_charCountBits(name, version) returns the character-count bit width for
 -- the version range: offset 0 if v<=9, 1 if v<=26, else 2.
 --
--- Table (verbatim, spec §8.5):
+-- Table (verbatim, spec section 8.5):
 --   mode                 ccBits [v1-9,v10-26,v27-40]   4-bit value
 --   TERMINATOR           0,0,0                          0x00
 --   NUMERIC              10,12,14                       0x01
@@ -1876,7 +1883,7 @@ end mode_charCountBits
 
 -- ===================== module: dataMask ================
 -- =====================================================================
--- dataMask.lc — the 8 QR data-mask predicates. Spec §8.5.
+-- dataMask.lc - the 8 QR data-mask predicates. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\DataMask. Requires: qrCompat.lc, bitMatrix.lc.
 --
 -- dataMask_isMasked(ref, i, j) -> boolean   (i = row, j = column)
@@ -1934,7 +1941,7 @@ end dataMask_unmask
 
 -- ===================== module: formatInformation =======
 -- =====================================================================
--- formatInformation.lc — decode the 15-bit QR format info. Spec §8.5.
+-- formatInformation.lc - decode the 15-bit QR format info. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\FormatInformation.
 -- Requires: qrCompat.lc, errorCorrectionLevel.lc.
 --
@@ -1947,13 +1954,13 @@ end dataMask_unmask
 -- Returns an array: ["ecLevel"] = EC ordinal (0..3, L/M/Q/H), ["dataMask"] = 0..7.
 --
 -- FORMAT_INFO_DECODE_LOOKUP rows are "dataBits,maskedSequence" (verified by
--- regenerating from BCH gen 0x537 ^ 0x5412 — see tools/verify, 32 entries).
+-- regenerating from BCH gen 0x537 ^ 0x5412 - see tools/verify, 32 entries).
 -- dataBits high 2 bits = EC field value (M=00,L=01,H=10,Q=11), low 3 = mask ref.
 -- =====================================================================
 
 -- The QR format-info mask (0x5412). The lookup column sFmtSeq below already
 -- has this applied (entries = bch(data) XOR this), so on-symbol reads are
--- compared directly — no run-time XOR needed. Kept for documentation.
+-- compared directly - no run-time XOR needed. Kept for documentation.
 constant kFormatInfoMaskQR = 21522    -- 0x5412
 
 local sFmtReady, sFmtData, sFmtSeq
@@ -2039,7 +2046,7 @@ end fmt_unpack
 
 -- ===================== module: version =================
 -- =====================================================================
--- version.lc — QR Version/EC-block tables (v1-40). Spec §8.5 (largest table).
+-- version.lc - QR Version/EC-block tables (v1-40). Spec section 8.5 (largest table).
 -- Port of ZXing Qrcode\Decoder\Version. Requires: qrCompat.lc, errorCorrectionLevel.lc.
 --
 -- The table below was GENERATED from the ZXing data and independently verified:
@@ -2054,7 +2061,7 @@ end fmt_unpack
 --   sVer[v]["dimension"]   = 17 + 4v
 --   sVer[v]["align"]       = comma list of centres
 --   sVer[v]["ec"][ord]     = "ecw;count,data;count,data..."  (ord 0..3 = L,M,Q,H)
--- ECBlocks are indexed by EC ORDINAL (L,M,Q,H) per ErrorCorrectionLevel (spec §8.5).
+-- ECBlocks are indexed by EC ORDINAL (L,M,Q,H) per ErrorCorrectionLevel (spec section 8.5).
 --
 -- VERSION_DECODE_INFO: the 34 raw 18-bit version-info patterns for v7-40.
 -- =====================================================================
@@ -2238,13 +2245,13 @@ end ver_tableData
 
 -- ===================== module: characterSetECI =========
 -- =====================================================================
--- characterSetECI.lc — ECI numeric value -> charset name. Spec §8.6.
+-- characterSetECI.lc - ECI numeric value -> charset name. Spec section 8.6.
 -- Port of (the used subset of) ZXing Common\CharacterSetECI.
 -- Requires: nothing.
 --
 -- Only the values likely to appear are mapped; the byte decoder
 -- (decodedBitStreamParser) only natively handles ASCII / ISO-8859-1 / UTF-8
--- (spec §8.7), so other charsets resolve to a name that decoder treats as a
+-- (spec section 8.7), so other charsets resolve to a name that decoder treats as a
 -- best-effort fallback.
 -- =====================================================================
 
@@ -2313,7 +2320,7 @@ end eci_charsetName
 
 -- ===================== module: dataBlock ===============
 -- =====================================================================
--- dataBlock.lc — de-interleave codewords into Reed–Solomon blocks. Spec §8.5.
+-- dataBlock.lc - de-interleave codewords into Reed-Solomon blocks. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\DataBlock. Requires: qrCompat.lc, version.lc,
 -- errorCorrectionLevel.lc.
 --
@@ -2324,10 +2331,10 @@ end eci_charsetName
 -- laid out by the version table, all instances expanded).
 --
 -- ZXing's two-pass fill (spec: "critical and easy to get wrong"):
---   pass 1 — distribute DATA codewords round-robin across all blocks, filling
+--   pass 1 - distribute DATA codewords round-robin across all blocks, filling
 --            the common (shorter) length first, then the one extra data
 --            codeword that the longer blocks each carry.
---   pass 2 — distribute EC codewords round-robin across all blocks, where the
+--   pass 2 - distribute EC codewords round-robin across all blocks, where the
 --            longer blocks' EC region starts one slot later.
 -- =====================================================================
 
@@ -2409,7 +2416,7 @@ end db_getDataBlocks
 
 -- ===================== module: decodedBitStreamParser ==
 -- =====================================================================
--- decodedBitStreamParser.lc — bits -> text per encoding mode. Spec §8.5.
+-- decodedBitStreamParser.lc - bits -> text per encoding mode. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\DecodedBitStreamParser.
 -- Requires: qrCompat.lc, bitSource.lc, mode.lc, characterSetECI.lc.
 --
@@ -2425,12 +2432,12 @@ end db_getDataBlocks
 -- luck (the bits after the mode nibble read as TERMINATOR); a multi-segment
 -- input such as ECI+BYTE exposed the misalignment. Script-locals + command-by-
 -- reference are both already proven on the target engine, so this is the
--- highest-confidence design. (Decode is sequential per request — not reentrant,
+-- highest-confidence design. (Decode is sequential per request - not reentrant,
 -- which is fine for server use.)
 --
 -- Modes fully supported: NUMERIC, ALPHANUMERIC, BYTE (ISO-8859-1/UTF-8/ASCII),
 --   ECI (charset switch), TERMINATOR, FNC1, STRUCTURED_APPEND (skipped).
--- KANJI / HANZI raise the documented §8.7 limitation (no native Shift-JIS/
+-- KANJI / HANZI raise the documented section 8.7 limitation (no native Shift-JIS/
 --   GB2312 in xTalk); the common case is fully covered.
 -- =====================================================================
 
@@ -2678,8 +2685,8 @@ end dbsp_parseEci
 
 -- ===================== module: bitMatrixParser =========
 -- =====================================================================
--- bitMatrixParser.lc — read format/version/codewords from a sampled matrix.
--- Port of ZXing Qrcode\Decoder\BitMatrixParser. Spec §8.5.
+-- bitMatrixParser.lc - read format/version/codewords from a sampled matrix.
+-- Port of ZXing Qrcode\Decoder\BitMatrixParser. Spec section 8.5.
 -- Requires: qrCompat.lc, bitMatrix.lc, version.lc, formatInformation.lc,
 --           errorCorrectionLevel.lc.
 --
@@ -2840,7 +2847,7 @@ end bmp_buildFunctionPattern
 -- read all data codewords in the standard zig-zag, skipping function modules.
 -- Returns a dense 0-based array of byte values. (The data mask is NOT applied
 -- here; the decoder applies it to the matrix first, matching ZXing's flow when
--- it uses readCodewords after unmasking — see decoder.lc.)
+-- it uses readCodewords after unmasking - see decoder.lc.)
 function bmp_readCodewords pParser, pVersion
    local fp, tDim, tRes, idx, bitsRead, currentByte
    local col, row, readingUp, c, i
@@ -2883,7 +2890,7 @@ end bmp_readCodewords
 
 -- ===================== module: decoder =================
 -- =====================================================================
--- decoder.lc — orchestrate matrix parse -> RS -> bitstream. Spec §8.5.
+-- decoder.lc - orchestrate matrix parse -> RS -> bitstream. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\Decoder. Requires: qrCompat.lc, bitMatrix.lc,
 --   bitMatrixParser.lc, version.lc, formatInformation.lc, dataMask.lc,
 --   dataBlock.lc, reedSolomonDecoder.lc, decodedBitStreamParser.lc,
@@ -2941,7 +2948,7 @@ function dec_tryParser pParser
       put bmp_readCodewords(pParser, tVersion) into tCodewords
       put tSaved into pParser["bits"]
 
-      -- de-interleave + per-block Reed–Solomon correction
+      -- de-interleave + per-block Reed-Solomon correction
       put db_getDataBlocks(tCodewords, tVersion, tEcLevel) into tBlocks
       put tBlocks["n"] into tNum
       put 0 into tDataIdx             -- concatenated corrected data codewords
@@ -2969,7 +2976,7 @@ function dec_tryParser pParser
    end try
 end dec_tryParser
 
--- correct one block's codewords with Reed–Solomon; returns the corrected
+-- correct one block's codewords with Reed-Solomon; returns the corrected
 -- data codewords (0-based, length numData).
 function dec_correctBlock pBlock, pEcwPerBlock
    local tLen, tCw, i, tOut
@@ -2987,7 +2994,7 @@ end dec_correctBlock
 
 -- ===================== module: mathUtils ===============
 -- =====================================================================
--- mathUtils.lc — rounding + distance helpers. Spec §8.4.
+-- mathUtils.lc - rounding + distance helpers. Spec section 8.4.
 -- Port of ZXing Common\Detector\MathUtils. Requires: nothing (builtins only).
 --
 -- PHP authority:
@@ -3015,7 +3022,7 @@ end mu_distance
 
 -- ===================== module: resultPoint =============
 -- =====================================================================
--- resultPoint.lc — 2-D point + the orderBestPatterns ordering. Spec §8.4.
+-- resultPoint.lc - 2-D point + the orderBestPatterns ordering. Spec section 8.4.
 -- Port of ZXing ResultPoint. Requires: mathUtils.lc.
 --
 -- A point (Pattern A) is an array: pPt["x"], pPt["y"]. FinderPattern and
@@ -3080,7 +3087,7 @@ end rp_orderBestPatterns
 
 -- ===================== module: perspectiveTransform ====
 -- =====================================================================
--- perspectiveTransform.lc — 3x3 projective transform. Spec §8.4.
+-- perspectiveTransform.lc - 3x3 projective transform. Spec section 8.4.
 -- Port of ZXing Common\PerspectiveTransform. Requires: nothing (pure float).
 --
 -- A transform (Pattern A) is an array of nine coefficients:
@@ -3091,7 +3098,7 @@ end rp_orderBestPatterns
 --   denom = a13*x + a23*y + a33
 --   x' = (a11*x + a21*y + a31)/denom ;  y' = (a12*x + a22*y + a32)/denom
 --
--- All float math -- no integer-semantics traps (spec §6 does not apply here).
+-- All float math -- no integer-semantics traps (spec section 6 does not apply here).
 -- =====================================================================
 
 function pt_squareToQuadrilateral pX0, pY0, pX1, pY1, pX2, pY2, pX3, pY3
@@ -3202,7 +3209,7 @@ end pt_transformPoints
 
 -- ===================== module: gridSampler =============
 -- =====================================================================
--- gridSampler.lc — sample a module grid through a transform. Spec §8.4.
+-- gridSampler.lc - sample a module grid through a transform. Spec section 8.4.
 -- Port of ZXing Common\GridSampler + DefaultGridSampler.
 -- Requires: qrCompat.lc, bitMatrix.lc, perspectiveTransform.lc.
 --
@@ -3311,7 +3318,7 @@ end gs_sampleGrid
 
 -- ===================== module: finderPatternFinder =====
 -- =====================================================================
--- finderPatternFinder.lc — locate the 3 corner finder patterns. Spec §8.4.
+-- finderPatternFinder.lc - locate the 3 corner finder patterns. Spec section 8.4.
 -- Port of ZXing Qrcode\Detector\FinderPatternFinder (the most intricate module).
 -- Requires: qrCompat.lc, bitMatrix.lc, mathUtils.lc, resultPoint.lc.
 --
@@ -3341,7 +3348,7 @@ function fpf_hintPresent pHints, pKey
    return (pKey is among the lines of the keys of pHints)
 end fpf_hintPresent
 
--- 1:1:3:1:1 proportion test on a 5-element run count (spec §8.4)
+-- 1:1:3:1:1 proportion test on a 5-element run count (spec section 8.4)
 function fpf_foundPatternCross pSC, pMaxVariance
    local tTotal, i, tCount, tModuleSize, tMV
    put 0 into tTotal
@@ -3360,7 +3367,7 @@ function fpf_foundPatternCross pSC, pMaxVariance
            (abs(tModuleSize - pSC[4]) < tMV))
 end fpf_foundPatternCross
 
--- centre of a run given the end position (spec §8.4)
+-- centre of a run given the end position (spec section 8.4)
 function fpf_centerFromEnd pSC, pEnd
    return ((pEnd - pSC[4] - pSC[3]) - (pSC[2] / 2))
 end fpf_centerFromEnd
@@ -3837,8 +3844,8 @@ end fpf_find
 
 -- ===================== module: alignmentPatternFinder ==
 -- =====================================================================
--- alignmentPatternFinder.lc — locate the bottom-right alignment pattern (v2+).
--- Port of ZXing Qrcode\Detector\AlignmentPatternFinder. Spec §8.4.
+-- alignmentPatternFinder.lc - locate the bottom-right alignment pattern (v2+).
+-- Port of ZXing Qrcode\Detector\AlignmentPatternFinder. Spec section 8.4.
 -- Requires: qrCompat.lc, bitMatrix.lc.
 --
 -- Stateless apart from a small accumulator: apf_find searches a sub-region for
@@ -3990,8 +3997,8 @@ end apf_find
 
 -- ===================== module: detector ================
 -- =====================================================================
--- detector.lc — top-level detect: finders -> module size -> transform -> sample.
--- Port of ZXing Qrcode\Detector\Detector. Spec §8.4.
+-- detector.lc - top-level detect: finders -> module size -> transform -> sample.
+-- Port of ZXing Qrcode\Detector\Detector. Spec section 8.4.
 -- Requires: qrCompat.lc, bitMatrix.lc, mathUtils.lc, resultPoint.lc,
 --           perspectiveTransform.lc, gridSampler.lc, finderPatternFinder.lc,
 --           alignmentPatternFinder.lc, version.lc.
@@ -4217,7 +4224,7 @@ end dt_detect
 
 -- ===================== module: qrCodeReader ============
 -- =====================================================================
--- qrCodeReader.lc — wire detector -> decoder; PURE_BARCODE fast path. Spec §9.
+-- qrCodeReader.lc - wire detector -> decoder; PURE_BARCODE fast path. Spec section 9.
 -- Port of ZXing Qrcode\QRCodeReader. Requires: bitMatrix.lc, binaryBitmap.lc,
 --   detector.lc, decoder.lc.
 --
@@ -4327,8 +4334,8 @@ end qcr_extractPureBits
 
 -- ===================== module: qrReader ================
 -- =====================================================================
--- qrReader.lc — public API: image bytes -> luminance -> binarize -> detect ->
--- decode. Spec §9. Port of ZXing QrReader facade.
+-- qrReader.lc - public API: image bytes -> luminance -> binarize -> detect ->
+-- decode. Spec section 9. Port of ZXing QrReader facade.
 -- Requires: luminanceSource.lc, binaryBitmap.lc, qrCodeReader.lc (and the
 --   whole decode stack they pull in).
 --
@@ -4464,7 +4471,7 @@ end qrDecodeResultRobust
 
 -- one-shot: decoded text on success, empty on any failure. With BINARY_MODE set
 -- (hint), returns the raw decoded byte string verbatim (no charset decode) --
--- needed for binary payloads like the 256-byte ramp fixture (spec §9).
+-- needed for binary payloads like the 256-byte ramp fixture (spec section 9).
 function qrDecodeFromData pImageData, pHints
    local tRes, tHintsArr
    put qrDecodeResult(pImageData, pHints) into tRes

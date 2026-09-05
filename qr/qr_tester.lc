@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- qr_tester.lc — user-facing WEB test console for the xTalk QR port.
+-- qr_tester.lc - user-facing WEB test console for the xTalk QR port.
 --
 -- DEPLOY: upload the whole qr/ folder into your web space (e.g.
 --   public_html/qr/) and open this file in a browser:
@@ -273,81 +273,81 @@ command renderPage
    put 0 into sFail
 
    -- run every suite; each panel is accumulated in sPanels
-   startSuite "qrCompat.lc  —  integer & bitwise layer"
+   startSuite "qrCompat.lc  -  integer & bitwise layer"
    suite_qrCompat
    endSuite
 
-   startSuite "genericGF.lc  —  GF(256) field"
+   startSuite "genericGF.lc  -  GF(256) field"
    suite_genericGF
    endSuite
 
-   startSuite "genericGFPoly.lc  —  polynomials over GF(256)"
+   startSuite "genericGFPoly.lc  -  polynomials over GF(256)"
    suite_genericGFPoly
    endSuite
 
-   startSuite "reedSolomonDecoder.lc  —  RS decode (ZXing reference vector)"
+   startSuite "reedSolomonDecoder.lc  -  RS decode (ZXing reference vector)"
    suite_reedSolomon
    endSuite
 
-   startSuite "bitArray.lc  —  packed bit vector"
+   startSuite "bitArray.lc  -  packed bit vector"
    suite_bitArray
    endSuite
 
-   startSuite "bitMatrix.lc  —  packed 2-D bit grid"
+   startSuite "bitMatrix.lc  -  packed 2-D bit grid"
    suite_bitMatrix
    endSuite
 
-   startSuite "bitSource.lc  —  MSB-first bit reader"
+   startSuite "bitSource.lc  -  MSB-first bit reader"
    suite_bitSource
    endSuite
 
-   startSuite "luminanceSource.lc  —  greyscale byte math (§7.3)"
+   startSuite "luminanceSource.lc  -  greyscale byte math (section 7.3)"
    suite_luminance
    endSuite
 
-   startSuite "binarizer  —  global histogram + hybrid adaptive"
+   startSuite "binarizer  -  global histogram + hybrid adaptive"
    suite_binarizer
    endSuite
 
-   startSuite "tables  —  ErrorCorrectionLevel / Mode / DataMask / FormatInfo / Version"
+   startSuite "tables  -  ErrorCorrectionLevel / Mode / DataMask / FormatInfo / Version"
    suite_tables
    endSuite
 
-   startSuite "parser  —  DataBlock de-interleave + bitstream decode"
+   startSuite "parser  -  DataBlock de-interleave + bitstream decode"
    suite_parser
    endSuite
 
-   startSuite "decoder  —  end-to-end matrix -> text (real v1 'HI' QR)"
+   startSuite "decoder  -  end-to-end matrix -> text (real v1 'HI' QR)"
    suite_decoder
    endSuite
 
-   startSuite "mathUtils  —  round + distance (§8.4)"
+   startSuite "mathUtils  -  round + distance (section 8.4)"
    suite_mathUtils
    endSuite
 
-   startSuite "resultPoint  —  point ops + orderBestPatterns (§8.4)"
+   startSuite "resultPoint  -  point ops + orderBestPatterns (section 8.4)"
    suite_resultPoint
    endSuite
 
-   startSuite "perspectiveTransform  —  3x3 projective maps (§8.4)"
+   startSuite "perspectiveTransform  -  3x3 projective maps (section 8.4)"
    suite_perspective
    endSuite
 
-   startSuite "gridSampler  —  sample a grid through a transform (§8.4)"
+   startSuite "gridSampler  -  sample a grid through a transform (section 8.4)"
    suite_gridSampler
    endSuite
 
-   startSuite "detector  —  synthetic photo -> finders -> sample -> 'HI' (§8.4)"
+   startSuite "detector  -  synthetic photo -> finders -> sample -> 'HI' (section 8.4)"
    suite_detector
    endSuite
 
-   startSuite "detector v2  —  alignment pattern -> 'HELLO WORLD' (§8.4)"
+   startSuite "detector v2  -  alignment pattern -> 'HELLO WORLD' (section 8.4)"
    suite_detectorV2
    endSuite
 
    -- assemble the page
-   renderHead "xtQRdecoder — xTalk QR Port Test Console"
-   out "<h1>xtQRdecoder — xTalk QR Port Test Console</h1>"
+   renderHead "xtQRdecoder - xTalk QR Port Test Console"
+   out "<h1>xtQRdecoder - xTalk QR Port Test Console</h1>"
    out "<p class='sub'>ZXing QR <b>decoder</b> ported to pure xTalk &middot; target: a 9.6.3-class xTalk engine &middot; <a href='qr_imageprobe.lc'>image/imageData probe &rarr;</a></p>"
 
    put (sPass + sFail) into tTotal
@@ -369,7 +369,7 @@ end renderPage
 
 command renderMissing pMissing
    put empty into sHTML
-   renderHead "xtQRdecoder — setup needed"
+   renderHead "xtQRdecoder - setup needed"
    out "<h1>xtQRdecoder test console</h1>"
    out "<div class='banner bad'>&#10007; Some library / suite files were not found.</div>"
    out "<p>Upload the whole <code>qr/</code> folder to your web space and open <code>qr/qr_tester.lc</code>, so this file sits beside the modules it loads.</p>"

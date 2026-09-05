@@ -4,12 +4,12 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- qr_decodeprobe.lc — end-to-end real-image decode probe.
+-- qr_decodeprobe.lc - end-to-end real-image decode probe.
 --
 -- This is the first test of the WHOLE public pipeline on an actual raster image
 -- (not a synthetic in-memory BitMatrix): it embeds a known PNG of a v1 QR code
 -- for "HI", loads every library module, and calls qrDecodeFromData -- which runs
---   image object -> the imageData -> luminanceSource (greyscale, §7)
+--   image object -> the imageData -> luminanceSource (greyscale, section 7)
 --   -> hybridBinarizer -> binaryBitmap -> detector -> decoder -> text.
 --
 -- DEPLOY: upload the qr/ folder and open this file:

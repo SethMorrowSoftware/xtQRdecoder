@@ -4,15 +4,15 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- bitArray.lc — packed bit vector. Port of ZXing Common\BitArray. Spec §8.2.
+-- bitArray.lc - packed bit vector. Port of ZXing Common\BitArray. Spec section 8.2.
 -- Requires: qrCompat.lc.
 --
 -- Instance (Pattern A) is an array:
---   pObj["size"]     — number of valid bits
---   pObj["bits"][w]  — dense 0-based unsigned-32-bit words (w = 0 .. wordCount-1)
+--   pObj["size"]     - number of valid bits
+--   pObj["bits"][w]  - dense 0-based unsigned-32-bit words (w = 0 .. wordCount-1)
 -- Words are kept dense so "the number of elements of pObj['bits']" == wordCount,
 -- matching Java's bits.length (which getNextSet/Unset iterate against).
--- All packed words stay in [0, 2^32) (spec §6.1); shifts go through qrCompat.
+-- All packed words stay in [0, 2^32) (spec section 6.1); shifts go through qrCompat.
 -- =====================================================================
 
 function bitArray_new pSize
@@ -211,7 +211,7 @@ function bitArray_toBytes pObj, pBitOffset, pNumBytes
    return tOut
 end bitArray_toBytes
 
--- reverse the bit order within [0, size)  (classic bit-reversal; spec §6.2)
+-- reverse the bit order within [0, size)  (classic bit-reversal; spec section 6.2)
 command bitArray_reverse @pObj
    local tSize, tLen, tOldLen, tOrigCount, i, x, newBits
    local leftOffset, currentInt, nextInt

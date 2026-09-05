@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- decoder.lc — orchestrate matrix parse -> RS -> bitstream. Spec §8.5.
+-- decoder.lc - orchestrate matrix parse -> RS -> bitstream. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\Decoder. Requires: qrCompat.lc, bitMatrix.lc,
 --   bitMatrixParser.lc, version.lc, formatInformation.lc, dataMask.lc,
 --   dataBlock.lc, reedSolomonDecoder.lc, decodedBitStreamParser.lc,
@@ -62,7 +62,7 @@ function dec_tryParser pParser
       put bmp_readCodewords(pParser, tVersion) into tCodewords
       put tSaved into pParser["bits"]
 
-      -- de-interleave + per-block Reed–Solomon correction
+      -- de-interleave + per-block Reed-Solomon correction
       put db_getDataBlocks(tCodewords, tVersion, tEcLevel) into tBlocks
       put tBlocks["n"] into tNum
       put 0 into tDataIdx             -- concatenated corrected data codewords
@@ -90,7 +90,7 @@ function dec_tryParser pParser
    end try
 end dec_tryParser
 
--- correct one block's codewords with Reed–Solomon; returns the corrected
+-- correct one block's codewords with Reed-Solomon; returns the corrected
 -- data codewords (0-based, length numData).
 function dec_correctBlock pBlock, pEcwPerBlock
    local tLen, tCw, i, tOut

@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- bitMatrix.lc — packed 2-D bit grid. Port of ZXing Common\BitMatrix. Spec §8.1.
+-- bitMatrix.lc - packed 2-D bit grid. Port of ZXing Common\BitMatrix. Spec section 8.1.
 -- Requires: qrCompat.lc, bitArray.lc (for getRow/setRow/rotate180).
 --
 -- Instance (Pattern A) is an array:
@@ -15,10 +15,10 @@
 -- get/getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
 -- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.shl
 -- is precision-safe: shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
--- matching Java's overflow-discard semantics bit-for-bit (spec §6.2).
+-- matching Java's overflow-discard semantics bit-for-bit (spec section 6.2).
 --
 -- NOTE: the giant hard-coded debug array literal in PHP BitMatrix::set() is
--- dead cruft and is intentionally NOT ported (spec §8.1 warning).
+-- dead cruft and is intentionally NOT ported (spec section 8.1 warning).
 -- =====================================================================
 
 function bitMatrix_new pWidth, pHeight

@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_reedSolomon.lc — Reed–Solomon decode tests (spec §10.4).
+-- suite_reedSolomon.lc - Reed-Solomon decode tests (spec section 10.4).
 -- Defines: command suite_reedSolomon.
 -- Requires loaded: qrCompat.lc, genericGF.lc, genericGFPoly.lc, reedSolomonDecoder.lc.
 --
@@ -14,7 +14,7 @@
 --   +EC (10):  0xA5,0x24,0xD4,0xC1,0xED,0x36,0xC7,0x87,0x2C,0x55
 -- => 26 codewords total, twoS = 10, so up to floor(10/2) = 5 errors correctable.
 -- Verified hex->decimal by hand. A real RS DECODE test against known-good data
--- is the single strongest check of the whole integer layer (spec §10.4).
+-- is the single strongest check of the whole integer layer (spec section 10.4).
 -- =====================================================================
 
 -- parse a comma list into a dense 0-based array

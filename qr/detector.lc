@@ -4,8 +4,8 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- detector.lc — top-level detect: finders -> module size -> transform -> sample.
--- Port of ZXing Qrcode\Detector\Detector. Spec §8.4.
+-- detector.lc - top-level detect: finders -> module size -> transform -> sample.
+-- Port of ZXing Qrcode\Detector\Detector. Spec section 8.4.
 -- Requires: qrCompat.lc, bitMatrix.lc, mathUtils.lc, resultPoint.lc,
 --           perspectiveTransform.lc, gridSampler.lc, finderPatternFinder.lc,
 --           alignmentPatternFinder.lc, version.lc.

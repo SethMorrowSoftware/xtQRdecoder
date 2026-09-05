@@ -4,11 +4,11 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_luminance.lc — luminanceSource byte-math tests (spec §7.3).
+-- suite_luminance.lc - luminanceSource byte-math tests (spec section 7.3).
 -- Defines: command suite_luminance.
 -- Requires loaded: qrCompat.lc, luminanceSource.lc.
 --
--- Tests ONLY the pure §7.3 conversion via newFromImageData with synthetic
+-- Tests ONLY the pure section 7.3 conversion via newFromImageData with synthetic
 -- 4-byte/pixel data (byte1=0/alpha, byte2=R, byte3=G, byte4=B). The image-OBJECT
 -- decode path (newFromData) is covered separately by qr_imageprobe.lc.
 -- =====================================================================
@@ -30,7 +30,7 @@ end lum_raw
 command suite_luminance
    local src, m, tRow
 
-   -- single pixels exercising both branches of §7.3 -----------------
+   -- single pixels exercising both branches of section 7.3 -----------------
    -- grey (r=g=b) -> r exactly
    put luminanceSource_newFromImageData(1, 1, lum_raw("128 128 128")) into src
    t_eq "grey -> r", src["lum"][0], 128
@@ -75,7 +75,7 @@ command suite_luminance
    t_eq "crop[0]=0", src["lum"][0], 0
    t_eq "crop[1]=100", src["lum"][1], 100
 
-   -- downsample (§11): a 4x4 grey grid (value = y*16+x) stepped by 2 -> 2x2,
+   -- downsample (section 11): a 4x4 grey grid (value = y*16+x) stepped by 2 -> 2x2,
    -- sampling pixels (0,0),(2,0),(0,2),(2,2) = 0,2,32,34.
    local tBig4
    put lum_raw("0 0 0, 1 1 1, 2 2 2, 3 3 3," & \

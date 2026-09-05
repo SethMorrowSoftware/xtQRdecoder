@@ -23,9 +23,21 @@ Both ask you to pick an image and write the result into a field named `output`.
    internal handlers the verbose button narrates — is now in scope for the
    buttons. No `start using` needed.
 
-   > Prefer not to inline ~4,500 lines? Keep the file next to your stack and put
-   > `start using stack (the folder of me & "/xtQRdecoder.livecodescript")` in
-   > `preOpenStack` instead. Everything else below is identical.
+   > Prefer not to inline ~4,500 lines? Keep the file next to your stack and
+   > load it in `preOpenStack` instead (there is no `folder` property of a
+   > stack; derive the folder from the stack's own file path):
+   >
+   > ```xtalk
+   > on preOpenStack
+   >    local tDir
+   >    put the effective filename of this stack into tDir
+   >    set the itemDelimiter to "/"
+   >    delete the last item of tDir
+   >    start using stack (tDir & "/xtQRdecoder.livecodescript")
+   > end preOpenStack
+   > ```
+   >
+   > Everything else below is identical.
 
 3. **Output field.** Add a field and name it `output`. Make it **scrolling** and
    give it a **monospaced** font (Monaco / Consolas / Courier) so the verbose

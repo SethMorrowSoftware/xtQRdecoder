@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_bitSource.lc — BitSource tests (spec §10). Defines: command suite_bitSource.
+-- suite_bitSource.lc - BitSource tests (spec section 10). Defines: command suite_bitSource.
 -- Requires loaded: qrCompat.lc, bitSource.lc.
 -- =====================================================================
 

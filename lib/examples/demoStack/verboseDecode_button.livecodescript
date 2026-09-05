@@ -11,17 +11,29 @@
 -- dt_detect, dec_decode, bitMatrix_*) purely to narrate the stages -- they are
 -- in scope because the whole library lives in the stack script. For real use you
 -- only need the one-liner the "Decode QR" button uses.
+--
+-- EVIDENCE: verified statically; needs an OXT pass (see the README).
 -- =====================================================================
+
+local sOutCard      -- the card holding field "output", captured before any yield
+local sBusy         -- re-entry guard: qrEcho pumps messages (wait ... with messages)
 
 on mouseUp
    local tPath, tData, tMark, tMaxDim
    local tPlane, tStep, tSrc, tBmp, tBlack, tHints, tDet, tPts, tRes, e
 
-   put empty into field "output"
+   -- a second click while a decode is narrating would interleave two runs
+   if sBusy is true then exit mouseUp
+   -- an unqualified `field "output"` resolves against the defaultStack (whatever
+   -- stack is frontmost), and qrEcho yields to the event loop between stages, so
+   -- pin the output card once, up front (xtalk-suite engine notes 5.3)
+   put the long id of this card into sOutCard
+   put empty into field "output" of sOutCard
    answer file "Choose a QR image to inspect" with type "Images|png,jpg,jpeg,gif,bmp"
    if it is empty then exit mouseUp
    put it into tPath
    put url ("binfile:" & tPath) into tData
+   put true into sBusy
 
    qrEcho "xtQRdecoder -- verbose pipeline"
    qrEcho "=============================="
@@ -107,13 +119,16 @@ on mouseUp
          qrEcho "x  no QR code found: " & tRes["error"]
       end if
    end try
+   put false into sBusy
 end mouseUp
 
 
 -- append one line to field "output" and let the screen repaint between stages
+-- (qualified through sOutCard: after `wait ... with messages` another stack may
+-- be in front, and an unqualified field reference would resolve against it)
 on qrEcho pLine
-   put pLine & return after field "output"
-   set the scroll of field "output" to (the formattedHeight of field "output")
+   put pLine & return after field "output" of sOutCard
+   set the scroll of field "output" of sOutCard to (the formattedHeight of field "output" of sOutCard)
    wait 0 milliseconds with messages
 end qrEcho
 
@@ -134,7 +149,7 @@ function qrMatrixAscii pM
       put empty into tLine
       repeat with x = 0 to (tW - 1)
          if bitMatrix_get(pM, x, y) then
-            put "██" after tLine
+            put "##" after tLine
          else
             put "  " after tLine
          end if

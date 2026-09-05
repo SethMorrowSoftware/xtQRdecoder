@@ -4,12 +4,12 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- qrCompat.lc  —  Java/PHP integer + bitwise compatibility layer
+-- qrCompat.lc  -  Java/PHP integer + bitwise compatibility layer
 -- Part of the xTalk port of khanamiryan/php-qrcode-detector-decoder
 -- (itself a hand-port of ZXing, Apache-2.0).
 --
 -- Target: 9.6.3-era xTalk engines and earlier, including headless server builds.
--- Spec reference: §6, "the hard part: integer, bitwise, helper semantics".
+-- Spec reference: section 6, "the hard part: integer, bitwise, helper semantics".
 --
 -- WHY THIS MODULE EXISTS
 -- ZXing assumes Java `int` == signed 32-bit two's-complement that WRAPS on

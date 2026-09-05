@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_bitArray.lc — BitArray tests (spec §10.3). Defines: command suite_bitArray.
+-- suite_bitArray.lc - BitArray tests (spec section 10.3). Defines: command suite_bitArray.
 -- Requires loaded: qrCompat.lc, bitArray.lc.
 -- =====================================================================
 

@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- decodedBitStreamParser.lc — bits -> text per encoding mode. Spec §8.5.
+-- decodedBitStreamParser.lc - bits -> text per encoding mode. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\DecodedBitStreamParser.
 -- Requires: qrCompat.lc, bitSource.lc, mode.lc, characterSetECI.lc.
 --
@@ -20,12 +20,12 @@
 -- luck (the bits after the mode nibble read as TERMINATOR); a multi-segment
 -- input such as ECI+BYTE exposed the misalignment. Script-locals + command-by-
 -- reference are both already proven on the target engine, so this is the
--- highest-confidence design. (Decode is sequential per request — not reentrant,
+-- highest-confidence design. (Decode is sequential per request - not reentrant,
 -- which is fine for server use.)
 --
 -- Modes fully supported: NUMERIC, ALPHANUMERIC, BYTE (ISO-8859-1/UTF-8/ASCII),
 --   ECI (charset switch), TERMINATOR, FNC1, STRUCTURED_APPEND (skipped).
--- KANJI / HANZI raise the documented §8.7 limitation (no native Shift-JIS/
+-- KANJI / HANZI raise the documented section 8.7 limitation (no native Shift-JIS/
 --   GB2312 in xTalk); the common case is fully covered.
 -- =====================================================================
 

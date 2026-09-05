@@ -4,39 +4,39 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- luminanceSource.lc — luminance plane for the binarizers. Spec §7.
+-- luminanceSource.lc - luminance plane for the binarizers. Spec section 7.
 -- Port of ZXing LuminanceSource / GDLuminanceSource (server variant).
 -- Requires: qrCompat.lc (only for completeness; uses builtins).
 --
 -- Instance (Pattern A):
 --   pObj["width"], pObj["height"]
---   pObj["lum"][i]   — flat 0-based greyscale 0..255, row-major (i = y*width + x)
+--   pObj["lum"][i]   - flat 0-based greyscale 0..255, row-major (i = y*width + x)
 --
 -- TWO construction paths, deliberately separated:
---   * newFromImageData(w,h,raw)  — PURE byte math (§7.3). Fully unit-testable
+--   * newFromImageData(w,h,raw)  - PURE byte math (section 7.3). Fully unit-testable
 --     with synthetic 4-byte/pixel data; no engine image object involved.
---   * newFromData(bytes)         — decodes a PNG/JPG/GIF/BMP via the engine
---     IMAGE OBJECT (§7.1). This is the ONE piece that may not work in a
+--   * newFromData(bytes)         - decodes a PNG/JPG/GIF/BMP via the engine
+--     IMAGE OBJECT (section 7.1). This is the ONE piece that may not work in a
 --     headless cPanel server; qr_imageprobe.lc tests exactly that. Not part
 --     of the unit suite.
 -- =====================================================================
 
--- §7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
--- raw layout per §7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
+-- section 7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
+-- raw layout per section 7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
 function luminanceSource_newFromImageData pW, pH, pRaw
    local tObj, p, o, r, g, b, n, tLum
    put pW into tObj["width"]
    put pH into tObj["height"]
    put (pW * pH) into n
    -- Hot loop (one iteration per pixel). Three behaviour-preserving speedups vs
-   -- the naive form (spec §11 -- this is the documented cost centre):
+   -- the naive form (spec section 11 -- this is the documented cost centre):
    --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE
    --     at the end, so each iteration does one array-key write instead of a
    --     nested tObj["lum"][idx] lookup-then-write;
    --   * use the loop counter p directly as the 0-based pixel index (idx == p);
    --   * carry the byte offset o with `add 4` instead of recomputing p*4.
    -- Result is bit-identical: pixel p reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
-   -- byte1=alpha,2=R,3=G,4=B layout of §7.2) and writes lum[p].
+   -- byte1=alpha,2=R,3=G,4=B layout of section 7.2) and writes lum[p].
    put 0 into o
    repeat with p = 0 to (n - 1)
       put byteToNum(byte (o + 2) of pRaw) into r
@@ -62,7 +62,7 @@ function luminanceSource_newFromLuminances pW, pH, pLum
    return tObj
 end luminanceSource_newFromLuminances
 
--- IMAGE-OBJECT PATH (§7.1). Requires a working engine image object. A headless
+-- IMAGE-OBJECT PATH (section 7.1). Requires a working engine image object. A headless
 -- engine may lack a default stack to host a control, so we ensure one exists
 -- first; qr_imageprobe.lc confirms this path on a given engine.
 --
@@ -70,7 +70,7 @@ end luminanceSource_newFromLuminances
 -- object, ONCE. Returns {["width"],["height"],["raw"]}. Separated from the
 -- greyscale/downsample step so a robust reader can decode the (costly) image a
 -- single time and then derive several luminance sources at different scales
--- from the same raw plane (spec §11: the image decode + pixel loops dominate).
+-- from the same raw plane (spec section 11: the image decode + pixel loops dominate).
 --
 -- pMaxDim is accepted for signature compatibility but does not resize here:
 -- downsampling is performed by the caller (luminanceSource_fromRawPlane), so this
@@ -100,7 +100,7 @@ function luminanceSource_decodeRawPlane pImageData, pMaxDim
    -- this format (notably JPEG on some headless xTalk server builds), the
    -- image object decodes to 0x0 / empty imageData rather than erroring -- which
    -- the rest of the pipeline would mistake for a blank photo and report as a
-   -- generic "no QR". Surface the real reason instead (spec §7.1).
+   -- generic "no QR". Surface the real reason instead (spec section 7.1).
    if (tW <= 0) or (tH <= 0) then
       throw "NotFound: image did not decode (0 x 0) -- unsupported format? this engine build may lack a JPEG codec; try a PNG"
    end if
@@ -153,7 +153,7 @@ end luminanceSource_newFromData
 
 -- Build a luminance source from a 4-byte/pixel raw plane, sampling every
 -- pStep-th pixel in x and y (nearest-neighbour downsample). Reuses the verified
--- §7.3 greyscale by reassembling a reduced 4-bpp raw and calling newFromImageData.
+-- section 7.3 greyscale by reassembling a reduced 4-bpp raw and calling newFromImageData.
 function luminanceSource_downsampleRaw pW, pH, pRaw, pStep
    local tOutW, tOutH, sx, sy, tOStep, o, tReduced
    put (((pW - 1) div pStep) + 1) into tOutW

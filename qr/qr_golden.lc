@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- qr_golden.lc — acceptance suite: the upstream ZXing golden photos.
+-- qr_golden.lc - acceptance suite: the upstream ZXing golden photos.
 --
 -- Runs the 5 official khanamiryan/php-qrcode-detector-decoder test fixtures
 -- through the public API (qrDecodeFromData) with the same hints the PHP suite
