@@ -109,7 +109,7 @@ end hb_calculateBlackPoints
 -- pBits (the matrix's flat word array), pLum (the whole luminance plane) and
 -- pBP (the black points) are taken BY REFERENCE: @ guarantees the large arrays
 -- are never copied per block (this runs once per 8x8 block, i.e. tens of
--- thousands of times on a big image). Same big-array-by-ref idiom as arraycopy.
+-- thousands of times on a big image). Same big-array-by-ref idiom as qr_arraycopy.
 command hb_thresholdBlock @pBits, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH, pRowSize
    local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx
    local tNbBase, tRowY, tRowBase, tBit0, tOneWord, tAcc, tOff, x

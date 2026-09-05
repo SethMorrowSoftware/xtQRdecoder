@@ -85,7 +85,7 @@ function ghb_estimateBlackPoint pBuckets
       end if
    end repeat
 
-   return shl(bestValley, kLumShift)
+   return qr_shl(bestValley, kLumShift)
 end ghb_estimateBlackPoint
 
 function ghb_getBlackMatrix pSrc
@@ -109,7 +109,7 @@ function ghb_getBlackMatrix pSrc
       put (tRow * tW) into tRowBase
       repeat with x = tLeft to (tRight - 1)
          put tLum[tRowBase + x] into tPixel
-         add 1 to tBuckets[uShr(tPixel, kLumShift)]
+         add 1 to tBuckets[qr_uShr(tPixel, kLumShift)]
       end repeat
    end repeat
 

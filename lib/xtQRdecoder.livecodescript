@@ -60,11 +60,11 @@ script "xtQRdecoder"
 --      shown in a trailing comment.
 --   2. bitAnd/bitOr/bitXor have LOWER precedence than '=', '<', '+', etc. in
 --      xTalk, so EVERY bitwise sub-expression is wrapped in parentheses.
---   3. shl() is precision-safe: the spec's `u32(a * (2^n))` overflows 2^53 and
+--   3. qr_shl() is precision-safe: the spec's `qr_u32(a * (2^n))` overflows 2^53 and
 --      silently loses LOW-order bits when shifting a full 32-bit word left by a
---      large count (e.g. BitMatrix.getEnclosingRectangle). See shl() below.
+--      large count (e.g. BitMatrix.getEnclosingRectangle). See qr_shl() below.
 --   4. binaryDecode needs an OUTPUT variable; the spec's one-liner for
---      floatToIntBits is not valid xTalk. Corrected below.
+--      qr_floatToIntBits is not valid xTalk. Corrected below.
 -- =====================================================================
 
 
@@ -77,65 +77,65 @@ constant kMaxInt32 = 2147483648     -- 2^31; sign-bit threshold (NOT Integer.MAX
 -- ---- core normalisation ----------------------------------------------
 -- Normalise any integer into the unsigned 32-bit range [0, 2^32).
 -- Java/PHP -1 -> 4294967295 ; -16777216 -> 4278190080 ; 2^32 -> 0.
-function u32 n
+function qr_u32 n
    put n mod kUInt32 into n
    if n < 0 then add kUInt32 to n
    return n
-end u32
+end qr_u32
 
 -- Mask to a single unsigned byte (the ubiquitous Java "& 0xFF").
-function u8 n
+function qr_u8 n
    return (n bitAnd 255)            -- 0xFF
-end u8
+end qr_u8
 
 
 -- ---- shift emulation (Java <<, >>>, >>) ------------------------------
 -- xTalk has no shift operators; emulate with arithmetic. The shift count
 -- is masked to 0..31 with `bitAnd 31`, exactly Java's `count & 31` for 32-bit
 -- ints (a negative count maps to its unsigned low five bits: -1 -> 31; `mod`
--- would keep the sign and yield 0.5 for shl(1, -1)).
+-- would keep the sign and yield 0.5 for qr_shl(1, -1)).
 
 -- Logical/arithmetic LEFT shift, 32-bit  (Java: a << n).
 -- PRECISION-SAFE: drop the bits that would shift out past bit 31 BEFORE
 -- multiplying, so the product stays < 2^32 (well under the 2^53 exact limit).
--- A naive u32(a * 2^n) loses low bits when a is large and n is large.
-function shl a, n
+-- A naive qr_u32(a * 2^n) loses low bits when a is large and n is large.
+function qr_shl a, n
    local m
    put (n bitAnd 31) into n
-   put u32(a) into a
+   put qr_u32(a) into a
    put (2 ^ (32 - n)) into m         -- modulus discards the out-shifted high bits
    return ((a mod m) * (2 ^ n))      -- result is already in [0, 2^32)
-end shl
+end qr_shl
 
 -- UNSIGNED right shift  (Java: a >>> n). Operand treated as unsigned 32-bit.
 -- Replaces the PHP shims uRShift() and sdvig3().
-function uShr a, n
+function qr_uShr a, n
    put (n bitAnd 31) into n
-   return (u32(a) div (2 ^ n))
-end uShr
+   return (qr_u32(a) div (2 ^ n))
+end qr_uShr
 
 -- ARITHMETIC right shift  (Java: a >> n) on a word interpreted as SIGNED 32-bit.
 -- Returns the unsigned 32-bit BIT-PATTERN of the result (i.e. sign-extended).
-function aShr a, n
+function qr_aShr a, n
    local d
    put (n bitAnd 31) into n
-   put u32(a) into a
+   put qr_u32(a) into a
    put (2 ^ n) into d
    if a < kMaxInt32 then
       return (a div d)                                  -- top bit clear: same as >>>
    else
       -- top bit set (negative): OR in the high sign-extension bits.
       -- (kUInt32 - (kUInt32 div d)) is exactly the top-n-bits mask.
-      return u32(((a div d) bitOr (kUInt32 - (kUInt32 div d))))
+      return qr_u32(((a div d) bitOr (kUInt32 - (kUInt32 div d))))
    end if
-end aShr
+end qr_aShr
 
 
--- ---- Integer.numberOfTrailingZeros -----------------------------------
+-- ---- Integer.qr_numberOfTrailingZeros -----------------------------------
 -- Count low-order zero bits; i == 0 -> 32. Used by BitArray.getNextSet/Unset.
-function numberOfTrailingZeros i
+function qr_numberOfTrailingZeros i
    local n
-   put u32(i) into i
+   put qr_u32(i) into i
    if i = 0 then return 32
    put 0 into n
    repeat while (i bitAnd 1) = 0
@@ -143,36 +143,36 @@ function numberOfTrailingZeros i
       put (i div 2) into i
    end repeat
    return n
-end numberOfTrailingZeros
+end qr_numberOfTrailingZeros
 
 
--- ---- Java String.hashCode  (h = 31*h + c) over BYTES -----------------
--- Only used for equality/dedup, never on the decode-critical path. u32 each
+-- ---- Java String.qr_hashCode  (h = 31*h + c) over BYTES -----------------
+-- Only used for equality/dedup, never on the decode-critical path. qr_u32 each
 -- step so the value matches Java's bit pattern exactly.
-function hashCode s
+function qr_hashCode s
    local h, k
    put 0 into h
    repeat with k = 1 to the number of bytes of s
-      put u32((31 * h) + byteToNum(byte k of s)) into h
+      put qr_u32((31 * h) + byteToNum(byte k of s)) into h
    end repeat
    return h
-end hashCode
+end qr_hashCode
 
 
--- ---- Float.floatToIntBits --------------------------------------------
+-- ---- Float.qr_floatToIntBits --------------------------------------------
 -- IEEE-754 single-precision raw bits. The spec's one-liner is NOT valid
 -- xTalk (binaryDecode requires an output variable) -- corrected here.
 -- binaryEncode/binaryDecode use machine byte order on both sides, so the
 -- round-trip is endian-safe. Likely unused on the QR path (it appears only
 -- in ResultPoint / PerspectiveTransform hashing) -- included for completeness.
-function floatToIntBits f
+function qr_floatToIntBits f
    local tBits
    get binaryDecode("i", binaryEncode("f", f), tBits)
-   return u32(tBits)
-end floatToIntBits
+   return qr_u32(tBits)
+end qr_floatToIntBits
 
 
--- ---- fill_array  (customFunctions.php) -------------------------------
+-- ---- qr_fillArray  (customFunctions.php) -------------------------------
 -- Build a dense, 0-based array of pCount copies of pValue starting at pIndex.
 -- QUIRK preserved from PHP: pCount <= 0 returns a SINGLE-element array (one
 -- slot holding pValue). BitMatrix / binarizer sizing relies on this in
@@ -180,7 +180,7 @@ end floatToIntBits
 -- this reproduces the PHP "[0]" result, and the integer layer (incl. this
 -- helper) is engine-verified by suite_qrCompat. The degenerate pCount<=0 branch
 -- is not reached by the QR path; it is kept only for source fidelity.
-function fill_array pIndex, pCount, pValue
+function qr_fillArray pIndex, pCount, pValue
    local tArr, k
    if pCount <= 0 then
       put pValue into tArr[pIndex]
@@ -190,30 +190,30 @@ function fill_array pIndex, pCount, pValue
       put pValue into tArr[k]
    end repeat
    return tArr
-end fill_array
+end qr_fillArray
 
 
--- ---- System.arraycopy  (in place, for performance) -------------------
+-- ---- System.qr_arraycopy  (in place, for performance) -------------------
 -- Copy pLen elements from pSrc[pSrcPos..] to pDest[pDestPos..]. 0-based,
 -- matching the source. Pass BOTH arrays by reference (@) so the large bit /
 -- luminance arrays are never copied by value (spec 5, 11).
 -- CAVEAT: forward copy. If src and dest alias with overlapping FORWARD regions
 -- the result differs from Java's temp-buffer semantics. No such overlapping
 -- self-copy occurs on the QR decode path.
-command arraycopy @pSrc, pSrcPos, @pDest, pDestPos, pLen
+command qr_arraycopy @pSrc, pSrcPos, @pDest, pDestPos, pLen
    local k
    repeat with k = 0 to (pLen - 1)
       put pSrc[pSrcPos + k] into pDest[pDestPos + k]
    end repeat
-end arraycopy
+end qr_arraycopy
 
 
 -- ---- string byte access (0-based, like PHP $s[$i]) -------------------
 -- Returns the unsigned byte value (0..255) at 0-based index i of string s.
 -- Keeps call sites readable and 0-based (spec 6.7).
-function byteAt s, i
+function qr_byteAt s, i
    return byteToNum(byte (i + 1) of s)
-end byteAt
+end qr_byteAt
 
 -- ===================== module: genericGF ===============
 -- =====================================================================
@@ -422,7 +422,7 @@ function poly_multiply p, q
    if poly_isZero(p) or poly_isZero(q) then return poly_zero()
    put the number of elements of p into pn
    put the number of elements of q into qn
-   put fill_array(0, (pn + qn - 1), 0) into tProduct
+   put qr_fillArray(0, (pn + qn - 1), 0) into tProduct
    repeat with i = 0 to (pn - 1)
       repeat with j = 0 to (qn - 1)
          put gf_addOrSubtract(tProduct[i + j], gf_multiply(p[i], q[j])) into tProduct[i + j]
@@ -449,7 +449,7 @@ function poly_multiplyByMonomial p, pDegree, pCoeff
    if pDegree < 0 then throw "RS: multiplyByMonomial negative degree"
    if pCoeff = 0 then return poly_zero()
    put the number of elements of p into n
-   put fill_array(0, (n + pDegree), 0) into tProduct
+   put qr_fillArray(0, (n + pDegree), 0) into tProduct
    repeat with i = 0 to (n - 1)
       put gf_multiply(p[i], pCoeff) into tProduct[i]
    end repeat
@@ -498,7 +498,7 @@ command rs_decode @pReceived, pTwoS
    put poly_new(pReceived) into poly
 
    -- syndromes: S_i = poly( alpha^(i + generatorBase) ), generatorBase = 0
-   put fill_array(0, pTwoS, 0) into syndromeCoeffs
+   put qr_fillArray(0, pTwoS, 0) into syndromeCoeffs
    put true into noError
    repeat with i = 0 to (pTwoS - 1)
       put poly_evaluateAt(poly, gf_exp(i + gf_getGeneratorBase())) into ev
@@ -582,7 +582,7 @@ function rs_findErrorLocations errorLocator
       put poly_getCoefficient(errorLocator, 1) into tRes[0]
       return tRes
    end if
-   put fill_array(0, numErrors, 0) into tRes
+   put qr_fillArray(0, numErrors, 0) into tRes
    put 0 into e
    put gf_getSize() into sz
    put 1 into i
@@ -601,7 +601,7 @@ end rs_findErrorLocations
 function rs_findErrorMagnitudes errorEvaluator, pLocations
    local s, tRes, i, j, xiInverse, denominator, term, termPlus1
    put the number of elements of pLocations into s
-   put fill_array(0, s, 0) into tRes
+   put qr_fillArray(0, s, 0) into tRes
    repeat with i = 0 to (s - 1)
       put gf_inverse(pLocations[i]) into xiInverse
       put 1 into denominator
@@ -666,23 +666,23 @@ command bitArray_ensureCapacity @pObj, pBitsNeeded
 end bitArray_ensureCapacity
 
 function bitArray_get pObj, i
-   return ((pObj["bits"][(i div 32)] bitAnd shl(1, (i bitAnd 31))) <> 0)
+   return ((pObj["bits"][(i div 32)] bitAnd qr_shl(1, (i bitAnd 31))) <> 0)
 end bitArray_get
 
 command bitArray_set @pObj, i
    local w
    put (i div 32) into w
-   put u32(pObj["bits"][w] bitOr shl(1, (i bitAnd 31))) into pObj["bits"][w]
+   put qr_u32(pObj["bits"][w] bitOr qr_shl(1, (i bitAnd 31))) into pObj["bits"][w]
 end bitArray_set
 
 command bitArray_flip @pObj, i
    local w
    put (i div 32) into w
-   put u32(pObj["bits"][w] bitXor shl(1, (i bitAnd 31))) into pObj["bits"][w]
+   put qr_u32(pObj["bits"][w] bitXor qr_shl(1, (i bitAnd 31))) into pObj["bits"][w]
 end bitArray_flip
 
 command bitArray_setBulk @pObj, i, pNewBits
-   put u32(pNewBits) into pObj["bits"][(i div 32)]
+   put qr_u32(pNewBits) into pObj["bits"][(i div 32)]
 end bitArray_setBulk
 
 command bitArray_clear @pObj
@@ -701,13 +701,13 @@ function bitArray_getNextSet pObj, pFrom
    put the number of elements of pObj["bits"] into tWordCount
    put (pFrom div 32) into tBitsOffset
    put pObj["bits"][tBitsOffset] into tCurrent
-   put (tCurrent bitAnd u32(bitNot(shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
+   put (tCurrent bitAnd qr_u32(bitNot(qr_shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
    repeat while tCurrent = 0
       add 1 to tBitsOffset
       if tBitsOffset = tWordCount then return tSize
       put pObj["bits"][tBitsOffset] into tCurrent
    end repeat
-   put ((tBitsOffset * 32) + numberOfTrailingZeros(tCurrent)) into tResult
+   put ((tBitsOffset * 32) + qr_numberOfTrailingZeros(tCurrent)) into tResult
    return min(tResult, tSize)
 end bitArray_getNextSet
 
@@ -718,14 +718,14 @@ function bitArray_getNextUnset pObj, pFrom
    if pFrom >= tSize then return tSize
    put the number of elements of pObj["bits"] into tWordCount
    put (pFrom div 32) into tBitsOffset
-   put u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
-   put (tCurrent bitAnd u32(bitNot(shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
+   put qr_u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
+   put (tCurrent bitAnd qr_u32(bitNot(qr_shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
    repeat while tCurrent = 0
       add 1 to tBitsOffset
       if tBitsOffset = tWordCount then return tSize
-      put u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
+      put qr_u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
    end repeat
-   put ((tBitsOffset * 32) + numberOfTrailingZeros(tCurrent)) into tResult
+   put ((tBitsOffset * 32) + qr_numberOfTrailingZeros(tCurrent)) into tResult
    return min(tResult, tSize)
 end bitArray_getNextUnset
 
@@ -750,8 +750,8 @@ command bitArray_setRange @pObj, pStart, pEnd
       else
          put (e bitAnd 31) into tLastBit
       end if
-      put u32(shl(2, tLastBit) - shl(1, tFirstBit)) into tMask   -- ones firstBit..lastBit
-      put u32(pObj["bits"][i] bitOr tMask) into pObj["bits"][i]
+      put qr_u32(qr_shl(2, tLastBit) - qr_shl(1, tFirstBit)) into tMask   -- ones firstBit..lastBit
+      put qr_u32(pObj["bits"][i] bitOr tMask) into pObj["bits"][i]
    end repeat
 end bitArray_setRange
 
@@ -774,7 +774,7 @@ function bitArray_isRange pObj, pStart, pEnd, pValue
       else
          put (e bitAnd 31) into tLastBit
       end if
-      put u32(shl(2, tLastBit) - shl(1, tFirstBit)) into tMask
+      put qr_u32(qr_shl(2, tLastBit) - qr_shl(1, tFirstBit)) into tMask
       if pValue then
          put tMask into tWanted
       else
@@ -790,7 +790,7 @@ command bitArray_appendBit @pObj, pBit
    bitArray_ensureCapacity pObj, (pObj["size"] + 1)
    if pBit then
       put (pObj["size"] div 32) into w
-      put u32(pObj["bits"][w] bitOr shl(1, (pObj["size"] bitAnd 31))) into pObj["bits"][w]
+      put qr_u32(pObj["bits"][w] bitOr qr_shl(1, (pObj["size"] bitAnd 31))) into pObj["bits"][w]
    end if
    add 1 to pObj["size"]
 end bitArray_appendBit
@@ -801,7 +801,7 @@ command bitArray_appendBits @pObj, pValue, pNumBits
    if (pNumBits < 0) or (pNumBits > 32) then throw "BitArray: numBits must be 0..32"
    bitArray_ensureCapacity pObj, (pObj["size"] + pNumBits)
    repeat with nbl = pNumBits down to 1
-      bitArray_appendBit pObj, ((uShr(pValue, (nbl - 1)) bitAnd 1) = 1)
+      bitArray_appendBit pObj, ((qr_uShr(pValue, (nbl - 1)) bitAnd 1) = 1)
    end repeat
 end bitArray_appendBits
 
@@ -810,7 +810,7 @@ command bitArray_xor @pObj, pOther
    if pObj["size"] <> pOther["size"] then throw "BitArray: sizes don't match"
    put the number of elements of pObj["bits"] into n
    repeat with i = 0 to (n - 1)
-      put u32(pObj["bits"][i] bitXor pOther["bits"][i]) into pObj["bits"][i]
+      put qr_u32(pObj["bits"][i] bitXor pOther["bits"][i]) into pObj["bits"][i]
    end repeat
 end bitArray_xor
 
@@ -821,7 +821,7 @@ function bitArray_toBytes pObj, pBitOffset, pNumBytes
    repeat with i = 0 to (pNumBytes - 1)
       put 0 into theByte
       repeat with j = 0 to 7
-         if bitArray_get(pObj, bo) then put u32(theByte bitOr shl(1, (7 - j))) into theByte
+         if bitArray_get(pObj, bo) then put qr_u32(theByte bitOr qr_shl(1, (7 - j))) into theByte
          add 1 to bo
       end repeat
       put theByte into tOut[i]
@@ -841,22 +841,22 @@ command bitArray_reverse @pObj
       put 0 into newBits[i]
    end repeat
    repeat with i = 0 to (tOldLen - 1)
-      put u32(pObj["bits"][i]) into x
-      put ((uShr(x, 1) bitAnd 1431655765) bitOr u32(shl((x bitAnd 1431655765), 1))) into x   -- 0x55555555
-      put ((uShr(x, 2) bitAnd 858993459) bitOr u32(shl((x bitAnd 858993459), 2))) into x     -- 0x33333333
-      put ((uShr(x, 4) bitAnd 252645135) bitOr u32(shl((x bitAnd 252645135), 4))) into x     -- 0x0f0f0f0f
-      put ((uShr(x, 8) bitAnd 16711935) bitOr u32(shl((x bitAnd 16711935), 8))) into x       -- 0x00ff00ff
-      put ((uShr(x, 16) bitAnd 65535) bitOr u32(shl((x bitAnd 65535), 16))) into x           -- 0x0000ffff
+      put qr_u32(pObj["bits"][i]) into x
+      put ((qr_uShr(x, 1) bitAnd 1431655765) bitOr qr_u32(qr_shl((x bitAnd 1431655765), 1))) into x   -- 0x55555555
+      put ((qr_uShr(x, 2) bitAnd 858993459) bitOr qr_u32(qr_shl((x bitAnd 858993459), 2))) into x     -- 0x33333333
+      put ((qr_uShr(x, 4) bitAnd 252645135) bitOr qr_u32(qr_shl((x bitAnd 252645135), 4))) into x     -- 0x0f0f0f0f
+      put ((qr_uShr(x, 8) bitAnd 16711935) bitOr qr_u32(qr_shl((x bitAnd 16711935), 8))) into x       -- 0x00ff00ff
+      put ((qr_uShr(x, 16) bitAnd 65535) bitOr qr_u32(qr_shl((x bitAnd 65535), 16))) into x           -- 0x0000ffff
       put x into newBits[(tLen - i)]
    end repeat
    if tSize <> (tOldLen * 32) then
       put ((tOldLen * 32) - tSize) into leftOffset
-      put uShr(newBits[0], leftOffset) into currentInt
+      put qr_uShr(newBits[0], leftOffset) into currentInt
       repeat with i = 1 to (tOldLen - 1)
          put newBits[i] into nextInt
-         put u32(currentInt bitOr shl(nextInt, (32 - leftOffset))) into currentInt
+         put qr_u32(currentInt bitOr qr_shl(nextInt, (32 - leftOffset))) into currentInt
          put currentInt into newBits[(i - 1)]
-         put uShr(nextInt, leftOffset) into currentInt
+         put qr_uShr(nextInt, leftOffset) into currentInt
       end repeat
       put currentInt into newBits[(tOldLen - 1)]
    end if
@@ -878,15 +878,15 @@ end bitArray_clone
 --   pObj["bits"][w]  = dense 0-based unsigned-32-bit words, length rowSize*height
 --
 -- getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
--- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.shl
--- is precision-safe: shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
+-- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.qr_shl
+-- is precision-safe: qr_shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
 -- matching Java's overflow-discard semantics bit-for-bit (spec section 6.2).
 --
 -- HOT PATH: get/set/unset/flip run once per pixel in the binarizers, the finder
 -- and the sampler. They use a power-of-two table (sBMPow2[b] = 2^b, built once
--- by bitMatrix_new) instead of the shl/uShr/u32 helper calls: for a word in
--- [0, 2^32) and a bit index in 0..31, `word div 2^b` IS uShr(word, b) and
--- `word bitOr 2^b` IS u32(word bitOr shl(1, b)) - bit-identical, proven under
+-- by bitMatrix_new) instead of the qr_shl/qr_uShr/qr_u32 helper calls: for a word in
+-- [0, 2^32) and a bit index in 0..31, `word div 2^b` IS qr_uShr(word, b) and
+-- `word bitOr 2^b` IS qr_u32(word bitOr qr_shl(1, b)) - bit-identical, proven under
 -- the headless model on every fixture, with no `^` operator on the hot path
 -- (some OXT parsers are reported to reject `^` inside a compound expression).
 -- Every matrix comes from bitMatrix_new, so the table always exists.
@@ -989,7 +989,7 @@ command bitMatrix_setRegion @pObj, pLeft, pTop, pWidth, pHeight
       put (y * tRowSize) into tOffset
       repeat with x = pLeft to (tRight - 1)
          put (tOffset + (x div 32)) into tIdx
-         put u32(pObj["bits"][tIdx] bitOr shl(1, (x bitAnd 31))) into pObj["bits"][tIdx]
+         put qr_u32(pObj["bits"][tIdx] bitOr qr_shl(1, (x bitAnd 31))) into pObj["bits"][tIdx]
       end repeat
    end repeat
 end bitMatrix_setRegion
@@ -1011,7 +1011,7 @@ command bitMatrix_setRow @pObj, y, pRow
    put pObj["rowSize"] into tRowSize
    put (y * tRowSize) into tOffset
    repeat with x = 0 to (tRowSize - 1)
-      put u32(pRow["bits"][x]) into pObj["bits"][tOffset + x]
+      put qr_u32(pRow["bits"][x]) into pObj["bits"][tOffset + x]
    end repeat
 end bitMatrix_setRow
 
@@ -1036,7 +1036,7 @@ command bitMatrix_xor @pObj, pMask
    end if
    put the number of elements of pObj["bits"] into n
    repeat with i = 0 to (n - 1)
-      put u32(pObj["bits"][i] bitXor pMask["bits"][i]) into pObj["bits"][i]
+      put qr_u32(pObj["bits"][i] bitXor pMask["bits"][i]) into pObj["bits"][i]
    end repeat
 end bitMatrix_xor
 
@@ -1059,14 +1059,14 @@ function bitMatrix_getEnclosingRectangle pObj
             if y > tBottom then put y into tBottom
             if (x32 * 32) < tLeft then
                put 0 into tBitN
-               repeat while shl(theBits, (31 - tBitN)) = 0
+               repeat while qr_shl(theBits, (31 - tBitN)) = 0
                   add 1 to tBitN
                end repeat
                if ((x32 * 32) + tBitN) < tLeft then put ((x32 * 32) + tBitN) into tLeft
             end if
             if ((x32 * 32) + 31) > tRight then
                put 31 into tBitN
-               repeat while uShr(theBits, tBitN) = 0
+               repeat while qr_uShr(theBits, tBitN) = 0
                   subtract 1 from tBitN
                end repeat
                if ((x32 * 32) + tBitN) > tRight then put ((x32 * 32) + tBitN) into tRight
@@ -1096,7 +1096,7 @@ function bitMatrix_getTopLeftOnBit pObj
    put ((bitsOffset mod rs) * 32) into x
    put pObj["bits"][bitsOffset] into theBits
    put 0 into tBitN
-   repeat while shl(theBits, (31 - tBitN)) = 0
+   repeat while qr_shl(theBits, (31 - tBitN)) = 0
       add 1 to tBitN
    end repeat
    add tBitN to x
@@ -1119,7 +1119,7 @@ function bitMatrix_getBottomRightOnBit pObj
    put ((bitsOffset mod rs) * 32) into x
    put pObj["bits"][bitsOffset] into theBits
    put 31 into tBitN
-   repeat while uShr(theBits, tBitN) = 0
+   repeat while qr_uShr(theBits, tBitN) = 0
       subtract 1 from tBitN
    end repeat
    add tBitN to x
@@ -1163,7 +1163,7 @@ command bitMatrix_flipAll @pObj
    put (pObj["width"] mod 32) into tRem
    if tRem <> 0 then
       put pObj["rowSize"] into rs
-      put (shl(1, tRem) - 1) into tMask
+      put (qr_shl(1, tRem) - 1) into tMask
       repeat with y = 0 to (pObj["height"] - 1)
          put ((y * rs) + rs - 1) into tOff
          put (tBits[tOff] bitAnd tMask) into tBits[tOff]
@@ -1222,9 +1222,9 @@ command bitSource_readBits @pObj, pNumBits
       put (8 - pObj["bitOffset"]) into bitsLeft
       put min(n, bitsLeft) into toRead
       put (bitsLeft - toRead) into bitsToNotRead
-      put shl((255 div (2 ^ (8 - toRead))), bitsToNotRead) into tMask
+      put qr_shl((255 div (2 ^ (8 - toRead))), bitsToNotRead) into tMask
       put pObj["bytes"][pObj["byteOffset"]] into curByte
-      put uShr((curByte bitAnd tMask), bitsToNotRead) into tResult
+      put qr_uShr((curByte bitAnd tMask), bitsToNotRead) into tResult
       subtract toRead from n
       add toRead to pObj["bitOffset"]
       if pObj["bitOffset"] = 8 then
@@ -1237,15 +1237,15 @@ command bitSource_readBits @pObj, pNumBits
    if n > 0 then
       repeat while n >= 8
          put pObj["bytes"][pObj["byteOffset"]] into curByte
-         put u32((shl(tResult, 8)) bitOr (curByte bitAnd 255)) into tResult
+         put qr_u32((qr_shl(tResult, 8)) bitOr (curByte bitAnd 255)) into tResult
          add 1 to pObj["byteOffset"]
          subtract 8 from n
       end repeat
       if n > 0 then
          put (8 - n) into bitsToNotRead
-         put shl((255 div (2 ^ bitsToNotRead)), bitsToNotRead) into tMask
+         put qr_shl((255 div (2 ^ bitsToNotRead)), bitsToNotRead) into tMask
          put pObj["bytes"][pObj["byteOffset"]] into curByte
-         put u32((shl(tResult, n)) bitOr uShr((curByte bitAnd tMask), bitsToNotRead)) into tResult
+         put qr_u32((qr_shl(tResult, n)) bitOr qr_uShr((curByte bitAnd tMask), bitsToNotRead)) into tResult
          add n to pObj["bitOffset"]
       end if
    end if
@@ -1585,7 +1585,7 @@ function ghb_estimateBlackPoint pBuckets
       end if
    end repeat
 
-   return shl(bestValley, kLumShift)
+   return qr_shl(bestValley, kLumShift)
 end ghb_estimateBlackPoint
 
 function ghb_getBlackMatrix pSrc
@@ -1609,7 +1609,7 @@ function ghb_getBlackMatrix pSrc
       put (tRow * tW) into tRowBase
       repeat with x = tLeft to (tRight - 1)
          put tLum[tRowBase + x] into tPixel
-         add 1 to tBuckets[uShr(tPixel, kLumShift)]
+         add 1 to tBuckets[qr_uShr(tPixel, kLumShift)]
       end repeat
    end repeat
 
@@ -1751,7 +1751,7 @@ end hb_calculateBlackPoints
 -- pBits (the matrix's flat word array), pLum (the whole luminance plane) and
 -- pBP (the black points) are taken BY REFERENCE: @ guarantees the large arrays
 -- are never copied per block (this runs once per 8x8 block, i.e. tens of
--- thousands of times on a big image). Same big-array-by-ref idiom as arraycopy.
+-- thousands of times on a big image). Same big-array-by-ref idiom as qr_arraycopy.
 command hb_thresholdBlock @pBits, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH, pRowSize
    local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx
    local tNbBase, tRowY, tRowBase, tBit0, tOneWord, tAcc, tOff, x
@@ -2198,7 +2198,7 @@ end fmt_ensure
 function fmt_popcount n
    local c
    put 0 into c
-   put u32(n) into n
+   put qr_u32(n) into n
    repeat while n > 0
       add (n bitAnd 1) to c
       put (n div 2) into n
@@ -2221,13 +2221,13 @@ function fmt_decode pFormatInfo1, pFormatInfo2
          return fmt_unpack(sFmtData[i])
       end if
       -- otherwise track the closest over BOTH copies
-      put fmt_popcount(u32(pFormatInfo1 bitXor targetInfo)) into d1
+      put fmt_popcount(qr_u32(pFormatInfo1 bitXor targetInfo)) into d1
       if d1 < bestDifference then
          put sFmtData[i] into bestData
          put d1 into bestDifference
       end if
       if pFormatInfo1 <> pFormatInfo2 then
-         put fmt_popcount(u32(pFormatInfo2 bitXor targetInfo)) into d2
+         put fmt_popcount(qr_u32(pFormatInfo2 bitXor targetInfo)) into d2
          if d2 < bestDifference then
             put sFmtData[i] into bestData
             put d2 into bestDifference
@@ -2243,7 +2243,7 @@ end fmt_decode
 -- split a 5-bit data value into {ecLevel ordinal, dataMask}
 function fmt_unpack pDataBits
    local tRes
-   put ecl_forBits(uShr(pDataBits, 3) bitAnd 3) into tRes["ecLevel"]
+   put ecl_forBits(qr_uShr(pDataBits, 3) bitAnd 3) into tRes["ecLevel"]
    put (pDataBits bitAnd 7) into tRes["dataMask"]
    return tRes
 end fmt_unpack
@@ -2307,7 +2307,7 @@ end ver_ensure
 function ver_popcount n
    local c
    put 0 into c
-   put u32(n) into n
+   put qr_u32(n) into n
    repeat while n > 0
       add (n bitAnd 1) to c
       put (n div 2) into n
@@ -2429,7 +2429,7 @@ function ver_decodeVersionInformation pVersionBits
       if targetVersion = pVersionBits then
          return (i + 6)               -- index 1 => v7
       end if
-      put ver_popcount(u32(pVersionBits bitXor targetVersion)) into bitsDifference
+      put ver_popcount(qr_u32(pVersionBits bitXor targetVersion)) into bitsDifference
       if bitsDifference < bestDifference then
          put (i + 6) into bestVersion
          put bitsDifference into bestDifference

@@ -13,15 +13,15 @@
 --   pObj["bits"][w]  = dense 0-based unsigned-32-bit words, length rowSize*height
 --
 -- getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
--- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.shl
--- is precision-safe: shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
+-- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.qr_shl
+-- is precision-safe: qr_shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
 -- matching Java's overflow-discard semantics bit-for-bit (spec section 6.2).
 --
 -- HOT PATH: get/set/unset/flip run once per pixel in the binarizers, the finder
 -- and the sampler. They use a power-of-two table (sBMPow2[b] = 2^b, built once
--- by bitMatrix_new) instead of the shl/uShr/u32 helper calls: for a word in
--- [0, 2^32) and a bit index in 0..31, `word div 2^b` IS uShr(word, b) and
--- `word bitOr 2^b` IS u32(word bitOr shl(1, b)) - bit-identical, proven under
+-- by bitMatrix_new) instead of the qr_shl/qr_uShr/qr_u32 helper calls: for a word in
+-- [0, 2^32) and a bit index in 0..31, `word div 2^b` IS qr_uShr(word, b) and
+-- `word bitOr 2^b` IS qr_u32(word bitOr qr_shl(1, b)) - bit-identical, proven under
 -- the headless model on every fixture, with no `^` operator on the hot path
 -- (some OXT parsers are reported to reject `^` inside a compound expression).
 -- Every matrix comes from bitMatrix_new, so the table always exists.
@@ -124,7 +124,7 @@ command bitMatrix_setRegion @pObj, pLeft, pTop, pWidth, pHeight
       put (y * tRowSize) into tOffset
       repeat with x = pLeft to (tRight - 1)
          put (tOffset + (x div 32)) into tIdx
-         put u32(pObj["bits"][tIdx] bitOr shl(1, (x bitAnd 31))) into pObj["bits"][tIdx]
+         put qr_u32(pObj["bits"][tIdx] bitOr qr_shl(1, (x bitAnd 31))) into pObj["bits"][tIdx]
       end repeat
    end repeat
 end bitMatrix_setRegion
@@ -146,7 +146,7 @@ command bitMatrix_setRow @pObj, y, pRow
    put pObj["rowSize"] into tRowSize
    put (y * tRowSize) into tOffset
    repeat with x = 0 to (tRowSize - 1)
-      put u32(pRow["bits"][x]) into pObj["bits"][tOffset + x]
+      put qr_u32(pRow["bits"][x]) into pObj["bits"][tOffset + x]
    end repeat
 end bitMatrix_setRow
 
@@ -171,7 +171,7 @@ command bitMatrix_xor @pObj, pMask
    end if
    put the number of elements of pObj["bits"] into n
    repeat with i = 0 to (n - 1)
-      put u32(pObj["bits"][i] bitXor pMask["bits"][i]) into pObj["bits"][i]
+      put qr_u32(pObj["bits"][i] bitXor pMask["bits"][i]) into pObj["bits"][i]
    end repeat
 end bitMatrix_xor
 
@@ -194,14 +194,14 @@ function bitMatrix_getEnclosingRectangle pObj
             if y > tBottom then put y into tBottom
             if (x32 * 32) < tLeft then
                put 0 into tBitN
-               repeat while shl(theBits, (31 - tBitN)) = 0
+               repeat while qr_shl(theBits, (31 - tBitN)) = 0
                   add 1 to tBitN
                end repeat
                if ((x32 * 32) + tBitN) < tLeft then put ((x32 * 32) + tBitN) into tLeft
             end if
             if ((x32 * 32) + 31) > tRight then
                put 31 into tBitN
-               repeat while uShr(theBits, tBitN) = 0
+               repeat while qr_uShr(theBits, tBitN) = 0
                   subtract 1 from tBitN
                end repeat
                if ((x32 * 32) + tBitN) > tRight then put ((x32 * 32) + tBitN) into tRight
@@ -231,7 +231,7 @@ function bitMatrix_getTopLeftOnBit pObj
    put ((bitsOffset mod rs) * 32) into x
    put pObj["bits"][bitsOffset] into theBits
    put 0 into tBitN
-   repeat while shl(theBits, (31 - tBitN)) = 0
+   repeat while qr_shl(theBits, (31 - tBitN)) = 0
       add 1 to tBitN
    end repeat
    add tBitN to x
@@ -254,7 +254,7 @@ function bitMatrix_getBottomRightOnBit pObj
    put ((bitsOffset mod rs) * 32) into x
    put pObj["bits"][bitsOffset] into theBits
    put 31 into tBitN
-   repeat while uShr(theBits, tBitN) = 0
+   repeat while qr_uShr(theBits, tBitN) = 0
       subtract 1 from tBitN
    end repeat
    add tBitN to x
@@ -298,7 +298,7 @@ command bitMatrix_flipAll @pObj
    put (pObj["width"] mod 32) into tRem
    if tRem <> 0 then
       put pObj["rowSize"] into rs
-      put (shl(1, tRem) - 1) into tMask
+      put (qr_shl(1, tRem) - 1) into tMask
       repeat with y = 0 to (pObj["height"] - 1)
          put ((y * rs) + rs - 1) into tOff
          put (tBits[tOff] bitAnd tMask) into tBits[tOff]

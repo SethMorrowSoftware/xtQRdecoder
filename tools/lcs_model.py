@@ -101,6 +101,9 @@ NAMED DIVERGENCES FROM THE ENGINE (stricter unless marked otherwise):
       (`the caseSensitive` is false). The family model was case-sensitive;
       this one is not, because the corpus compares "true"/"false" and mode
       names produced by its own code and the engine folds case there.
+      `set the caseSensitive to true` switches the text comparisons of the
+      current handler (=, <>, <, >, contains, is in, begins/ends with,
+      is among) to byte-exact matching; see D22 for its scope.
   D17 The engine's `imageData` is not modelled at all: the one handler that
       touches an image object (luminanceSource_decodeRawPlane) is meant to be
       overridden by the host (tools/run_golden.py supplies a PNG decoder) and
@@ -118,6 +121,13 @@ NAMED DIVERGENCES FROM THE ENGINE (stricter unless marked otherwise):
       build validator holds the uniqueness discipline.
   D20 `the result` is set by a statement-position call to a user handler
       (the value it returned, or empty). Nothing else sets it here.
+  D22 `the caseSensitive` is modelled exactly like the delimiters (D21):
+      HANDLER-LOCAL, false on entry to every handler, restored for the
+      caller on exit. That is LiveCode's documented rule for this property
+      too; it is only exercised by the test reporter (t_eq), whose
+      byte-exact comparison is the point. No corpus handler relies on a
+      caller's caseSensitive leaking in, so the family's 2.3 dispute does
+      not touch it. Numeric comparisons are unaffected by the property.
   D21 `the itemDelimiter` / `the lineDelimiter` are HANDLER-LOCAL: every
       handler invocation starts at the defaults ("," and LF) and a change
       dies with the handler, so a caller's value is untouched by a callee.
@@ -140,6 +150,7 @@ WHAT IS MODELLED (summary; MODEL.md has the full list). Handlers
 copy-on-write by-value arrays); handler and script `local`; literal
 `constant`; put into/after/before with chained subscripts; add/subtract/
 multiply/divide; set the itemDelimiter/lineDelimiter (handler-local, D21);
+set the caseSensitive (handler-local, D22);
 get; if/else if/else in block and single-line form; repeat
 with/down to/while/forever/for each item|line; exit repeat/next repeat/exit
 handler/return/throw; try/catch; switch/case/default/break; statement-position
@@ -202,11 +213,12 @@ class ModelError(Exception):
 
 class _State(object):
     """The engine's global mutable state that the corpus touches."""
-    __slots__ = ("itemdel", "linedel", "result", "nstmt")
+    __slots__ = ("itemdel", "linedel", "casesens", "result", "nstmt")
 
     def __init__(self):
         self.itemdel = ","
         self.linedel = "\n"
+        self.casesens = False
         self.result = ""
         self.nstmt = 0
 
@@ -439,17 +451,27 @@ def _eq(a, b):
             nb = _parse_num(b)
             if nb is not None:
                 return na == nb
+        if _S.casesens:
+            return a == b
         return a.lower() == b.lower()
     # one number, one text
     if ca is str:
         na = _parse_num(a)
         if na is not None:
             return na == b
-        return a.lower() == _str(b).lower()
+        return _fold(a) == _fold(_str(b))
     nb = _parse_num(b)
     if nb is not None:
         return a == nb
-    return _str(a).lower() == b.lower()
+    return _fold(_str(a)) == _fold(b)
+
+
+def _fold(s):
+    """Text comparison key: byte-exact under `the caseSensitive`, folded
+    otherwise (D16, D22)."""
+    if _S.casesens:
+        return s
+    return s.lower()
 
 
 def _eq_array(a, b):
@@ -487,7 +509,7 @@ def _cmp_pair(a, b):
         nb = b
     if na is not None and nb is not None:
         return na, nb
-    return _str(a).lower(), _str(b).lower()
+    return _fold(_str(a)), _fold(_str(b))
 
 
 def _lt(a, b):
@@ -511,19 +533,27 @@ def _ge(a, b):
 
 
 def _is_in(needle, hay):
-    return _str(needle).lower() in _str(hay).lower()
+    return _fold(_str(needle)) in _fold(_str(hay))
 
 
 def _contains(hay, needle):
-    return _str(needle).lower() in _str(hay).lower()
+    return _fold(_str(needle)) in _fold(_str(hay))
 
 
 def _begins_with(s, prefix):
-    return _str(s).lower().startswith(_str(prefix).lower())
+    return _fold(_str(s)).startswith(_fold(_str(prefix)))
 
 
 def _ends_with(s, suffix):
-    return _str(s).lower().endswith(_str(suffix).lower())
+    return _fold(_str(s)).endswith(_fold(_str(suffix)))
+
+
+def _among(needle, parts):
+    n = _fold(_str(needle))
+    for x in parts:
+        if _fold(x) == n:
+            return True
+    return False
 
 
 def _is_integer(v):
@@ -928,6 +958,11 @@ _CONSTANTS = {
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
 }
 
+# The state the module-level comparison helpers consult (`the caseSensitive`
+# lives there, D22). Model.__init__ and Model.call rebind it to the active
+# model's state, so several models in one process stay independent.
+_S = _State()
+
 _RUNTIME = {
     "ModelError": ModelError, "_LCThrow": LCThrow, "_num": _num, "_str": _str,
     "_truth": _truth, "_add": _add, "_sub": _sub, "_mul": _mul,
@@ -935,7 +970,7 @@ _RUNTIME = {
     "_neg": _neg, "_u32": _u32, "_band": _band, "_bor": _bor, "_bxor": _bxor,
     "_bnot": _bnot, "_eq": _eq, "_ne": _ne, "_lt": _lt, "_le": _le,
     "_gt": _gt, "_ge": _ge, "_is_in": _is_in, "_contains": _contains,
-    "_begins_with": _begins_with, "_ends_with": _ends_with,
+    "_begins_with": _begins_with, "_ends_with": _ends_with, "_among": _among,
     "_is_integer": _is_integer, "_is_number": _is_number, "_key": _key,
     "_copy": _copy, "_get1": _get1, "_get2": _get2, "_getn": _getn,
     "_get_nonarr": _get_nonarr, "_newarr": _newarr, "_setn": _setn,
@@ -1321,6 +1356,8 @@ class _ExprCompiler(object):
             return ("_S.itemdel", "str", "the")
         if w == "linedelimiter":
             return ("_S.linedel", "str", "the")
+        if w == "casesensitive":
+            return ("_S.casesens", "bool", "the")
         if w == "milliseconds":
             return ("_ms()", "int", "the")
         if w == "keys":
@@ -1456,11 +1493,11 @@ class _ExprCompiler(object):
         if unit == "keys":
             code = "(%s.__class__ is dict and _key(%s) in %s)" % (right[0], left[0], right[0])
         elif unit == "lines":
-            code = "(_str(%s).lower() in [x.lower() for x in _split(_str(%s), _S.linedel)])" % (left[0], right[0])
+            code = "_among(%s, _split(_str(%s), _S.linedel))" % (left[0], right[0])
         elif unit == "items":
-            code = "(_str(%s).lower() in [x.lower() for x in _split(_str(%s), _S.itemdel)])" % (left[0], right[0])
+            code = "_among(%s, _split(_str(%s), _S.itemdel))" % (left[0], right[0])
         else:
-            code = "(_str(%s).lower() in [x.lower() for x in _words(%s)])" % (left[0], right[0])
+            code = "_among(%s, _words(%s))" % (left[0], right[0])
         if op == "notamong":
             code = "(not %s)" % code
         return (code, "bool")
@@ -2084,8 +2121,9 @@ class _HandlerCompiler(object):
             return _Stmt(head, ln, tx, v, tgt)
         if head == "set":
             if not (len(toks) > 4 and toks[1].low == "the" and toks[2].kind == "id"
-                    and toks[2].low in ("itemdelimiter", "linedelimiter") and toks[3].low == "to"):
-                self.fail("only `set the itemDelimiter|lineDelimiter to EXPR` is modelled")
+                    and toks[2].low in ("itemdelimiter", "linedelimiter", "casesensitive")
+                    and toks[3].low == "to"):
+                self.fail("only `set the itemDelimiter|lineDelimiter|caseSensitive to EXPR` is modelled")
             ep = _ExprCompiler(self, toks, 4)
             v = ep.parse_full()
             return _Stmt("setdelim", ln, tx, toks[2].low, v)
@@ -2279,6 +2317,9 @@ class _HandlerCompiler(object):
             self.emit_write(tgt2, code, out, pad)
             return
         if k == "setdelim":
+            if st.a == "casesensitive":
+                out.append("%s_S.casesens = _truth(%s)" % (pad, st.b[0]))
+                return
             attr = "itemdel" if st.a == "itemdelimiter" else "linedel"
             out.append("%s_S.%s = _str(%s)" % (pad, attr, st.b[0]))
             return
@@ -2448,12 +2489,17 @@ class _HandlerCompiler(object):
             src.append("    %s = ''" % " = ".join(sorted(locs)))
         bodytext = "\n".join(body)
         uses_delims = ("_S.itemdel" in bodytext) or ("_S.linedel" in bodytext)
+        uses_case = "_S.casesens" in bodytext
         if uses_delims:
             # itemDelimiter / lineDelimiter are HANDLER-LOCAL properties (D21):
             # each handler starts at the defaults and the caller's values are
             # restored on exit.
             src.append("    _sd_i = _S.itemdel; _sd_l = _S.linedel")
             src.append("    _S.itemdel = ','; _S.linedel = '\\n'")
+        if uses_case:
+            # the caseSensitive is handler-local too (D22).
+            src.append("    _sd_c = _S.casesens")
+            src.append("    _S.casesens = False")
         src.append("    _L = %d" % h.lineno)
         src.append("    try:")
         src.extend(body)
@@ -2466,13 +2512,15 @@ class _HandlerCompiler(object):
         src.append("        raise ModelError('recursion too deep', [(%r, %r, _L)])" % (h.name, h.srcname))
         src.append("    except Exception as _e:")
         src.append("        raise ModelError('%%s: %%s' %% (_e.__class__.__name__, _e), [(%r, %r, _L)])" % (h.name, h.srcname))
-        if any(h.byref) or uses_delims:
+        if any(h.byref) or uses_delims or uses_case:
             src.append("    finally:")
             for p, r in zip(h.params, h.byref):
                 if r:
                     src.append("        r_%s[0] = v_%s" % (p, p))
             if uses_delims:
                 src.append("        _S.itemdel = _sd_i; _S.linedel = _sd_l")
+            if uses_case:
+                src.append("        _S.casesens = _sd_c")
         src.append("    return ''")
         return "\n".join(src) + "\n"
 
@@ -2499,6 +2547,8 @@ class Model(object):
         self.overrides = {}         # low -> callable
         self.count_statements = count_statements
         self.state = _State()
+        global _S
+        _S = self.state
         self.ns = dict(_RUNTIME)
         self.ns["_S"] = self.state
         self.sources = []
@@ -2698,6 +2748,8 @@ class Model(object):
         low = name.lower()
         if low not in self.handlers and low not in self.overrides:
             raise ModelError("no handler named `%s`" % name)
+        global _S
+        _S = self.state
         fn = self.ns["h_" + low]
         h = self.handlers.get(low)
         if h is not None and low not in self.overrides:
@@ -2735,6 +2787,10 @@ class Model(object):
     @property
     def line_delimiter(self):
         return self.state.linedel
+
+    @property
+    def case_sensitive(self):
+        return self.state.casesens
 
     @property
     def statements_executed(self):

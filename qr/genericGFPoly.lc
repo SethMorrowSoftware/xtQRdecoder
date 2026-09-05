@@ -117,7 +117,7 @@ function poly_multiply p, q
    if poly_isZero(p) or poly_isZero(q) then return poly_zero()
    put the number of elements of p into pn
    put the number of elements of q into qn
-   put fill_array(0, (pn + qn - 1), 0) into tProduct
+   put qr_fillArray(0, (pn + qn - 1), 0) into tProduct
    repeat with i = 0 to (pn - 1)
       repeat with j = 0 to (qn - 1)
          put gf_addOrSubtract(tProduct[i + j], gf_multiply(p[i], q[j])) into tProduct[i + j]
@@ -144,7 +144,7 @@ function poly_multiplyByMonomial p, pDegree, pCoeff
    if pDegree < 0 then throw "RS: multiplyByMonomial negative degree"
    if pCoeff = 0 then return poly_zero()
    put the number of elements of p into n
-   put fill_array(0, (n + pDegree), 0) into tProduct
+   put qr_fillArray(0, (n + pDegree), 0) into tProduct
    repeat with i = 0 to (n - 1)
       put gf_multiply(p[i], pCoeff) into tProduct[i]
    end repeat

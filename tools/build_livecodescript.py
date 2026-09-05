@@ -246,8 +246,8 @@ def main() -> int:
 
     text = render()
 
-    # the four server pages hand-copy the include list; hold them to MODULES
-    for page in ("qr_tester.lc", "qr_golden.lc", "qr_demo.lc", "qr_decodeprobe.lc"):
+    # the five server pages hand-copy the include list; hold them to MODULES
+    for page in ("qr_tester.lc", "qr_golden.lc", "qr_synthetic.lc", "qr_demo.lc", "qr_decodeprobe.lc"):
         ppath = QR / page
         if not ppath.is_file():
             continue

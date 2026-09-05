@@ -24,7 +24,13 @@
 -- ---- script-local state (shared by the main code + handlers) --------------
 local tBase, tReady, tFiles, tF, tMissing
 local sHTML, sPanels, sRows
-local sPass, sFail, sCurPass, sCurFail, sCurTitle
+local sPass, sFail, sCurPass, sCurFail, sCurTitle, sPanelsRan
+
+-- the harness version: bump it in the same change as any suite edit, so two
+-- reports are known to be comparable (or not); the panel count is asserted by
+-- the completeness trailer
+constant kQrHarnessVersion = "2"
+constant kQrPanelCount = 19
 
 
 -- =========================  handlers  =====================================
@@ -90,10 +96,15 @@ function htmlEsc s
    return s
 end htmlEsc
 
--- the reporter every suite calls; tallies into the CURRENT suite + adds a row
+-- the reporter every suite calls; tallies into the CURRENT suite + adds a row.
+-- The comparison is BYTE-EXACT: `=` alone folds case (and compares numerically
+-- when both sides look numeric), so "HELLO WORLD" would have passed a "Hello
+-- world" expectation. caseSensitive is a handler-local property, so it is set
+-- here, where the compare happens (xtalk-suite lessons L2-10 / L3-08).
 command t_eq pName, pGot, pExp
    local tCls, tBadge
-   if pGot = pExp then
+   set the caseSensitive to true
+   if (pGot = pExp) and (the number of bytes of pGot = the number of bytes of pExp) then
       add 1 to sCurPass
       put "ok" into tCls
       put "PASS" into tBadge
@@ -134,22 +145,22 @@ end endSuite
 -- whitelisted dispatch for the interactive evaluator (no arbitrary eval)
 function evalHelper pFn, pA, pB
    switch pFn
-      case "u32"
-         return u32(pA)
-      case "u8"
-         return u8(pA)
-      case "shl"
-         return shl(pA, pB)
-      case "uShr"
-         return uShr(pA, pB)
-      case "aShr"
-         return aShr(pA, pB)
-      case "numberOfTrailingZeros"
-         return numberOfTrailingZeros(pA)
-      case "hashCode"
-         return hashCode(pA)
-      case "byteAt"
-         return byteAt(pA, pB)
+      case "qr_u32"
+         return qr_u32(pA)
+      case "qr_u8"
+         return qr_u8(pA)
+      case "qr_shl"
+         return qr_shl(pA, pB)
+      case "qr_uShr"
+         return qr_uShr(pA, pB)
+      case "qr_aShr"
+         return qr_aShr(pA, pB)
+      case "qr_numberOfTrailingZeros"
+         return qr_numberOfTrailingZeros(pA)
+      case "qr_hashCode"
+         return qr_hashCode(pA)
+      case "qr_byteAt"
+         return qr_byteAt(pA, pB)
       case "gf_exp"
          return gf_exp(pA)
       case "gf_log"
@@ -233,14 +244,14 @@ command renderEvaluator
    out "<form method='get'>"
    out "<select name='fn'>"
    out "<option value=''>&mdash; choose &mdash;</option>"
-   out fnOption("u32", tFn)
-   out fnOption("u8", tFn)
-   out fnOption("shl", tFn)
-   out fnOption("uShr", tFn)
-   out fnOption("aShr", tFn)
-   out fnOption("numberOfTrailingZeros", tFn)
-   out fnOption("hashCode", tFn)
-   out fnOption("byteAt", tFn)
+   out fnOption("qr_u32", tFn)
+   out fnOption("qr_u8", tFn)
+   out fnOption("qr_shl", tFn)
+   out fnOption("qr_uShr", tFn)
+   out fnOption("qr_aShr", tFn)
+   out fnOption("qr_numberOfTrailingZeros", tFn)
+   out fnOption("qr_hashCode", tFn)
+   out fnOption("qr_byteAt", tFn)
    out fnOption("gf_exp", tFn)
    out fnOption("gf_log", tFn)
    out fnOption("gf_inverse", tFn)
@@ -266,84 +277,186 @@ command renderEvaluator
 end renderEvaluator
 
 command renderPage
-   local tTotal, tVer, tPlat
+   local tTotal, tVer, tPlat, e
    put empty into sHTML
    put empty into sPanels
    put 0 into sPass
    put 0 into sFail
+   put 0 into sPanelsRan
 
-   -- run every suite; each panel is accumulated in sPanels
+   -- run every suite; each panel is accumulated in sPanels. Every suite runs
+   -- inside its own try: an uncaught throw becomes a FAIL row naming the suite
+   -- instead of taking the whole page down (xtalk-suite lesson L1-39).
    startSuite "qrCompat.lc  -  integer & bitwise layer"
-   suite_qrCompat
+   try
+      suite_qrCompat
+   catch e
+      t_eq "suite_qrCompat threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "genericGF.lc  -  GF(256) field"
-   suite_genericGF
+   try
+      suite_genericGF
+   catch e
+      t_eq "suite_genericGF threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "genericGFPoly.lc  -  polynomials over GF(256)"
-   suite_genericGFPoly
+   try
+      suite_genericGFPoly
+   catch e
+      t_eq "suite_genericGFPoly threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "reedSolomonDecoder.lc  -  RS decode (ZXing reference vector)"
-   suite_reedSolomon
+   try
+      suite_reedSolomon
+   catch e
+      t_eq "suite_reedSolomon threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "bitArray.lc  -  packed bit vector"
-   suite_bitArray
+   try
+      suite_bitArray
+   catch e
+      t_eq "suite_bitArray threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "bitMatrix.lc  -  packed 2-D bit grid"
-   suite_bitMatrix
+   try
+      suite_bitMatrix
+   catch e
+      t_eq "suite_bitMatrix threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "bitSource.lc  -  MSB-first bit reader"
-   suite_bitSource
+   try
+      suite_bitSource
+   catch e
+      t_eq "suite_bitSource threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "luminanceSource.lc  -  greyscale byte math (section 7.3)"
-   suite_luminance
+   try
+      suite_luminance
+   catch e
+      t_eq "suite_luminance threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "binarizer  -  global histogram + hybrid adaptive"
-   suite_binarizer
+   try
+      suite_binarizer
+   catch e
+      t_eq "suite_binarizer threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "tables  -  ErrorCorrectionLevel / Mode / DataMask / FormatInfo / Version"
-   suite_tables
+   try
+      suite_tables
+   catch e
+      t_eq "suite_tables threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "parser  -  DataBlock de-interleave + bitstream decode"
-   suite_parser
+   try
+      suite_parser
+   catch e
+      t_eq "suite_parser threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "decoder  -  end-to-end matrix -> text (real v1 'HI' QR)"
-   suite_decoder
+   try
+      suite_decoder
+   catch e
+      t_eq "suite_decoder threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "mathUtils  -  round + distance (section 8.4)"
-   suite_mathUtils
+   try
+      suite_mathUtils
+   catch e
+      t_eq "suite_mathUtils threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "resultPoint  -  point ops + orderBestPatterns (section 8.4)"
-   suite_resultPoint
+   try
+      suite_resultPoint
+   catch e
+      t_eq "suite_resultPoint threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "perspectiveTransform  -  3x3 projective maps (section 8.4)"
-   suite_perspective
+   try
+      suite_perspective
+   catch e
+      t_eq "suite_perspective threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "gridSampler  -  sample a grid through a transform (section 8.4)"
-   suite_gridSampler
+   try
+      suite_gridSampler
+   catch e
+      t_eq "suite_gridSampler threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "detector  -  synthetic photo -> finders -> sample -> 'HI' (section 8.4)"
-   suite_detector
+   try
+      suite_detector
+   catch e
+      t_eq "suite_detector threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
 
    startSuite "detector v2  -  alignment pattern -> 'HELLO WORLD' (section 8.4)"
-   suite_detectorV2
+   try
+      suite_detectorV2
+   catch e
+      t_eq "suite_detectorV2 threw", e, "(no throw)"
+   end try
    endSuite
+   add 1 to sPanelsRan
+
+   startSuite "reader  -  hints, flags, charset guess, mirrored/inverted, error tags"
+   try
+      suite_reader
+   catch e
+      t_eq "suite_reader threw", e, "(no throw)"
+   end try
+   endSuite
+   add 1 to sPanelsRan
 
    -- assemble the page
    renderHead "xtQRdecoder - xTalk QR Port Test Console"
@@ -363,7 +476,14 @@ command renderPage
 
    put the version into tVer
    put the platform into tPlat
-   out "<p class='foot'>Generated by qr_tester.lc &middot; engine " & htmlEsc(tVer) & " &middot; " & htmlEsc(tPlat) & "</p>"
+   -- the report's own completeness marker: a truncated page (a throw, a
+   -- buffering cut) must never read like a finished one (lesson L1-40)
+   if sPanelsRan = kQrPanelCount then
+      out "<p class='foot'>END OF REPORT - " & sPanelsRan & " panels ran of " & kQrPanelCount & " registered, " & tTotal & " assertions.</p>"
+   else
+      out "<div class='banner bad'>REPORT INCOMPLETE - " & sPanelsRan & " panels ran of " & kQrPanelCount & " registered.</div>"
+   end if
+   out "<p class='foot'>Generated by qr_tester.lc harness " & kQrHarnessVersion & " &middot; library " & htmlEsc(qrLibraryVersion()) & " &middot; engine " & htmlEsc(tVer) & " &middot; " & htmlEsc(tPlat) & "</p>"
    out "</div></body></html>"
 end renderPage
 
@@ -392,7 +512,7 @@ put qrFindBase() into tBase
 -- [2] confirm the modules + suites are present (friendly error if not).
 --     Use ABSOLUTE paths (tBase & "/" & name) so we never depend on the
 --     engine's relative-path resolution.
-put "qrCompat.lc,genericGF.lc,genericGFPoly.lc,reedSolomonDecoder.lc,bitArray.lc,bitMatrix.lc,bitSource.lc,luminanceSource.lc,globalHistogramBinarizer.lc,hybridBinarizer.lc,binaryBitmap.lc,errorCorrectionLevel.lc,mode.lc,dataMask.lc,formatInformation.lc,version.lc,characterSetECI.lc,dataBlock.lc,decodedBitStreamParser.lc,bitMatrixParser.lc,decoder.lc,mathUtils.lc,resultPoint.lc,perspectiveTransform.lc,gridSampler.lc,finderPatternFinder.lc,alignmentPatternFinder.lc,detector.lc,qrCodeReader.lc,qrReader.lc,suite_qrCompat.lc,suite_genericGF.lc,suite_genericGFPoly.lc,suite_reedSolomon.lc,suite_bitArray.lc,suite_bitMatrix.lc,suite_bitSource.lc,suite_luminance.lc,suite_binarizer.lc,suite_tables.lc,suite_parser.lc,suite_decoder.lc,suite_mathUtils.lc,suite_resultPoint.lc,suite_perspective.lc,suite_gridSampler.lc,suite_detector.lc" into tFiles
+put "qrCompat.lc,genericGF.lc,genericGFPoly.lc,reedSolomonDecoder.lc,bitArray.lc,bitMatrix.lc,bitSource.lc,luminanceSource.lc,globalHistogramBinarizer.lc,hybridBinarizer.lc,binaryBitmap.lc,errorCorrectionLevel.lc,mode.lc,dataMask.lc,formatInformation.lc,version.lc,characterSetECI.lc,dataBlock.lc,decodedBitStreamParser.lc,bitMatrixParser.lc,decoder.lc,mathUtils.lc,resultPoint.lc,perspectiveTransform.lc,gridSampler.lc,finderPatternFinder.lc,alignmentPatternFinder.lc,detector.lc,qrCodeReader.lc,qrReader.lc,suite_qrCompat.lc,suite_genericGF.lc,suite_genericGFPoly.lc,suite_reedSolomon.lc,suite_bitArray.lc,suite_bitMatrix.lc,suite_bitSource.lc,suite_luminance.lc,suite_binarizer.lc,suite_tables.lc,suite_parser.lc,suite_decoder.lc,suite_mathUtils.lc,suite_resultPoint.lc,suite_perspective.lc,suite_gridSampler.lc,suite_detector.lc,suite_reader.lc" into tFiles
 set the itemDelimiter to comma
 put empty into tMissing
 if tBase is empty then
@@ -455,6 +575,7 @@ if tMissing is empty then
    include (tBase & "/suite_perspective.lc")
    include (tBase & "/suite_gridSampler.lc")
    include (tBase & "/suite_detector.lc")
+   include (tBase & "/suite_reader.lc")
    put true into tReady
 end if
 

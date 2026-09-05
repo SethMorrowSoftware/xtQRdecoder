@@ -3,7 +3,7 @@
 # Copyright 2026 Seth Morrow
 # Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 """
-run_unit_tests.py - run the 17 qr/suite_*.lc unit suites headlessly through
+run_unit_tests.py - run the 19 qr/suite_*.lc unit panels headlessly through
 tools/lcs_model.py (an execution MODEL of the engine, not the engine).
 
     python3 tools/run_unit_tests.py            # the qr/*.lc modules + suites
@@ -18,13 +18,16 @@ WHAT A GREEN RUN MEANS. The assertions passed under the model's semantics
 (tools/MODEL.md lists every named divergence from the engine). It does NOT
 promote anything to engine-verified: the honest label for a handler that has
 only passed here remains "verified statically; needs an OXT pass". The suites
-are ENGINE-PASSED (399/399 on a 9.6.11-class engine), so a failure here is a
-MODEL bug until proven otherwise - fix tools/lcs_model.py, never the .lc
-sources or their expected values.
+were ENGINE-PASSED at 399/399 on a 9.6.11-class engine (harness 1, the 0.1.0 release);
+the assertions added since (suite_reader, and the byte-exact reporter) have
+only run under the model, so a failure here is a MODEL bug OR a real defect
+in the new code - never edit an engine-passed expected value to get green.
 
 The reporter is defined the way qr/qr_tester.lc defines it: `t_eq pName,
 pGot, pExp` compares with the model's own `=` in LiveCodeScript (see HARNESS
-below), tallying into script-locals exactly as the web console does.
+below) under `the caseSensitive`, plus a byte-length check so that no
+numeric-looking or case-folded near-miss passes, tallying into script-locals
+exactly as the web console does.
 """
 import argparse
 import glob
@@ -59,6 +62,7 @@ SUITES = [
     ("gridSampler  -  sample a grid through a transform (s8.4)", "suite_gridSampler"),
     ("detector  -  synthetic photo -> finders -> sample -> 'HI' (s8.4)", "suite_detector"),
     ("detector v2  -  alignment pattern -> 'HELLO WORLD' (s8.4)", "suite_detectorV2"),
+    ("reader  -  hints, flags, charset guess, mirrored/inverted, error tags", "suite_reader"),
 ]
 
 # The reporter, as qr/qr_tester.lc's t_eq: the comparison is the model's `=`
@@ -66,7 +70,8 @@ SUITES = [
 HARNESS = """
 local sCurPass, sCurFail
 command t_eq pName, pGot, pExp
-   if pGot = pExp then
+   set the caseSensitive to true
+   if (pGot = pExp) and (the number of bytes of pGot = the number of bytes of pExp) then
       add 1 to sCurPass
    else
       add 1 to sCurFail

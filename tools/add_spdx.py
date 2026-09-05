@@ -55,7 +55,9 @@ def main() -> int:
     targets = sorted((ROOT / "qr").glob("*.lc")) + sorted((ROOT / "tools").glob("*.py"))
     changed = 0
     for p in targets:
-        if p.name == "add_spdx.py":
+        # check_livecodescript.py is vendored VERBATIM from the xTalk Suite and
+        # must stay byte-identical to the suite's copy (its own header applies)
+        if p.name in ("add_spdx.py", "check_livecodescript.py"):
             continue
         if process(p):
             changed += 1

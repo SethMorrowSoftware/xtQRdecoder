@@ -74,10 +74,14 @@ function rampBytes
    return s
 end rampBytes
 
--- record one fixture row; pGot/pExp compared verbatim
+-- record one fixture row; pGot/pExp compared BYTE-EXACTLY: `=` alone folds
+-- case and compares numerically, so the comparison runs under the
+-- caseSensitive property (handler-local, hence set here) with a byte-length
+-- check, as qr_tester.lc's t_eq does
 command goldRow pName, pGot, pExp
    local tCls, tBadge, tShownGot, tShownExp
-   if pGot = pExp then
+   set the caseSensitive to true
+   if (pGot = pExp) and (the number of bytes of pGot = the number of bytes of pExp) then
       add 1 to sPass
       put "ok" into tCls
       put "PASS" into tBadge

@@ -69,13 +69,37 @@ function specLuma pQuad
    return trunc((r + (2 * g) + b) / 4)
 end specLuma
 
+-- the probe proper runs inside runProbe's guard: messages locked, the
+-- defaultStack pinned to a private host stack and restored on every exit,
+-- the scratch image deleted afterwards - the same discipline the library's
+-- luminanceSource_decodeRawPlane uses, so what this page proves is what the
+-- library does
 command runProbe
-   local tB64, tPng, tImg, tW, tH, tData, tLen, tBpp
-   local tRed, tGreen, tBlue, tWhite, tOrder, tCreated, e, e2
-   local tRok, tGok, tBok
-
+   local tSavedStack, tSavedLock, e
    put empty into sRows
    put empty into sFatal
+   put the defaultStack into tSavedStack
+   put the lockMessages into tSavedLock
+   lock messages
+   try
+      probeSteps
+   catch e
+      probeStep "unexpected error", "bad", e
+      put "The probe threw: " & e into sFatal
+   end try
+   try
+      if there is an image "qrProbe" then delete image "qrProbe"
+   catch e
+      probeStep "delete scratch image", "warn", e
+   end try
+   if tSavedStack is not empty then set the defaultStack to tSavedStack
+   set the lockMessages to tSavedLock
+end runProbe
+
+command probeSteps
+   local tB64, tPng, tImg, tW, tH, tData, tLen, tBpp
+   local tRed, tGreen, tBlue, tWhite, tOrder, tCreated, e
+   local tRok, tGok, tBok
 
    -- [0] embedded known 2x2 PNG (red, green / blue, white)
    put "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR42mP4z8DAAMIM/4EAAB/uBfvxq7p3AAAAAElFTkSuQmCC" into tB64
@@ -88,23 +112,25 @@ command runProbe
    end if
 
    -- [1] create an in-memory image control (the crux on headless servers)
+   --     on a private host stack: `create` opens the stack it makes and makes
+   --     it the defaultStack, so an unqualified `image "qrProbe"` below
+   --     resolves there and nowhere else (xtalk-suite engine notes)
    put false into tCreated
    try
-      -- a stack to host the control; headless engines may lack a default one
-      try
+      if there is not a stack "qrProbeStack" then
          create invisible stack "qrProbeStack"
-      catch e2
-         -- a default stack may already exist; ignore and try the image directly
-      end try
+      end if
+      set the defaultStack to "qrProbeStack"
+      if there is an image "qrProbe" then delete image "qrProbe"
       create invisible image "qrProbe"
       put true into tCreated
-      probeStep "create invisible image", "ok", "image control created"
+      probeStep "create invisible image on a private stack", "ok", "image control created"
    catch e
-      probeStep "create invisible image", "bad", e
+      probeStep "create invisible image on a private stack", "bad", e
       put "Could not create an image control in this engine." into sFatal
    end try
    if not tCreated then
-      exit runProbe
+      exit probeSteps
    end if
 
    -- [2] decode the PNG into the image
@@ -115,7 +141,7 @@ command runProbe
    catch e
       probeStep "put PNG bytes into image", "bad", e
       put "The engine accepted no image data (PNG decoder likely absent)." into sFatal
-      exit runProbe
+      exit probeSteps
    end try
 
    -- [3] formattedWidth / formattedHeight
@@ -131,7 +157,7 @@ command runProbe
    else
       probeStep "formattedWidth x formattedHeight", "bad", tW & " x " & tH & " (expected 2 x 2)"
       put "Image dimensions wrong - the PNG was not truly decoded." into sFatal
-      exit runProbe
+      exit probeSteps
    end if
 
    -- [4] the imageData
@@ -142,7 +168,7 @@ command runProbe
    catch e
       probeStep "read the imageData", "bad", e
       put "`the imageData` is unavailable in this engine." into sFatal
-      exit runProbe
+      exit probeSteps
    end try
    put the number of bytes of tData into tLen
    if tLen = 16 then
@@ -150,7 +176,7 @@ command runProbe
    else
       probeStep "imageData length", "bad", tLen & " bytes (expected 16)"
       put "imageData is not 4 bytes/pixel as section 7.2 assumes." into sFatal
-      exit runProbe
+      exit probeSteps
    end if
    put (tLen / (tW * tH)) into tBpp
    probeStep "bytes per pixel", "ok", tBpp
@@ -182,7 +208,7 @@ command runProbe
    -- [7] show the luminance the section 7.3 rule would produce
    probeStep "luminance section 7.3 of RED pixel", "ok", specLuma(tRed) & "  (=R since r<>g)"
    probeStep "luminance section 7.3 of WHITE pixel", "ok", specLuma(tWhite) & "  (=255)"
-end runProbe
+end probeSteps
 
 command renderHead
    out "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"

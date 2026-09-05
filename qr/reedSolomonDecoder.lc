@@ -23,7 +23,7 @@ command rs_decode @pReceived, pTwoS
    put poly_new(pReceived) into poly
 
    -- syndromes: S_i = poly( alpha^(i + generatorBase) ), generatorBase = 0
-   put fill_array(0, pTwoS, 0) into syndromeCoeffs
+   put qr_fillArray(0, pTwoS, 0) into syndromeCoeffs
    put true into noError
    repeat with i = 0 to (pTwoS - 1)
       put poly_evaluateAt(poly, gf_exp(i + gf_getGeneratorBase())) into ev
@@ -107,7 +107,7 @@ function rs_findErrorLocations errorLocator
       put poly_getCoefficient(errorLocator, 1) into tRes[0]
       return tRes
    end if
-   put fill_array(0, numErrors, 0) into tRes
+   put qr_fillArray(0, numErrors, 0) into tRes
    put 0 into e
    put gf_getSize() into sz
    put 1 into i
@@ -126,7 +126,7 @@ end rs_findErrorLocations
 function rs_findErrorMagnitudes errorEvaluator, pLocations
    local s, tRes, i, j, xiInverse, denominator, term, termPlus1
    put the number of elements of pLocations into s
-   put fill_array(0, s, 0) into tRes
+   put qr_fillArray(0, s, 0) into tRes
    repeat with i = 0 to (s - 1)
       put gf_inverse(pLocations[i]) into xiInverse
       put 1 into denominator

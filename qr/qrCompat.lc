@@ -29,11 +29,11 @@
 --      shown in a trailing comment.
 --   2. bitAnd/bitOr/bitXor have LOWER precedence than '=', '<', '+', etc. in
 --      xTalk, so EVERY bitwise sub-expression is wrapped in parentheses.
---   3. shl() is precision-safe: the spec's `u32(a * (2^n))` overflows 2^53 and
+--   3. qr_shl() is precision-safe: the spec's `qr_u32(a * (2^n))` overflows 2^53 and
 --      silently loses LOW-order bits when shifting a full 32-bit word left by a
---      large count (e.g. BitMatrix.getEnclosingRectangle). See shl() below.
+--      large count (e.g. BitMatrix.getEnclosingRectangle). See qr_shl() below.
 --   4. binaryDecode needs an OUTPUT variable; the spec's one-liner for
---      floatToIntBits is not valid xTalk. Corrected below.
+--      qr_floatToIntBits is not valid xTalk. Corrected below.
 -- =====================================================================
 
 
@@ -46,65 +46,65 @@ constant kMaxInt32 = 2147483648     -- 2^31; sign-bit threshold (NOT Integer.MAX
 -- ---- core normalisation ----------------------------------------------
 -- Normalise any integer into the unsigned 32-bit range [0, 2^32).
 -- Java/PHP -1 -> 4294967295 ; -16777216 -> 4278190080 ; 2^32 -> 0.
-function u32 n
+function qr_u32 n
    put n mod kUInt32 into n
    if n < 0 then add kUInt32 to n
    return n
-end u32
+end qr_u32
 
 -- Mask to a single unsigned byte (the ubiquitous Java "& 0xFF").
-function u8 n
+function qr_u8 n
    return (n bitAnd 255)            -- 0xFF
-end u8
+end qr_u8
 
 
 -- ---- shift emulation (Java <<, >>>, >>) ------------------------------
 -- xTalk has no shift operators; emulate with arithmetic. The shift count
 -- is masked to 0..31 with `bitAnd 31`, exactly Java's `count & 31` for 32-bit
 -- ints (a negative count maps to its unsigned low five bits: -1 -> 31; `mod`
--- would keep the sign and yield 0.5 for shl(1, -1)).
+-- would keep the sign and yield 0.5 for qr_shl(1, -1)).
 
 -- Logical/arithmetic LEFT shift, 32-bit  (Java: a << n).
 -- PRECISION-SAFE: drop the bits that would shift out past bit 31 BEFORE
 -- multiplying, so the product stays < 2^32 (well under the 2^53 exact limit).
--- A naive u32(a * 2^n) loses low bits when a is large and n is large.
-function shl a, n
+-- A naive qr_u32(a * 2^n) loses low bits when a is large and n is large.
+function qr_shl a, n
    local m
    put (n bitAnd 31) into n
-   put u32(a) into a
+   put qr_u32(a) into a
    put (2 ^ (32 - n)) into m         -- modulus discards the out-shifted high bits
    return ((a mod m) * (2 ^ n))      -- result is already in [0, 2^32)
-end shl
+end qr_shl
 
 -- UNSIGNED right shift  (Java: a >>> n). Operand treated as unsigned 32-bit.
 -- Replaces the PHP shims uRShift() and sdvig3().
-function uShr a, n
+function qr_uShr a, n
    put (n bitAnd 31) into n
-   return (u32(a) div (2 ^ n))
-end uShr
+   return (qr_u32(a) div (2 ^ n))
+end qr_uShr
 
 -- ARITHMETIC right shift  (Java: a >> n) on a word interpreted as SIGNED 32-bit.
 -- Returns the unsigned 32-bit BIT-PATTERN of the result (i.e. sign-extended).
-function aShr a, n
+function qr_aShr a, n
    local d
    put (n bitAnd 31) into n
-   put u32(a) into a
+   put qr_u32(a) into a
    put (2 ^ n) into d
    if a < kMaxInt32 then
       return (a div d)                                  -- top bit clear: same as >>>
    else
       -- top bit set (negative): OR in the high sign-extension bits.
       -- (kUInt32 - (kUInt32 div d)) is exactly the top-n-bits mask.
-      return u32(((a div d) bitOr (kUInt32 - (kUInt32 div d))))
+      return qr_u32(((a div d) bitOr (kUInt32 - (kUInt32 div d))))
    end if
-end aShr
+end qr_aShr
 
 
--- ---- Integer.numberOfTrailingZeros -----------------------------------
+-- ---- Integer.qr_numberOfTrailingZeros -----------------------------------
 -- Count low-order zero bits; i == 0 -> 32. Used by BitArray.getNextSet/Unset.
-function numberOfTrailingZeros i
+function qr_numberOfTrailingZeros i
    local n
-   put u32(i) into i
+   put qr_u32(i) into i
    if i = 0 then return 32
    put 0 into n
    repeat while (i bitAnd 1) = 0
@@ -112,36 +112,36 @@ function numberOfTrailingZeros i
       put (i div 2) into i
    end repeat
    return n
-end numberOfTrailingZeros
+end qr_numberOfTrailingZeros
 
 
--- ---- Java String.hashCode  (h = 31*h + c) over BYTES -----------------
--- Only used for equality/dedup, never on the decode-critical path. u32 each
+-- ---- Java String.qr_hashCode  (h = 31*h + c) over BYTES -----------------
+-- Only used for equality/dedup, never on the decode-critical path. qr_u32 each
 -- step so the value matches Java's bit pattern exactly.
-function hashCode s
+function qr_hashCode s
    local h, k
    put 0 into h
    repeat with k = 1 to the number of bytes of s
-      put u32((31 * h) + byteToNum(byte k of s)) into h
+      put qr_u32((31 * h) + byteToNum(byte k of s)) into h
    end repeat
    return h
-end hashCode
+end qr_hashCode
 
 
--- ---- Float.floatToIntBits --------------------------------------------
+-- ---- Float.qr_floatToIntBits --------------------------------------------
 -- IEEE-754 single-precision raw bits. The spec's one-liner is NOT valid
 -- xTalk (binaryDecode requires an output variable) -- corrected here.
 -- binaryEncode/binaryDecode use machine byte order on both sides, so the
 -- round-trip is endian-safe. Likely unused on the QR path (it appears only
 -- in ResultPoint / PerspectiveTransform hashing) -- included for completeness.
-function floatToIntBits f
+function qr_floatToIntBits f
    local tBits
    get binaryDecode("i", binaryEncode("f", f), tBits)
-   return u32(tBits)
-end floatToIntBits
+   return qr_u32(tBits)
+end qr_floatToIntBits
 
 
--- ---- fill_array  (customFunctions.php) -------------------------------
+-- ---- qr_fillArray  (customFunctions.php) -------------------------------
 -- Build a dense, 0-based array of pCount copies of pValue starting at pIndex.
 -- QUIRK preserved from PHP: pCount <= 0 returns a SINGLE-element array (one
 -- slot holding pValue). BitMatrix / binarizer sizing relies on this in
@@ -149,7 +149,7 @@ end floatToIntBits
 -- this reproduces the PHP "[0]" result, and the integer layer (incl. this
 -- helper) is engine-verified by suite_qrCompat. The degenerate pCount<=0 branch
 -- is not reached by the QR path; it is kept only for source fidelity.
-function fill_array pIndex, pCount, pValue
+function qr_fillArray pIndex, pCount, pValue
    local tArr, k
    if pCount <= 0 then
       put pValue into tArr[pIndex]
@@ -159,28 +159,28 @@ function fill_array pIndex, pCount, pValue
       put pValue into tArr[k]
    end repeat
    return tArr
-end fill_array
+end qr_fillArray
 
 
--- ---- System.arraycopy  (in place, for performance) -------------------
+-- ---- System.qr_arraycopy  (in place, for performance) -------------------
 -- Copy pLen elements from pSrc[pSrcPos..] to pDest[pDestPos..]. 0-based,
 -- matching the source. Pass BOTH arrays by reference (@) so the large bit /
 -- luminance arrays are never copied by value (spec 5, 11).
 -- CAVEAT: forward copy. If src and dest alias with overlapping FORWARD regions
 -- the result differs from Java's temp-buffer semantics. No such overlapping
 -- self-copy occurs on the QR decode path.
-command arraycopy @pSrc, pSrcPos, @pDest, pDestPos, pLen
+command qr_arraycopy @pSrc, pSrcPos, @pDest, pDestPos, pLen
    local k
    repeat with k = 0 to (pLen - 1)
       put pSrc[pSrcPos + k] into pDest[pDestPos + k]
    end repeat
-end arraycopy
+end qr_arraycopy
 
 
 -- ---- string byte access (0-based, like PHP $s[$i]) -------------------
 -- Returns the unsigned byte value (0..255) at 0-based index i of string s.
 -- Keeps call sites readable and 0-based (spec 6.7).
-function byteAt s, i
+function qr_byteAt s, i
    return byteToNum(byte (i + 1) of s)
-end byteAt
+end qr_byteAt
 ?>

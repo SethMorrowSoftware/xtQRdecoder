@@ -52,9 +52,9 @@ command bitSource_readBits @pObj, pNumBits
       put (8 - pObj["bitOffset"]) into bitsLeft
       put min(n, bitsLeft) into toRead
       put (bitsLeft - toRead) into bitsToNotRead
-      put shl((255 div (2 ^ (8 - toRead))), bitsToNotRead) into tMask
+      put qr_shl((255 div (2 ^ (8 - toRead))), bitsToNotRead) into tMask
       put pObj["bytes"][pObj["byteOffset"]] into curByte
-      put uShr((curByte bitAnd tMask), bitsToNotRead) into tResult
+      put qr_uShr((curByte bitAnd tMask), bitsToNotRead) into tResult
       subtract toRead from n
       add toRead to pObj["bitOffset"]
       if pObj["bitOffset"] = 8 then
@@ -67,15 +67,15 @@ command bitSource_readBits @pObj, pNumBits
    if n > 0 then
       repeat while n >= 8
          put pObj["bytes"][pObj["byteOffset"]] into curByte
-         put u32((shl(tResult, 8)) bitOr (curByte bitAnd 255)) into tResult
+         put qr_u32((qr_shl(tResult, 8)) bitOr (curByte bitAnd 255)) into tResult
          add 1 to pObj["byteOffset"]
          subtract 8 from n
       end repeat
       if n > 0 then
          put (8 - n) into bitsToNotRead
-         put shl((255 div (2 ^ bitsToNotRead)), bitsToNotRead) into tMask
+         put qr_shl((255 div (2 ^ bitsToNotRead)), bitsToNotRead) into tMask
          put pObj["bytes"][pObj["byteOffset"]] into curByte
-         put u32((shl(tResult, n)) bitOr uShr((curByte bitAnd tMask), bitsToNotRead)) into tResult
+         put qr_u32((qr_shl(tResult, n)) bitOr qr_uShr((curByte bitAnd tMask), bitsToNotRead)) into tResult
          add n to pObj["bitOffset"]
       end if
    end if

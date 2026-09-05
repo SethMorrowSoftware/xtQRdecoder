@@ -46,3 +46,20 @@ jobs:
 
       - name: Golden fixtures under the headless model (public API, real PNGs)
         run: python3 tools/run_golden.py
+
+      - name: Synthetic corpus under the headless model (49 rows from an independent encoder)
+        run: python3 tools/run_synthetic.py
+
+      - name: Decoder tables regenerated from first principles and ZXing's rows
+        run: python3 tools/verify_tables.py
+
+      - name: The gates are mutation-tested (each seeded defect must be caught)
+        run: python3 tools/test_gates.py
+
+      - name: The suites are mutation-tested (each seeded library defect must go red)
+        run: python3 tools/test_model_mutations.py
+
+      - name: Synthetic corpus is in sync with its generator (pixels + manifest)
+        run: |
+          python3 -m pip install --quiet "qrcode==8.2"
+          python3 tools/gen_synthetic_fixtures.py --check

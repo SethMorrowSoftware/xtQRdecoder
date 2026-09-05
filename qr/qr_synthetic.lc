@@ -1,0 +1,278 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- qr_synthetic.lc - acceptance suite: the synthetic corpus on the engine.
+--
+-- Decodes every row of qr/fixtures/synthetic/manifest.tsv through the
+-- public scanner API (qrDecodeResultRobust) with the row's hints and checks
+-- the result byte for byte against the row's expected UTF-8 text, or, for
+-- an "error:<prefix>" row, that the tagged error begins with that prefix.
+-- The corpus (46 images, 49 rows) comes from an INDEPENDENT encoder - see
+-- tools/gen_synthetic_fixtures.py for what it covers and why - and the
+-- same rows run headlessly under the execution model in CI
+-- (tools/run_synthetic.py). This page is the engine half of that pair.
+--
+-- DEPLOY: upload the qr/ folder (including qr/fixtures/synthetic/) and open:
+--     https://yoursite/qr/qr_synthetic.lc
+-- Expect it to take a while on a shared host: the v40 image is 555 px
+-- square. The report ends with an explicit completeness marker so that a
+-- page cut short by a time limit can never read like a finished one.
+-- =====================================================================
+
+local tBase, tReady, tFiles, tF, tMissing
+local sHTML
+local sPass, sFail, sRows, sRowsRun, sRowsListed
+
+function qrDirOf pPath
+   if pPath is empty then return empty
+   set the itemDelimiter to "/"
+   if the number of items of pPath < 2 then return empty
+   delete the last item of pPath
+   return pPath
+end qrDirOf
+
+function qrFindBase
+   local tCands, d
+   put qrDirOf($_SERVER["SCRIPT_FILENAME"]) & cr after tCands
+   put qrDirOf($_SERVER["PATH_TRANSLATED"]) & cr after tCands
+   if ($_SERVER["DOCUMENT_ROOT"] is not empty) and ($_SERVER["SCRIPT_NAME"] is not empty) then
+      put qrDirOf($_SERVER["DOCUMENT_ROOT"] & $_SERVER["SCRIPT_NAME"]) & cr after tCands
+   end if
+   put the defaultFolder & cr after tCands
+   repeat for each line d in tCands
+      if (d is not empty) and (there is a file (d & "/qrCompat.lc")) then
+         return d
+      end if
+   end repeat
+   return empty
+end qrFindBase
+
+command out s
+   put s & cr after sHTML
+end out
+
+function htmlEsc s
+   replace "&" with "&amp;" in s
+   replace "<" with "&lt;" in s
+   replace ">" with "&gt;" in s
+   replace quote with "&quot;" in s
+   return s
+end htmlEsc
+
+-- "63616665" -> the bytes 63 61 66 65 (lower- or upper-case hex digits)
+function synHexToBytes pHex
+   local tOut, i, n, tHi, tLo, tDigits
+   put "0123456789abcdef" into tDigits
+   put toLower(pHex) into pHex
+   put the number of chars of pHex into n
+   put empty into tOut
+   put 1 into i
+   repeat while i < n
+      put (offset(char i of pHex, tDigits) - 1) into tHi
+      put (offset(char (i + 1) of pHex, tDigits) - 1) into tLo
+      if (tHi < 0) or (tLo < 0) then throw "manifest: bad hex " & pHex
+      put numToByte((tHi * 16) + tLo) after tOut
+      add 2 to i
+   end repeat
+   return tOut
+end synHexToBytes
+
+-- record one row; the comparison is BYTE-EXACT (caseSensitive is a
+-- handler-local property, so it is set here where the compare happens)
+command synRow pName, pOk, pShownExp, pShownGot, pDetail
+   local tCls, tBadge
+   if pOk is true then
+      add 1 to sPass
+      put "ok" into tCls
+      put "PASS" into tBadge
+   else
+      add 1 to sFail
+      put "bad" into tCls
+      put "FAIL" into tBadge
+   end if
+   put "<tr class='" & tCls & "'><td>" & htmlEsc(pName) & "</td><td><code>" & \
+       htmlEsc(pShownExp) & "</code></td><td><code>" & htmlEsc(pShownGot) & \
+       "</code></td><td>" & htmlEsc(pDetail) & "</td><td class='st'>" & tBadge & "</td></tr>" & cr after sRows
+end synRow
+
+-- decode one manifest row and record it
+command synCase pFile, pHints, pExpect, pTextHex, pNote
+   local tPath, tBytes, tRes, tErr, tExpBytes, tGotBytes, tOk, tT0, tMs, tDetail, tPrefix
+   put tBase & "/fixtures/synthetic/" & pFile into tPath
+   if there is not a file tPath then
+      synRow pFile & " [" & pHints & "]", false, pExpect, "(missing fixture)", pNote
+      exit synCase
+   end if
+   put url ("binfile:" & tPath) into tBytes
+   put the milliseconds into tT0
+   put qrDecodeResultRobust(tBytes, pHints) into tRes
+   put (the milliseconds - tT0) into tMs
+   put tRes["error"] into tErr
+   put tMs & " ms" into tDetail
+   if tErr is empty then
+      put tDetail & ", " & tRes["strategy"] & " " & tRes["procW"] & "x" & tRes["procH"] into tDetail
+      if tRes["mirrored"] is true then put tDetail & ", mirrored" into tDetail
+      if tRes["inverted"] is true then put tDetail & ", inverted" into tDetail
+   end if
+   set the caseSensitive to true
+   if pExpect begins with "error:" then
+      put char 7 to (the number of chars of pExpect) of pExpect into tPrefix
+      put (tErr begins with tPrefix) into tOk
+      synRow pFile & " [" & pHints & "]", tOk, "error " & tPrefix & "...", tErr, tDetail & " - " & pNote
+      exit synCase
+   end if
+   put synHexToBytes(pTextHex) into tExpBytes
+   put textEncode(tRes["text"], "UTF-8") into tGotBytes
+   put ((tErr is empty) and (tGotBytes = tExpBytes) and \
+        (the number of bytes of tGotBytes = the number of bytes of tExpBytes)) into tOk
+   if tErr is not empty then
+      synRow pFile & " [" & pHints & "]", tOk, textDecode(tExpBytes, "UTF-8"), tErr, tDetail & " - " & pNote
+   else
+      synRow pFile & " [" & pHints & "]", tOk, textDecode(tExpBytes, "UTF-8"), tRes["text"], tDetail & " - " & pNote
+   end if
+end synCase
+
+function css
+   local c
+   put "body{font:15px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0f1117;color:#e6e6e6}" & cr after c
+   put ".wrap{max-width:1100px;margin:0 auto;padding:26px 20px}" & cr after c
+   put "h1{font-size:21px;margin:0 0 14px}" & cr after c
+   put ".banner{padding:15px 18px;border-radius:10px;font-size:18px;font-weight:600;margin:16px 0}" & cr after c
+   put ".banner.ok{background:#0f3d2e;color:#5ee6a8;border:1px solid #1c6b4f}" & cr after c
+   put ".banner.bad{background:#3d1414;color:#ff8a8a;border:1px solid #6b1c1c}" & cr after c
+   put ".panel{background:#161922;border:1px solid #232734;border-radius:10px;padding:14px 16px;margin:14px 0}" & cr after c
+   put "table{width:100%;border-collapse:collapse;font-size:13px}" & cr after c
+   put "th,td{text-align:left;padding:6px 9px;border-bottom:1px solid #232734;vertical-align:top;word-break:break-all}" & cr after c
+   put "code{background:#1a1d27;padding:1px 6px;border-radius:4px;color:#cdd6f4;font-size:12px}" & cr after c
+   put "tr.bad{background:#241313}.st{font-weight:700}tr.ok .st{color:#5ee6a8}tr.bad .st{color:#ff8a8a}" & cr after c
+   put ".foot{color:#6b7280;font-size:12px}" & cr after c
+   return c
+end css
+
+-- read the manifest and run every row
+command runSynthetic
+   local tMan, tRow, tTotal, tVer, tPlat, tManPath
+   put empty into sRows
+   put 0 into sPass
+   put 0 into sFail
+   put 0 into sRowsRun
+   put 0 into sRowsListed
+   put tBase & "/fixtures/synthetic/manifest.tsv" into tManPath
+   if there is a file tManPath then
+      put url ("binfile:" & tManPath) into tMan
+   else
+      put empty into tMan
+   end if
+   set the itemDelimiter to tab
+   repeat for each line tRow in tMan
+      if tRow is empty then next repeat
+      if char 1 of tRow is "#" then next repeat
+      add 1 to sRowsListed
+   end repeat
+   repeat for each line tRow in tMan
+      if tRow is empty then next repeat
+      if char 1 of tRow is "#" then next repeat
+      synCase (item 1 of tRow), (item 5 of tRow), (item 6 of tRow), (item 7 of tRow), (item 8 of tRow)
+      add 1 to sRowsRun
+   end repeat
+
+   put (sPass + sFail) into tTotal
+   out "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+   out "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+   out "<title>xtQRdecoder - synthetic corpus</title><style>" & css() & "</style>"
+   out "</head><body><div class='wrap'>"
+   out "<h1>xtQRdecoder - synthetic corpus on this engine</h1>"
+   out "<p>" & sRowsListed & " manifest rows from an independent encoder, decoded through <code>qrDecodeResultRobust</code> with each row's hints and compared byte for byte.</p>"
+   if tMan is empty then
+      out "<div class='banner bad'>&#10007; fixtures/synthetic/manifest.tsv was not found - upload the whole qr/ folder.</div>"
+   else if sFail = 0 then
+      out "<div class='banner ok'>&#10003; All " & tTotal & " synthetic rows decoded as expected.</div>"
+   else
+      out "<div class='banner bad'>&#10007; " & sFail & " of " & tTotal & " rows failed.</div>"
+   end if
+   out "<div class='panel'><table><tr><th>Fixture [hints]</th><th>Expected</th><th>Got</th><th>Detail</th><th>Status</th></tr>"
+   out sRows
+   out "</table></div>"
+   -- the completeness marker: a report cut short must never read as finished
+   if (sRowsRun = sRowsListed) and (sRowsListed > 0) then
+      out "<p class='foot'>END OF REPORT - " & sRowsRun & " rows ran of " & sRowsListed & " listed.</p>"
+   else
+      out "<div class='banner bad'>REPORT INCOMPLETE - " & sRowsRun & " rows ran of " & sRowsListed & " listed.</div>"
+   end if
+   put the version into tVer
+   put the platform into tPlat
+   out "<p class='foot'>Generated by qr_synthetic.lc &middot; library " & htmlEsc(qrLibraryVersion()) & " &middot; engine " & htmlEsc(tVer) & " &middot; " & htmlEsc(tPlat) & " &middot; <a href='qr_tester.lc'>unit console</a> &middot; <a href='qr_golden.lc'>golden photos</a></p>"
+   out "</div></body></html>"
+end runSynthetic
+
+command renderMissing
+   out "<!DOCTYPE html><html><head><meta charset='utf-8'><title>xtQRdecoder setup</title>"
+   out "<style>" & css() & "</style></head><body><div class='wrap'>"
+   out "<h1>xtQRdecoder synthetic corpus - setup needed</h1>"
+   out "<div class='banner bad'>Missing library files; upload the whole qr/ folder (including qr/fixtures/synthetic/).</div>"
+   out "<div class='panel'><pre><code>" & htmlEsc(tMissing) & "</code></pre></div>"
+   out "</div></body></html>"
+end renderMissing
+
+
+-- =========================  main  =========================================
+put qrFindBase() into tBase
+put "qrCompat.lc,genericGF.lc,genericGFPoly.lc,reedSolomonDecoder.lc,bitArray.lc,bitMatrix.lc,bitSource.lc,luminanceSource.lc,globalHistogramBinarizer.lc,hybridBinarizer.lc,binaryBitmap.lc,errorCorrectionLevel.lc,mode.lc,dataMask.lc,formatInformation.lc,version.lc,characterSetECI.lc,dataBlock.lc,decodedBitStreamParser.lc,bitMatrixParser.lc,decoder.lc,mathUtils.lc,resultPoint.lc,perspectiveTransform.lc,gridSampler.lc,finderPatternFinder.lc,alignmentPatternFinder.lc,detector.lc,qrCodeReader.lc,qrReader.lc" into tFiles
+set the itemDelimiter to comma
+put empty into tMissing
+if tBase is empty then
+   put "(could not locate the script directory)" into tMissing
+else
+   repeat for each item tF in tFiles
+      if there is not a file (tBase & "/" & tF) then
+         put tF & cr after tMissing
+      end if
+   end repeat
+end if
+
+put false into tReady
+if tMissing is empty then
+   include (tBase & "/qrCompat.lc")
+   include (tBase & "/genericGF.lc")
+   include (tBase & "/genericGFPoly.lc")
+   include (tBase & "/reedSolomonDecoder.lc")
+   include (tBase & "/bitArray.lc")
+   include (tBase & "/bitMatrix.lc")
+   include (tBase & "/bitSource.lc")
+   include (tBase & "/luminanceSource.lc")
+   include (tBase & "/globalHistogramBinarizer.lc")
+   include (tBase & "/hybridBinarizer.lc")
+   include (tBase & "/binaryBitmap.lc")
+   include (tBase & "/errorCorrectionLevel.lc")
+   include (tBase & "/mode.lc")
+   include (tBase & "/dataMask.lc")
+   include (tBase & "/formatInformation.lc")
+   include (tBase & "/version.lc")
+   include (tBase & "/characterSetECI.lc")
+   include (tBase & "/dataBlock.lc")
+   include (tBase & "/decodedBitStreamParser.lc")
+   include (tBase & "/bitMatrixParser.lc")
+   include (tBase & "/decoder.lc")
+   include (tBase & "/mathUtils.lc")
+   include (tBase & "/resultPoint.lc")
+   include (tBase & "/perspectiveTransform.lc")
+   include (tBase & "/gridSampler.lc")
+   include (tBase & "/finderPatternFinder.lc")
+   include (tBase & "/alignmentPatternFinder.lc")
+   include (tBase & "/detector.lc")
+   include (tBase & "/qrCodeReader.lc")
+   include (tBase & "/qrReader.lc")
+   put true into tReady
+end if
+
+put empty into sHTML
+if tReady then
+   runSynthetic
+else
+   renderMissing
+end if
+put sHTML
+?>
