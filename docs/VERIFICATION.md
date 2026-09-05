@@ -22,6 +22,7 @@ match this file, this file is right and the sentence is stale.
 | The 5 golden photographic fixtures via `qr/qr_golden.lc` | same | 2026-06-03 | 5/5 |
 | Desktop / mobile / OpenXTalk (`start using` the combined stack, the showcase stack, the two examples, the demo stack) | - | never | **verified statically; needs an OXT pass** |
 | Everything changed since 0.1.0 (see `CHANGELOG.md` 0.2.0) | - | not yet | **verified statically; needs an OXT pass** |
+| The showcase stack, first observation: it was pasted and opened on the maintainer's desktop engine, the window built, and a decode of the inverted sample without `ALSO_INVERTED` ran for 683 ms and reported NotFound, as its manifest row requires | desktop engine, build not yet recorded | 2026-09-05 | partial (one status line); the About self-check block and the Samples log are still to be recorded |
 
 The 0.2.0 changes touch the finder, the detector, the decoder, the
 bitstream parser, the version table, the public reader, the reporters and
