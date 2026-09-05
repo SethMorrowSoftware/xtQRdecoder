@@ -65,8 +65,11 @@ function rs_runEuclidean a, b, pTwoT
    put poly_zero() into tLast
    put poly_one() into t
 
-   -- run until r's degree is less than R/2  (R == 2t == number of EC codewords)
-   repeat while poly_degree(r) >= (pTwoT div 2)
+   -- run until 2*deg(r) < R  (R == 2t == number of EC codewords). ZXing writes
+   -- `while (2 * r.getDegree() >= R)`; PHP compares against the FLOAT R/2. Both
+   -- differ from an integer `R div 2` when R is odd (v1-L/Q/H, v3-L), and only
+   -- on uncorrectable blocks - but the divergence changed the reported failure.
+   repeat while (2 * poly_degree(r)) >= pTwoT
       put rLast into rLastLast
       put tLast into tLastLast
       put r into rLast

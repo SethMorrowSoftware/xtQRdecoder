@@ -13,8 +13,10 @@
 --   column, run them through the transform, clamp endpoints to the image edge
 --   (checkAndNudgePoints), then read image.get at each sampled pixel.
 --
--- A sample point landing outside the image throws NotFound -- this mirrors the
--- PHP ArrayIndexOutOfBounds -> NotFoundException wrapper (a "twisted" transform).
+-- A row whose END points land more than one pixel outside the image throws
+-- NotFound (checkAndNudgePoints, as in ZXing/PHP); an interior sample that
+-- strays just outside reads as white, which is what PHP's BitMatrix::get and
+-- Java's zero padding bits do (the port threw NotFound there until 2026-09).
 -- =====================================================================
 
 -- clamp barely-off endpoints back onto the image; throw if truly outside.
@@ -100,9 +102,10 @@ function gs_sampleGrid pImage, pDimX, pDimY, pTransform
          put (c * 2) into x
          put trunc(tPoints[x]) into tPX
          put trunc(tPoints[x + 1]) into tPY
-         if (tPX < 0) or (tPX >= tImgW) or (tPY < 0) or (tPY >= tImgH) then
-            throw "NotFound: sample point (" & tPX & "," & tPY & ") outside image"
-         end if
+         -- a sample just outside the image reads WHITE: PHP's BitMatrix::get
+         -- answers false for any out-of-range coordinate and Java reads a zero
+         -- padding bit for x just past the width (bitMatrix_get guards this);
+         -- only the row ENDPOINTS are policed, by gs_checkAndNudgePoints above
          if bitMatrix_get(pImage, tPX, tPY) then
             bitMatrix_set tBits, c, y
          end if

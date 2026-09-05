@@ -36,7 +36,7 @@ function dt_sizeOfBlackWhiteBlackRun pImg, pFromX, pFromY, pToX, pToY
    end if
    put abs(tToX - tFromX) into tDx
    put abs(tToY - tFromY) into tDy
-   put (0 - (tDx / 2)) into tErr
+   put (0 - (tDx div 2)) into tErr        -- ZXing: int error = -dx / 2 (integer)
    if tFromX < tToX then
       put 1 into tXstep
    else
@@ -116,13 +116,22 @@ function dt_calculateModuleSizeOneWay pImg, pPattern, pOther
    local tEst1, tEst2
    put dt_sizeOfBWBRunBothWays(pImg, trunc(pPattern["x"]), trunc(pPattern["y"]), trunc(pOther["x"]), trunc(pOther["y"])) into tEst1
    put dt_sizeOfBWBRunBothWays(pImg, trunc(pOther["x"]), trunc(pOther["y"]), trunc(pPattern["x"]), trunc(pPattern["y"])) into tEst2
+   -- NaN is empty in this port and must never reach arithmetic: both runs
+   -- empty -> empty (upstream: NaN propagates and ends in NotFound)
+   if (tEst1 is empty) and (tEst2 is empty) then return empty
    if tEst1 is empty then return (tEst2 / 7)
    if tEst2 is empty then return (tEst1 / 7)
    return ((tEst1 + tEst2) / 14)
 end dt_calculateModuleSizeOneWay
 
 function dt_calculateModuleSize pImg, pTL, pTR, pBL
-   return ((dt_calculateModuleSizeOneWay(pImg, pTL, pTR) + dt_calculateModuleSizeOneWay(pImg, pTL, pBL)) / 2)
+   local tA, tB
+   put dt_calculateModuleSizeOneWay(pImg, pTL, pTR) into tA
+   put dt_calculateModuleSizeOneWay(pImg, pTL, pBL) into tB
+   if (tA is empty) or (tB is empty) then
+      throw "NotFound: module size could not be measured (no black-white-black run)"
+   end if
+   return ((tA + tB) / 2)
 end dt_calculateModuleSize
 
 -- dimension (modules per side) from finder distances + module size; snap %4==1
@@ -130,14 +139,18 @@ function dt_computeDimension pTL, pTR, pBL, pModuleSize
    local tTltr, tTlbl, tDim, tMod
    put mu_round(rp_distance(pTL, pTR) / pModuleSize) into tTltr
    put mu_round(rp_distance(pTL, pBL) / pModuleSize) into tTlbl
-   put round((((tTltr + tTlbl) / 2) + 7)) into tDim
+   -- ZXing (Java) Detector.computeDimension: INTEGER division of the two
+   -- rounded module counts, then snap to 4k+1 - and since ZXing 3.4 a residue
+   -- of 3 is recovered with dimension -= 2 rather than thrown (the PHP port
+   -- rounds a float and throws on 3; this port follows current ZXing here).
+   put (((tTltr + tTlbl) div 2) + 7) into tDim
    put (tDim bitAnd 3) into tMod
    if tMod = 0 then
       add 1 to tDim
    else if tMod = 2 then
       subtract 1 from tDim
    else if tMod = 3 then
-      throw "NotFound: dimension " & tDim & " mod 4 == 3 unusable"
+      subtract 2 from tDim
    end if
    return tDim
 end dt_computeDimension
@@ -183,7 +196,7 @@ end dt_createTransform
 -- top-level detect; returns {["bits"],["points"],["dimension"]} or throws
 function dt_detect pImg, pHints
    local tInfo, tTL, tTR, tBL, tModuleSize, tDimension, tProvVer, tModulesBetween
-   local tAlignCenters, tAlign, tBRX, tBRY, tCorr, tEstAX, tEstAY, ii, e
+   local tAlignCenters, tAlign, tBRX, tBRY, tCorr, tEstAX, tEstAY, ii, e, tAlignErr
    local tTransform, tBits, tPoints, tResult
    put fpf_find(pImg, pHints) into tInfo
    put tInfo["tl"] into tTL
@@ -202,16 +215,25 @@ function dt_detect pImg, pHints
       put ((tTR["x"] - tTL["x"]) + tBL["x"]) into tBRX
       put ((tTR["y"] - tTL["y"]) + tBL["y"]) into tBRY
       put (1 - (3 / tModulesBetween)) into tCorr
-      put mu_round(tTL["x"] + (tCorr * (tBRX - tTL["x"]))) into tEstAX
-      put mu_round(tTL["y"] + (tCorr * (tBRY - tTL["y"]))) into tEstAY
+      -- ZXing truncates the estimate: int estAlignmentX = (int) (...)
+      put trunc(tTL["x"] + (tCorr * (tBRX - tTL["x"]))) into tEstAX
+      put trunc(tTL["y"] + (tCorr * (tBRY - tTL["y"]))) into tEstAY
       put 4 into ii
+      put empty into tAlignErr
       repeat while ii <= 16
          try
             put dt_findAlignmentInRegion(pImg, tModuleSize, tEstAX, tEstAY, ii) into tAlign
             exit repeat
          catch e
             put empty into tAlign
+            put e into tAlignErr
          end try
+         -- ZXing/PHP catch ONLY NotFound here; anything else is a real error and
+         -- must not be swallowed into "no alignment pattern" (re-thrown after
+         -- the try - a throw inside a catch is lost on OXT, engine notes 3.2)
+         if (tAlignErr is not empty) and (not (tAlignErr begins with "NotFound")) then
+            throw tAlignErr
+         end if
          put (ii * 2) into ii
       end repeat
    end if

@@ -74,6 +74,6 @@ function eci_charsetName pValue
       case 30
          return "EUC-KR"
    end switch
-   return "ISO-8859-1"           -- unknown ECI: safe byte-preserving default
+   return empty                  -- unknown ECI: the caller throws Format (ZXing/PHP)
 end eci_charsetName
 ?>

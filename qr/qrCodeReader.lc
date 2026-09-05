@@ -10,24 +10,69 @@
 --
 -- qcr_decode(binaryBitmap, hints) -> decoder result array (from dec_decode):
 --   ["text"], ["bytes"], ["error"], ["ecLevel"], ["version"], ["mask"],
---   plus ["points"] from the detector. On a NotFound the detector throws;
---   on Format/Checksum dec_decode returns ["error"] set.
+--   plus ["points"] from the detector (swapped for a mirrored symbol, as
+--   ZXing does) and ["inverted"] = true when the ALSO_INVERTED retry won.
+--   Never throws: NotFound / Format / Checksum all arrive in ["error"].
 -- =====================================================================
 
+-- Decode one binarized bitmap. Callers run `binaryBitmap_ensureMatrix` on
+-- THEIR bitmap variable first so the black matrix is binarized once and cached
+-- where it persists (a function receives the bitmap by value - the proven shape
+-- - so a cache filled here would live in a discarded copy; ensureMatrix below is
+-- then a no-op). With the ALSO_INVERTED hint a failed decode is retried on the
+-- inverted matrix (ZXing MultiFormatReader: image.getBlackMatrix().flip(), then
+-- decode again) - a white-on-black symbol; such a result carries
+-- ["inverted"] = true. Never throws: failures arrive in ["error"] (a detector
+-- NotFound included).
 function qcr_decode pBitmap, pHints
-   local tBits, tDetectorResult, tDecoderResult, tPure
-   -- a missing key (or non-array pHints) reads as empty, so "is true" is false.
-   put (pHints["PURE_BARCODE"] is true) into tPure
-   if tPure then
-      put qcr_extractPureBits(binaryBitmap_getBlackMatrix(pBitmap)) into tBits
+   local tResult, tInverted, tBits, e
+   binaryBitmap_ensureMatrix pBitmap
+   try
+      put qcr_decodeMatrix(pBitmap["matrix"], pHints) into tResult
+   catch e
+      put empty into tResult
+      put e into tResult["error"]
+   end try
+   if (tResult["error"] is not empty) and qr_hintFlag(pHints, "ALSO_INVERTED") then
+      put pBitmap["matrix"] into tBits
+      bitMatrix_flipAll tBits
+      put tBits into pBitmap["matrix"]
+      try
+         put qcr_decodeMatrix(pBitmap["matrix"], pHints) into tInverted
+      catch e
+         put empty into tInverted
+         put e into tInverted["error"]
+      end try
+      if tInverted["error"] is empty then
+         put true into tInverted["inverted"]
+         return tInverted
+      end if
+   end if
+   return tResult
+end qcr_decode
+
+-- detect + decode one black matrix (ZXing QRCodeReader.decode). Throws NotFound
+-- from the detector; Format/Checksum arrive in the result's ["error"].
+function qcr_decodeMatrix pImage, pHints
+   local tBits, tDetectorResult, tDecoderResult, tPoints, tSwap
+   if qr_hintFlag(pHints, "PURE_BARCODE") then
+      put qcr_extractPureBits(pImage) into tBits
       put dec_decode(tBits) into tDecoderResult
    else
-      put dt_detect(binaryBitmap_getBlackMatrix(pBitmap), pHints) into tDetectorResult
+      put dt_detect(pImage, pHints) into tDetectorResult
       put dec_decode(tDetectorResult["bits"]) into tDecoderResult
-      put tDetectorResult["points"] into tDecoderResult["points"]
+      put tDetectorResult["points"] into tPoints
+      if tDecoderResult["mirrored"] is true then
+         -- ZXing QRCodeDecoderMetaData.applyMirroredCorrection: a mirrored
+         -- symbol's bottom-left and top-right swap; top-left and alignment stay
+         put tPoints[0] into tSwap
+         put tPoints[2] into tPoints[0]
+         put tSwap into tPoints[2]
+      end if
+      put tPoints into tDecoderResult["points"]
    end if
    return tDecoderResult
-end qcr_decode
+end qcr_decodeMatrix
 
 -- estimate module size by counting transitions along the top-left diagonal
 function qcr_moduleSize pLeftTopBlack, pImage
@@ -74,6 +119,10 @@ function qcr_extractPureBits pImage
    if (tBottom - tTop) <> (tRight - tLeft) then
       -- bottom-right module wasn't black; assume square, use height as width
       put (tLeft + (tBottom - tTop)) into tRight
+      -- ZXing (Java) guards the assumption; the PHP port would sample off-image
+      if tRight >= bitMatrix_getWidth(pImage) then
+         throw "NotFound: pure barcode square assumption runs off the image"
+      end if
    end if
    put round(((tRight - tLeft) + 1) / tModuleSize) into tMatrixWidth
    put round(((tBottom - tTop) + 1) / tModuleSize) into tMatrixHeight

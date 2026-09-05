@@ -62,40 +62,69 @@ function luminanceSource_newFromLuminances pW, pH, pLum
    return tObj
 end luminanceSource_newFromLuminances
 
--- IMAGE-OBJECT PATH (section 7.1). Requires a working engine image object. A headless
--- engine may lack a default stack to host a control, so we ensure one exists
--- first; qr_imageprobe.lc confirms this path on a given engine.
+-- IMAGE-OBJECT PATH (section 7.1). Requires a working engine image object;
+-- qr_imageprobe.lc confirms this path on a given engine.
 --
 -- Decode the image bytes to a raw 4-byte/pixel plane via the engine image
 -- object, ONCE. Returns {["width"],["height"],["raw"]}. Separated from the
 -- greyscale/downsample step so a robust reader can decode the (costly) image a
 -- single time and then derive several luminance sources at different scales
--- from the same raw plane (spec section 11: the image decode + pixel loops dominate).
+-- from the same raw plane (spec section 11: image decode + pixel loops dominate).
+--
+-- HOST-APP SAFETY (xtalk-suite engine notes 5.3 / 5.5, lessons L2-02, L3-03):
+-- an unqualified control reference resolves against THE DEFAULTSTACK (whatever
+-- stack is frontmost, i.e. the host's), and `create stack` opens the stack it
+-- makes. Until 2026-09 this handler created its scratch image on the host's
+-- own front card after the first call, firing newImage/deleteImage into the
+-- host's scripts and marking its stack dirty. Now: remember the host's
+-- defaultStack, park the scratch image on the library's own invisible
+-- "qrHostStack", lock messages around the create/fill/read/delete, and put the
+-- defaultStack (and the lockMessages state) back on EVERY exit - the failing
+-- one included (the throw happens after `end try`: a throw inside a catch is
+-- lost on OXT, engine notes 3.2). The scratch image has a fixed name and is
+-- deleted before reuse, so an aborted call can never leak a control.
+-- EVIDENCE: verified statically and by construction from the suite's engine
+-- notes; this exact sequence needs an OXT pass on a desktop engine (it cannot
+-- run under the headless model, which supplies its own PNG decoder here).
 --
 -- pMaxDim is accepted for signature compatibility but does not resize here:
 -- downsampling is performed by the caller (luminanceSource_fromRawPlane), so this
 -- handler always returns the full-resolution pixels. (The imageData layout after
 -- an in-engine resize is build-specific, so resizing is left to the host app.)
 function luminanceSource_decodeRawPlane pImageData, pMaxDim
-   local tW, tH, tRaw, tName, e, tPlane
-   -- ensure a host stack exists (ignore if a default one already does)
+   local tW, tH, tRaw, tName, e, tPlane, tSavedStack, tSavedLock, tErr, tHost
+   put "qrHostStack" into tHost
+   put "qrScratchImage" into tName
+   put the defaultStack into tSavedStack
+   put the lockMessages into tSavedLock
+   put empty into tErr
+   put 0 into tW
+   put 0 into tH
+   put empty into tRaw
+   lock messages
    try
-      if there is not a stack "qrHostStack" then
-         create invisible stack "qrHostStack"
+      if there is not a stack tHost then
+         create invisible stack tHost
       end if
+      set the defaultStack to tHost
+      if there is an image tName then delete image tName
+      create invisible image tName
+      set the lockLoc of image tName to true
+      put pImageData into image tName                  -- decode PNG/JPG/GIF/BMP
+      put the formattedWidth of image tName into tW
+      put the formattedHeight of image tName into tH
+      set the width of image tName to tW
+      set the height of image tName to tH
+      put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
+      delete image tName
    catch e
-      -- a default stack may already be available; proceed regardless
+      put e into tErr
    end try
-   put "qrSrc_" & the milliseconds into tName       -- avoid name collisions
-   create invisible image tName
-   set the lockLoc of image tName to true
-   put pImageData into image tName                  -- decode PNG/JPG/GIF/BMP
-   put the formattedWidth of image tName into tW
-   put the formattedHeight of image tName into tH
-   set the width of image tName to tW
-   set the height of image tName to tH
-   put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
-   delete image tName
+   if tSavedStack is not empty then set the defaultStack to tSavedStack
+   set the lockMessages to tSavedLock
+   if tErr is not empty then
+      throw "NotFound: the engine image object could not decode the image -- " & tErr
+   end if
    -- Guard a silent decode failure. On a build whose engine lacks a codec for
    -- this format (notably JPEG on some headless xTalk server builds), the
    -- image object decodes to 0x0 / empty imageData rather than erroring -- which
@@ -129,15 +158,22 @@ end luminanceSource_stepForDims
 -- build a luminance source from an already-decoded raw plane, downsampling so
 -- neither side exceeds pMaxDim (omit pMaxDim for full resolution).
 function luminanceSource_fromRawPlane pPlane, pMaxDim
-   local tW, tH, tStep
+   local tStep
+   put luminanceSource_stepForDims(pPlane["width"], pPlane["height"], pMaxDim) into tStep
+   return luminanceSource_fromRawPlaneStep(pPlane, tStep)
+end luminanceSource_fromRawPlane
+
+-- the same, for an explicit integer downsample step (1 = full resolution); the
+-- robust reader plans its resolution ladder in steps so no rung repeats work
+function luminanceSource_fromRawPlaneStep pPlane, pStep
+   local tW, tH
    put pPlane["width"] into tW
    put pPlane["height"] into tH
-   put luminanceSource_stepForDims(tW, tH, pMaxDim) into tStep
-   if tStep > 1 then
-      return luminanceSource_downsampleRaw(tW, tH, pPlane["raw"], tStep)
+   if pStep > 1 then
+      return luminanceSource_downsampleRaw(tW, tH, pPlane["raw"], pStep)
    end if
    return luminanceSource_newFromImageData(tW, tH, pPlane["raw"])
-end luminanceSource_fromRawPlane
+end luminanceSource_fromRawPlaneStep
 
 -- decode image bytes straight to a luminance source (optionally downsampled).
 -- Behaviour-preserving wrapper over decodeRawPlane + fromRawPlane; this is the

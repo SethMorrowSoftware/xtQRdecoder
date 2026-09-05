@@ -26,7 +26,7 @@
 function db_getDataBlocks pRaw, pVersion, pEcOrdinal
    local tEcwPerBlock, tBlockSpec, tLn, cnt, dat
    local tBlocks, tNum, b, i, j
-   local tMaxData, tShorterNumData, tLongerStart, tRawIndex, tMaxLen, tIdx
+   local tMaxData, tShorterNumData, tLongerStart, tRawIndex, tMaxLen, tIdx, tTotalLen
 
    put ver_getEcCodewordsPerBlock(pVersion, pEcOrdinal) into tEcwPerBlock
    put ver_getEcBlocks(pVersion, pEcOrdinal) into tBlockSpec   -- lines "count,data"
@@ -46,6 +46,17 @@ function db_getDataBlocks pRaw, pVersion, pEcOrdinal
          add 1 to tNum
       end repeat
    end repeat
+
+   -- ZXing/PHP refuse a raw stream whose length is not the version's total:
+   -- without this, a short read would feed empty values into Reed-Solomon and
+   -- fail far from the cause.
+   put 0 into tTotalLen
+   repeat with b = 0 to (tNum - 1)
+      add tBlocks[b]["len"] to tTotalLen
+   end repeat
+   if (the number of elements of pRaw) <> tTotalLen then
+      throw "Format: codeword count " & (the number of elements of pRaw) & " <> " & tTotalLen
+   end if
 
    -- largest data length; "shorter" blocks have tMaxData-1 ... but per ZXing the
    -- shorter length is the FIRST block's numData; longer blocks carry +1.

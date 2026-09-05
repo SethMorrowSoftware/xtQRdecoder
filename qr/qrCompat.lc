@@ -60,7 +60,9 @@ end u8
 
 -- ---- shift emulation (Java <<, >>>, >>) ------------------------------
 -- xTalk has no shift operators; emulate with arithmetic. The shift count
--- is masked to 0..31 to match Java's `count & 31` for 32-bit ints.
+-- is masked to 0..31 with `bitAnd 31`, exactly Java's `count & 31` for 32-bit
+-- ints (a negative count maps to its unsigned low five bits: -1 -> 31; `mod`
+-- would keep the sign and yield 0.5 for shl(1, -1)).
 
 -- Logical/arithmetic LEFT shift, 32-bit  (Java: a << n).
 -- PRECISION-SAFE: drop the bits that would shift out past bit 31 BEFORE
@@ -68,7 +70,7 @@ end u8
 -- A naive u32(a * 2^n) loses low bits when a is large and n is large.
 function shl a, n
    local m
-   put (n mod 32) into n
+   put (n bitAnd 31) into n
    put u32(a) into a
    put (2 ^ (32 - n)) into m         -- modulus discards the out-shifted high bits
    return ((a mod m) * (2 ^ n))      -- result is already in [0, 2^32)
@@ -77,7 +79,7 @@ end shl
 -- UNSIGNED right shift  (Java: a >>> n). Operand treated as unsigned 32-bit.
 -- Replaces the PHP shims uRShift() and sdvig3().
 function uShr a, n
-   put (n mod 32) into n
+   put (n bitAnd 31) into n
    return (u32(a) div (2 ^ n))
 end uShr
 
@@ -85,7 +87,7 @@ end uShr
 -- Returns the unsigned 32-bit BIT-PATTERN of the result (i.e. sign-extended).
 function aShr a, n
    local d
-   put (n mod 32) into n
+   put (n bitAnd 31) into n
    put u32(a) into a
    put (2 ^ n) into d
    if a < kMaxInt32 then

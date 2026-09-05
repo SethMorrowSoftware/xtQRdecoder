@@ -7,10 +7,15 @@
 -- version.lc - QR Version/EC-block tables (v1-40). Spec section 8.5 (largest table).
 -- Port of ZXing Qrcode\Decoder\Version. Requires: qrCompat.lc, errorCorrectionLevel.lc.
 --
--- The table below was GENERATED from the ZXing data and independently verified:
---   * every version x level total codewords matches the ISO/IEC 18004 totals
---     (160/160 checks), and
---   * the 34 version-info words regenerate from BCH gen 0x1F25.
+-- The table below was GENERATED from the ZXing data and is re-verified by a
+-- COMMITTED oracle, tools/verify_tables.py (run in CI): every row is diffed
+-- field by field against ZXing's Version.java data, every version x level
+-- total matches the ISO/IEC 18004 codeword totals derived from first
+-- principles, and the 34 version-info words regenerate from BCH gen 0x1F25.
+-- (2026-09: rows 39 and 40 carried wrong alignment-centre lists - eight
+-- entries, two of them beyond the symbol - so v39/v40 symbols threw
+-- "BitMatrix: region must fit inside matrix"; found by a synthetic-fixture
+-- corpus generated with an independent encoder and fixed from ZXing's table.)
 -- Each row (delimited by "~"):  ver ~ alignCenters ~ Lblocks ~ Mblocks ~ Qblocks ~ Hblocks
 -- alignCenters: comma list (empty for v1).
 -- a "blocks" field is "ecw/count,data[/count,data]"  (ecw = EC codewords/block).
@@ -76,12 +81,23 @@ function ver_parseBlocks pBlk
    return tOut
 end ver_parseBlocks
 
+-- ZXing Version.getVersionForNumber throws for anything outside 1..40; the
+-- table lookups below would otherwise hand back empty fields that flow into
+-- arithmetic far from the cause.
+command ver_checkNumber pVersion
+   if (pVersion is not an integer) or (pVersion < 1) or (pVersion > 40) then
+      throw "Format: version " & pVersion & " out of range 1..40"
+   end if
+end ver_checkNumber
+
 function ver_getDimensionForVersion pVersion
+   ver_checkNumber pVersion
    ver_ensure
    return sVer[pVersion]["dimension"]
 end ver_getDimensionForVersion
 
 function ver_getAlignmentCenters pVersion
+   ver_checkNumber pVersion
    ver_ensure
    return sVer[pVersion]["align"]      -- comma list (may be empty)
 end ver_getAlignmentCenters
@@ -89,6 +105,7 @@ end ver_getAlignmentCenters
 -- EC codewords per block, for version + EC ordinal
 function ver_getEcCodewordsPerBlock pVersion, pEcOrdinal
    local tEC
+   ver_checkNumber pVersion
    ver_ensure
    put sVer[pVersion]["ec"][pEcOrdinal] into tEC
    set the itemDelimiter to ";"
@@ -98,6 +115,7 @@ end ver_getEcCodewordsPerBlock
 -- returns the block layout as lines "count,dataCodewords" for version+ordinal
 function ver_getEcBlocks pVersion, pEcOrdinal
    local tEC, tOut, i
+   ver_checkNumber pVersion
    ver_ensure
    put sVer[pVersion]["ec"][pEcOrdinal] into tEC
    set the itemDelimiter to ";"
@@ -124,10 +142,32 @@ function ver_getTotalDataCodewords pVersion, pEcOrdinal
    return tSum
 end ver_getTotalDataCodewords
 
--- version implied by a sampled dimension: (dimension - 17) / 4
+-- total codewords (data + EC) in a symbol of this version; the same for every
+-- EC level, so the L layout (ordinal 0) is summed. ZXing Version.getTotalCodewords.
+function ver_getTotalCodewords pVersion
+   local tBlocks, tLn, tSum, cnt, dat, tEcw
+   put ver_getEcCodewordsPerBlock(pVersion, 0) into tEcw
+   put ver_getEcBlocks(pVersion, 0) into tBlocks
+   put 0 into tSum
+   set the lineDelimiter to lf
+   repeat for each line tLn in tBlocks
+      if tLn is empty then next repeat
+      set the itemDelimiter to comma
+      put (item 1 of tLn) into cnt
+      put (item 2 of tLn) into dat
+      add (cnt * (dat + tEcw)) to tSum
+   end repeat
+   return tSum
+end ver_getTotalCodewords
+
+-- version implied by a sampled dimension: (dimension - 17) / 4; a dimension
+-- outside 21..177 is a Format error, as in ZXing (getVersionForNumber throws).
 function ver_getProvisionalVersionForDimension pDimension
+   local tVer
    if ((pDimension mod 4) <> 1) then throw "Format: dimension not %4==1"
-   return ((pDimension - 17) div 4)
+   put ((pDimension - 17) div 4) into tVer
+   ver_checkNumber tVer
+   return tVer
 end ver_getProvisionalVersionForDimension
 
 -- decode the 18-bit version information (Hamming-nearest within <=3 bits)
@@ -196,8 +236,8 @@ function ver_tableData
    put "36~6,24,50,76,102,128,154~30/6,121/14,122~28/6,47/34,48~30/46,24/10,25~30/2,15/64,16" & lf after t
    put "37~6,28,54,80,106,132,158~30/17,122/4,123~28/29,46/14,47~30/49,24/10,25~30/24,15/46,16" & lf after t
    put "38~6,32,58,84,110,136,162~30/4,122/18,123~28/13,46/32,47~30/48,24/14,25~30/42,15/32,16" & lf after t
-   put "39~6,26,52,78,104,130,156,182~30/20,117/4,118~28/40,47/7,48~30/43,24/22,25~30/10,15/67,16" & lf after t
-   put "40~6,30,58,86,114,142,170,198~30/19,118/6,119~28/18,47/31,48~30/34,24/34,25~30/20,15/61,16" & lf after t
+   put "39~6,26,54,82,110,138,166~30/20,117/4,118~28/40,47/7,48~30/43,24/22,25~30/10,15/67,16" & lf after t
+   put "40~6,30,58,86,114,142,170~30/19,118/6,119~28/18,47/31,48~30/34,24/34,25~30/20,15/61,16" & lf after t
    return t
 end ver_tableData
 ?>

@@ -22,8 +22,8 @@
 function bmp_new pBits
    local p, tDim
    put bitMatrix_getHeight(pBits) into tDim
-   if (tDim < 21) or ((tDim bitAnd 3) <> 1) then
-      throw "Format: dimension " & tDim & " is not 4k+1 / >=21"
+   if (tDim < 21) or (tDim > 177) or ((tDim bitAnd 3) <> 1) then
+      throw "Format: dimension " & tDim & " is not 4k+1 in 21..177"
    end if
    put pBits into p["bits"]
    put tDim into p["dimension"]
@@ -97,16 +97,12 @@ function bmp_readVersion pParser
    if provVer <= 6 then
       return provVer
    end if
-   -- v7+: read the two 18-bit version-info blocks (bottom-left + top-right)
-   put 0 into versionBits
-   repeat with i = 5 down to 0
-      repeat with j = tDim - 9 down to tDim - 11
-         put bmp_copyBit(pParser, i, j, versionBits) into versionBits
-      end repeat
-   end repeat
-   put ver_decodeVersionInformation(versionBits) into tVer
-   if tVer is not empty then return tVer
-   -- second copy (transpose of the read coordinates)
+   -- v7+: read the two 18-bit version-info blocks. ZXing reads the TOP-RIGHT
+   -- block first (x = dim-9..dim-11, y = 5..0), then the bottom-left copy, and
+   -- accepts a decoded version only if its dimension is the sampled dimension -
+   -- a damaged block that decodes (within 3 bits) to ANOTHER version would
+   -- otherwise drive the unmask/function-pattern/codeword steps with the wrong
+   -- geometry (ZXing BitMatrixParser.readVersion).
    put 0 into versionBits
    repeat with j = 5 down to 0
       repeat with i = tDim - 9 down to tDim - 11
@@ -114,7 +110,16 @@ function bmp_readVersion pParser
       end repeat
    end repeat
    put ver_decodeVersionInformation(versionBits) into tVer
-   if tVer is not empty then return tVer
+   if (tVer is not empty) and (ver_getDimensionForVersion(tVer) = tDim) then return tVer
+   -- second copy (bottom-left: x = 5..0, y = dim-9..dim-11)
+   put 0 into versionBits
+   repeat with i = 5 down to 0
+      repeat with j = tDim - 9 down to tDim - 11
+         put bmp_copyBit(pParser, i, j, versionBits) into versionBits
+      end repeat
+   end repeat
+   put ver_decodeVersionInformation(versionBits) into tVer
+   if (tVer is not empty) and (ver_getDimensionForVersion(tVer) = tDim) then return tVer
    throw "Format: could not read version"
 end bmp_readVersion
 
@@ -204,6 +209,10 @@ function bmp_readCodewords pParser, pVersion
       put not readingUp into readingUp
       subtract 2 from col
    end repeat
+   -- ZXing/PHP: the zig-zag must yield exactly the version's codeword total
+   if idx <> ver_getTotalCodewords(pVersion) then
+      throw "Format: read " & idx & " codewords, expected " & ver_getTotalCodewords(pVersion)
+   end if
    return tRes
 end bmp_readCodewords
 ?>

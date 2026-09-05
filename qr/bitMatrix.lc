@@ -49,8 +49,16 @@ function bitMatrix_getHeight pObj
    return pObj["height"]
 end bitMatrix_getHeight
 
+-- A read outside the matrix answers false (white). ZXing/PHP behave that way
+-- for the reads the detector actually makes (padding bits are zero; PHP's get
+-- auto-vivifies a missing word to 0), and the finder's cross-check loops walk
+-- one pixel past every edge, so the guard makes those reads independent of
+-- whether the engine short-circuits `and` or errors on arithmetic over empty.
 function bitMatrix_get pObj, x, y
    local tOffset
+   if (x < 0) or (y < 0) or (x >= pObj["width"]) or (y >= pObj["height"]) then
+      return false
+   end if
    put (y * pObj["rowSize"] + (x div 32)) into tOffset
    return ((uShr(pObj["bits"][tOffset], (x bitAnd 31)) bitAnd 1) <> 0)
 end bitMatrix_get
@@ -235,4 +243,44 @@ end bitMatrix_getBottomRightOnBit
 function bitMatrix_clone pObj
    return pObj          -- xTalk deep-copies arrays on return
 end bitMatrix_clone
+
+-- the transpose of a SQUARE matrix, as a new matrix: (x,y) -> (y,x). This is
+-- ZXing BitMatrixParser.mirror() (which flips the bits across the diagonal in
+-- place); the decoder uses it for the mirrored-symbol retry.
+function bitMatrix_transposed pObj
+   local tW, tH, tOut, x, y
+   put pObj["width"] into tW
+   put pObj["height"] into tH
+   if tW <> tH then throw "BitMatrix: transpose needs a square matrix"
+   put bitMatrix_new(tW, tH) into tOut
+   repeat with y = 0 to (tH - 1)
+      repeat with x = 0 to (tW - 1)
+         if bitMatrix_get(pObj, x, y) then bitMatrix_set tOut, y, x
+      end repeat
+   end repeat
+   return tOut
+end bitMatrix_transposed
+
+-- invert every module in place: ZXing BitMatrix.flip() with no arguments -
+-- complement every word, then clear the padding bits beyond the logical width
+-- in the last word of each row so they stay zero. Used for the ALSO_INVERTED
+-- retry (a white-on-black symbol).
+command bitMatrix_flipAll @pObj
+   local tBits, tCount, k, tRem, tMask, y, tOff, rs
+   put pObj["bits"] into tBits
+   put the number of elements of tBits into tCount
+   repeat with k = 0 to (tCount - 1)
+      put (4294967295 - tBits[k]) into tBits[k]    -- 0xFFFFFFFF - w == bitNot w within [0, 2^32)
+   end repeat
+   put (pObj["width"] mod 32) into tRem
+   if tRem <> 0 then
+      put pObj["rowSize"] into rs
+      put (shl(1, tRem) - 1) into tMask
+      repeat with y = 0 to (pObj["height"] - 1)
+         put ((y * rs) + rs - 1) into tOff
+         put (tBits[tOff] bitAnd tMask) into tBits[tOff]
+      end repeat
+   end if
+   put tBits into pObj["bits"]
+end bitMatrix_flipAll
 ?>

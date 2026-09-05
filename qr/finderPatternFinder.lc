@@ -24,7 +24,13 @@
 --  * Out-of-range bitMatrix_get reads return false harmlessly, so the guarded
 --    `(i >= 0) and bitMatrix_get(...)` conditions are safe whether or not the
 --    engine short-circuits `and`.
---  * CENTER_QUORUM=2, MIN_SKIP=3, MAX_MODULES=57 are inlined as literals.
+--  * CENTER_QUORUM=2, MIN_SKIP=3, MAX_MODULES=97 and
+--    MAX_FINDER_PATTERN_CANDIDATES=25 are inlined as literals.
+--  * Since 2026-09 the candidate SELECTION follows current ZXing Java (the
+--    2020+ isosceles-right-triangle scoring; every candidate diagonal-checked;
+--    MAX_MODULES 97; row skip 2 after a confirmed centre) rather than the
+--    2013-era PHP port. Detection outcomes are compared against ZXing itself
+--    on a synthetic corpus (tools/run_synthetic.py).
 -- =====================================================================
 
 -- is key pKey present in the hints array pHints? Uses only proven constructs:
@@ -52,6 +58,26 @@ function fpf_foundPatternCross pSC, pMaxVariance
            (abs(tModuleSize - pSC[3]) < tMV) and \
            (abs(tModuleSize - pSC[4]) < tMV))
 end fpf_foundPatternCross
+
+-- the 1:1:3:1:1 test with the looser tolerance the diagonal check uses
+-- (ZXing foundPatternDiagonal: maxVariance = moduleSize / 1.333)
+function fpf_foundPatternDiagonal pSC
+   local tTotal, i, tCount, tModuleSize, tMV
+   put 0 into tTotal
+   repeat with i = 0 to 4
+      put pSC[i] into tCount
+      if tCount = 0 then return false
+      add tCount to tTotal
+   end repeat
+   if tTotal < 7 then return false
+   put (tTotal / 7) into tModuleSize
+   put (tModuleSize / 1.333) into tMV
+   return ((abs(tModuleSize - pSC[0]) < tMV) and \
+           (abs(tModuleSize - pSC[1]) < tMV) and \
+           (abs((3 * tModuleSize) - pSC[2]) < (3 * tMV)) and \
+           (abs(tModuleSize - pSC[3]) < tMV) and \
+           (abs(tModuleSize - pSC[4]) < tMV))
+end fpf_foundPatternDiagonal
 
 -- centre of a run given the end position (spec section 8.4)
 function fpf_centerFromEnd pSC, pEnd
@@ -165,55 +191,57 @@ function fpf_crossCheckHorizontal pImg, pStartJ, pCenterI, pMaxCount, pOrigTotal
    return empty
 end fpf_crossCheckHorizontal
 
--- diagonal cross-check; returns true/false (used only in PURE_BARCODE mode)
-function fpf_crossCheckDiagonal pImg, pStartI, pCenterJ, pMaxCount, pOrigTotal
-   local tSC, i, tMaxI, tMaxJ, tTotal
+-- diagonal cross-check (ZXing FinderPatternFinder.crossCheckDiagonal, 3.4+):
+-- walk up-left and down-right from the centre counting the 1:1:3:1:1 run, and
+-- test it with the looser diagonal tolerance. Run for EVERY candidate (the
+-- older code did it only in PURE_BARCODE mode); a read outside the matrix is
+-- false, so the coordinate guards below match Java's exactly.
+function fpf_crossCheckDiagonal pImg, pCenterI, pCenterJ
+   local tSC, i, tMaxI, tMaxJ
    put 0 into tSC[0]
    put 0 into tSC[1]
    put 0 into tSC[2]
    put 0 into tSC[3]
    put 0 into tSC[4]
    put 0 into i
-   repeat while ((pStartI >= i) and (pCenterJ >= i) and bitMatrix_get(pImg, (pCenterJ - i), (pStartI - i)))
+   repeat while (pCenterI >= i) and (pCenterJ >= i) and bitMatrix_get(pImg, (pCenterJ - i), (pCenterI - i))
       add 1 to tSC[2]
       add 1 to i
    end repeat
-   if (pStartI < i) or (pCenterJ < i) then return false
-   repeat while ((pStartI >= i) and (pCenterJ >= i) and (not bitMatrix_get(pImg, (pCenterJ - i), (pStartI - i))) and (tSC[1] <= pMaxCount))
+   if tSC[2] = 0 then return false
+   repeat while (pCenterI >= i) and (pCenterJ >= i) and (not bitMatrix_get(pImg, (pCenterJ - i), (pCenterI - i)))
       add 1 to tSC[1]
       add 1 to i
    end repeat
-   if (pStartI < i) or (pCenterJ < i) or (tSC[1] > pMaxCount) then return false
-   repeat while ((pStartI >= i) and (pCenterJ >= i) and bitMatrix_get(pImg, (pCenterJ - i), (pStartI - i)) and (tSC[0] <= pMaxCount))
+   if tSC[1] = 0 then return false
+   repeat while (pCenterI >= i) and (pCenterJ >= i) and bitMatrix_get(pImg, (pCenterJ - i), (pCenterI - i))
       add 1 to tSC[0]
       add 1 to i
    end repeat
-   if tSC[0] > pMaxCount then return false
+   if tSC[0] = 0 then return false
    put bitMatrix_getHeight(pImg) into tMaxI
    put bitMatrix_getWidth(pImg) into tMaxJ
    put 1 into i
-   repeat while (((pStartI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and bitMatrix_get(pImg, (pCenterJ + i), (pStartI + i)))
+   repeat while ((pCenterI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and bitMatrix_get(pImg, (pCenterJ + i), (pCenterI + i))
       add 1 to tSC[2]
       add 1 to i
    end repeat
-   if ((pStartI + i) >= tMaxI) or ((pCenterJ + i) >= tMaxJ) then return false
-   repeat while (((pStartI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and (not bitMatrix_get(pImg, (pCenterJ + i), (pStartI + i))) and (tSC[3] < pMaxCount))
+   repeat while ((pCenterI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and (not bitMatrix_get(pImg, (pCenterJ + i), (pCenterI + i)))
       add 1 to tSC[3]
       add 1 to i
    end repeat
-   if ((pStartI + i) >= tMaxI) or ((pCenterJ + i) >= tMaxJ) or (tSC[3] >= pMaxCount) then return false
-   repeat while (((pStartI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and bitMatrix_get(pImg, (pCenterJ + i), (pStartI + i)) and (tSC[4] < pMaxCount))
+   if tSC[3] = 0 then return false
+   repeat while ((pCenterI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and bitMatrix_get(pImg, (pCenterJ + i), (pCenterI + i))
       add 1 to tSC[4]
       add 1 to i
    end repeat
-   if tSC[4] >= pMaxCount then return false
-   put (tSC[0] + tSC[1] + tSC[2] + tSC[3] + tSC[4]) into tTotal
-   return ((abs(tTotal - pOrigTotal) < (2 * pOrigTotal)) and fpf_foundPatternCross(tSC, 0.5))
+   if tSC[4] = 0 then return false
+   return fpf_foundPatternDiagonal(tSC)
 end fpf_crossCheckDiagonal
 
 -- a horizontal candidate: cross-check, then accumulate/merge into pF["pat"].
 -- rConfirmed (output) = true iff a finder candidate was confirmed this call.
-command fpf_handlePossibleCenter @pFinder, pSC, pRowI, pEndCol, pPure, @rConfirmed
+command fpf_handlePossibleCenter @pFinder, pSC, pRowI, pEndCol, @rConfirmed
    local tTotal, tCenterJ, tCenterI, tEst, tFound, tIdx
    local tOldX, tOldY, tOldMs, tOldCt, tMSDiff, tCC
    put false into rConfirmed
@@ -223,10 +251,9 @@ command fpf_handlePossibleCenter @pFinder, pSC, pRowI, pEndCol, pPure, @rConfirm
    if tCenterI is empty then exit fpf_handlePossibleCenter
    put fpf_crossCheckHorizontal(pFinder["bits"], trunc(tCenterJ), trunc(tCenterI), pSC[2], tTotal) into tCenterJ
    if tCenterJ is empty then exit fpf_handlePossibleCenter
-   if pPure then
-      if not fpf_crossCheckDiagonal(pFinder["bits"], trunc(tCenterI), trunc(tCenterJ), pSC[2], tTotal) then
-         exit fpf_handlePossibleCenter
-      end if
+   -- ZXing: re-cross-check along the diagonal for every candidate
+   if not fpf_crossCheckDiagonal(pFinder["bits"], trunc(tCenterI), trunc(tCenterJ)) then
+      exit fpf_handlePossibleCenter
    end if
    put (tTotal / 7) into tEst
    put false into tFound
@@ -306,16 +333,15 @@ end fpf_findRowSkip
 
 -- stable insertion sort by FurthestFromAverageComparator (largest |dev| first)
 -- PHP comparator: dA=|c2-avg|, dB=|c1-avg|; -1 if dA<dB. usort places a before b
--- when cmp(a,b)<0, i.e. when |a-avg| > |b-avg|. So this orders DESC by |dev|.
-command fpf_sortFurthest @pList, pCountN, pAvg
-   local i, j, tKey, tKeyDev, tCmpDev
+-- stable insertion sort of a 0-based list by estimated module size, ascending
+-- (ZXing EstimatedModuleComparator; Java's Collections.sort is stable too)
+command fpf_sortByModuleSize @pList, pCountN
+   local i, j, tKey
    repeat with i = 1 to (pCountN - 1)
       put pList[i] into tKey
-      put abs(tKey["ms"] - pAvg) into tKeyDev
       put (i - 1) into j
       repeat while j >= 0
-         put abs(pList[j]["ms"] - pAvg) into tCmpDev
-         if tCmpDev < tKeyDev then
+         if pList[j]["ms"] > tKey["ms"] then
             put pList[j] into pList[j + 1]
             subtract 1 from j
          else
@@ -324,100 +350,102 @@ command fpf_sortFurthest @pList, pCountN, pAvg
       end repeat
       put tKey into pList[j + 1]
    end repeat
-end fpf_sortFurthest
+end fpf_sortByModuleSize
 
--- stable insertion sort by CenterComparator (count DESC, then |dev| ASC)
-command fpf_sortCenter @pList, pCountN, pAvg
-   local i, j, tKey, tKeyDev, tKeyCt, tCmpDev, tCmpCt, tAfter
-   repeat with i = 1 to (pCountN - 1)
-      put pList[i] into tKey
-      put tKey["ct"] into tKeyCt
-      put abs(tKey["ms"] - pAvg) into tKeyDev
-      put (i - 1) into j
-      repeat while j >= 0
-         put pList[j]["ct"] into tCmpCt
-         put abs(pList[j]["ms"] - pAvg) into tCmpDev
-         -- does pList[j] sort AFTER tKey (so we shift it right)?
-         if tCmpCt = tKeyCt then
-            put (tCmpDev > tKeyDev) into tAfter
-         else
-            put (tCmpCt < tKeyCt) into tAfter
-         end if
-         if tAfter then
-            put pList[j] into pList[j + 1]
-            subtract 1 from j
-         else
-            exit repeat
-         end if
-      end repeat
-      put tKey into pList[j + 1]
-   end repeat
-end fpf_sortCenter
+function fpf_squaredDistance pA, pB
+   local dx, dy
+   put (pA["x"] - pB["x"]) into dx
+   put (pA["y"] - pB["y"]) into dy
+   return ((dx * dx) + (dy * dy))
+end fpf_squaredDistance
 
--- remove element pIdx from a 0-based list of pCountN elements, shifting down
-command fpf_removeAt @pList, pCountN, pIdx
-   local k
-   repeat with k = pIdx to (pCountN - 2)
-      put pList[k + 1] into pList[k]
-   end repeat
-end fpf_removeAt
-
--- pick the best 3 finder candidates; throws NotFound if fewer than 3 exist
+-- pick the best 3 finder candidates (ZXing FinderPatternFinder.selectBestPatterns,
+-- the 2020+ algorithm): once three centres are confirmed - or the list is
+-- large - drop the unconfirmed ones; sort by module size; then score every
+-- triple of similar module size (within 1.4x) by how far its squared side
+-- lengths a <= b <= c are from an isosceles right triangle, |c-2b| + |c-2a|,
+-- and keep the least distorted. Throws NotFound if no such triple exists.
+-- (The pre-2020 heuristic the PHP port carries - drop module-size outliers,
+-- then sort by confirmation count - discarded the three TRUE finders of a
+-- clean v30 symbol as outliers next to four accidental 1:1:3:1:1 runs in its
+-- data region; found by the synthetic corpus, decoded fine by current ZXing.)
 function fpf_selectBestPatterns pFinder
-   local tCountN, k, tList, tTotal, tSquare, tAvg, tStdDev, tLimit, i, tOut
+   local tCountN, k, tList, tN, tConfirmed, tKeepAll, i, j, tOut
+   local tMinMs, tMaxMs, a, b, c, tTemp, d, tBestD, tBestI, tBestJ, tBestK, tSq0
    put pFinder["np"] into tCountN
    if tCountN < 3 then
       throw "NotFound: could not find 3 finder patterns (" & tCountN & " found)"
    end if
+   put 0 into tConfirmed
    repeat with k = 0 to (tCountN - 1)
-      put pFinder["pat"][k] into tList[k]
+      if pFinder["pat"][k]["ct"] >= 2 then add 1 to tConfirmed
    end repeat
-   if tCountN > 3 then
-      put 0 into tTotal
-      put 0 into tSquare
-      repeat with k = 0 to (tCountN - 1)
-         add tList[k]["ms"] to tTotal
-         add (tList[k]["ms"] * tList[k]["ms"]) to tSquare
+   put ((tConfirmed < 3) and (tCountN <= 25)) into tKeepAll
+   put 0 into tN
+   repeat with k = 0 to (tCountN - 1)
+      if tKeepAll or (pFinder["pat"][k]["ct"] >= 2) then
+         put pFinder["pat"][k] into tList[tN]
+         add 1 to tN
+      end if
+   end repeat
+   fpf_sortByModuleSize tList, tN
+   put -1 into tBestI
+   put 0 into tBestD
+   repeat with i = 0 to (tN - 3)
+      put tList[i]["ms"] into tMinMs
+      repeat with j = (i + 1) to (tN - 2)
+         put fpf_squaredDistance(tList[i], tList[j]) into tSq0
+         repeat with k = (j + 1) to (tN - 1)
+            put tList[k]["ms"] into tMaxMs
+            if tMaxMs > (tMinMs * 1.4) then next repeat      -- module size not similar
+            put tSq0 into a
+            put fpf_squaredDistance(tList[j], tList[k]) into b
+            put fpf_squaredDistance(tList[i], tList[k]) into c
+            -- sort a <= b <= c
+            if a > b then
+               put a into tTemp
+               put b into a
+               put tTemp into b
+            end if
+            if b > c then
+               put b into tTemp
+               put c into b
+               put tTemp into c
+            end if
+            if a > b then
+               put a into tTemp
+               put b into a
+               put tTemp into b
+            end if
+            put (abs(c - (2 * b)) + abs(c - (2 * a))) into d
+            if (tBestI < 0) or (d < tBestD) then
+               put d into tBestD
+               put i into tBestI
+               put j into tBestJ
+               put k into tBestK
+            end if
+         end repeat
       end repeat
-      put (tTotal / tCountN) into tAvg
-      put sqrt((tSquare / tCountN) - (tAvg * tAvg)) into tStdDev
-      fpf_sortFurthest tList, tCountN, tAvg
-      put max((0.2 * tAvg), tStdDev) into tLimit
-      put 0 into i
-      repeat while (i < tCountN) and (tCountN > 3)
-         if abs(tList[i]["ms"] - tAvg) > tLimit then
-            fpf_removeAt tList, tCountN, i
-            subtract 1 from tCountN
-            subtract 1 from i
-         end if
-         add 1 to i
-      end repeat
+   end repeat
+   if tBestI < 0 then
+      throw "NotFound: no three finder patterns form a right isosceles triangle (" & tN & " candidates)"
    end if
-   if tCountN > 3 then
-      put 0 into tTotal
-      repeat with k = 0 to (tCountN - 1)
-         add tList[k]["ms"] to tTotal
-      end repeat
-      put (tTotal / tCountN) into tAvg
-      fpf_sortCenter tList, tCountN, tAvg
-   end if
-   put tList[0] into tOut[0]
-   put tList[1] into tOut[1]
-   put tList[2] into tOut[2]
+   put tList[tBestI] into tOut[0]
+   put tList[tBestJ] into tOut[1]
+   put tList[tBestK] into tOut[2]
    return tOut
 end fpf_selectBestPatterns
 
 -- main entry: scan the image, returns {["bl"],["tl"],["tr"]} (ordered points)
 function fpf_find pImg, pHints
-   local tTryHarder, tPure, tNrSkip, tAllowedDev, tMaxVar
+   local tTryHarder, tNrSkip, tAllowedDev, tMaxVar
    local tMaxI, tMaxJ, tISkip, tDone, i, j, tSC, tCurState, tEndRow
    local tConfirmed, tRowSkip, tInfo, tPats, tFinder
    -- hints: read each key directly. A missing key (or a non-array pHints)
    -- yields empty in xTalk, so we just test the read value -- no need for
    -- "is an array" / "is among the keys of" (both unexercised on this engine).
    -- fpf_hintPresent() centralises the "present?" test using only proven constructs.
-   put (pHints["TRY_HARDER"] is true) into tTryHarder
-   put (pHints["PURE_BARCODE"] is true) into tPure
+   put qr_hintFlag(pHints, "TRY_HARDER") into tTryHarder
    if fpf_hintPresent(pHints, "NR_ALLOW_SKIP_ROWS") then
       put pHints["NR_ALLOW_SKIP_ROWS"] into tNrSkip
    else if tTryHarder then
@@ -437,9 +465,10 @@ function fpf_find pImg, pHints
    end if
    put bitMatrix_getHeight(pImg) into tMaxI
    put bitMatrix_getWidth(pImg) into tMaxJ
-   -- iSkip = (3*maxI) / (4*MAX_MODULES). MAX_MODULES=57, so 4*57=228 (inlined as
-   -- a literal: the engine dislikes a literal*literal product as a div operand).
-   put ((3 * tMaxI) div 228) into tISkip
+   -- iSkip = (3*maxI) / (4*MAX_MODULES). MAX_MODULES=97 (ZXing: "support up to
+   -- version 20"), so 4*97=388 (inlined as a literal: the engine dislikes a
+   -- literal*literal product as a div operand).
+   put ((3 * tMaxI) div 388) into tISkip
    if (tISkip < 3) or tTryHarder then put 3 into tISkip
    put false into tDone
 
@@ -466,9 +495,9 @@ function fpf_find pImg, pHints
             if (tCurState bitAnd 1) = 0 then
                if tCurState = 4 then
                   if fpf_foundPatternCross(tSC, tMaxVar) then
-                     fpf_handlePossibleCenter tFinder, tSC, i, j, tPure, tConfirmed
+                     fpf_handlePossibleCenter tFinder, tSC, i, j, tConfirmed
                      if tConfirmed then
-                        put 3 into tISkip
+                        put 2 into tISkip                 -- ZXing: iSkip = 2
                         if tFinder["skip"] then
                            put fpf_haveMultiplyConfirmedCenters(tFinder, tAllowedDev) into tDone
                         else
@@ -509,7 +538,7 @@ function fpf_find pImg, pHints
          end if
       end repeat
       if fpf_foundPatternCross(tSC, tMaxVar) then
-         fpf_handlePossibleCenter tFinder, tSC, i, tMaxJ, tPure, tConfirmed
+         fpf_handlePossibleCenter tFinder, tSC, i, tMaxJ, tConfirmed
          if tConfirmed then
             put tSC[0] into tISkip
             if tFinder["skip"] then
