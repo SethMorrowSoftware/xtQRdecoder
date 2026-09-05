@@ -4,14 +4,34 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- decodedBitStreamParser.lc — bits -> text per encoding mode. Spec §8.5.
+-- decodedBitStreamParser.lc - bits -> text per encoding mode. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\DecodedBitStreamParser.
 -- Requires: qrCompat.lc, bitSource.lc, mode.lc, characterSetECI.lc.
 --
 -- dbsp_decode(bytes, version, ecOrdinal) -> array result:
---   ["text"]   decoded text
---   ["bytes"]  raw decoded byte string (concatenation of byte segments)
---   ["error"]  set + result empty on FormatException
+--   ["text"]     decoded text
+--   ["bytes"]    raw decoded byte string (concatenation of BYTE segments)
+--   ["error"]    set + result empty on a Format error
+--   ["charset"]  the charset the BYTE segments were decoded with ("UTF-8",
+--                "ISO-8859-1", "UTF-16", or the ECI's name), when any BYTE segment
+--   ["fnc1"]     "first" / "second" when an FNC1 mode indicator was present
+--   ["symbologyModifier"]  ZXing's 1..6 code (FNC1 kind x ECI presence)
+--   ["structuredAppendSeq"], ["structuredAppendParity"]  when present (raw
+--                8-bit values; seq = index*16 + (total-1) per ISO/IEC 18004)
+--
+-- CHARSET SELECTION (ZXing DecodedBitStreamParser.decodeByteSegment): a BYTE
+-- segment is decoded with the charset named by the current ECI; with NO ECI
+-- the bytes are GUESSED exactly as ZXing's StringUtils.guessCharset does on a
+-- platform without Shift_JIS: UTF-16 by BOM, UTF-8 when the bytes are valid
+-- UTF-8 and carry a BOM or at least one multi-byte character, else ISO-8859-1.
+-- (Until 2026-09 the port always used ISO-8859-1 without an ECI, so every
+-- UTF-8 payload from a phone-generated code - accents, emoji - came back as
+-- mojibake; found by the synthetic corpus and confirmed against ZXing.)
+--
+-- PORTABILITY: the byte decoders are hand-rolled (no textDecode): ISO-8859-1
+-- is byte = codepoint; UTF-8 and UTF-16 are small explicit decoders. Note that
+-- textDecode(...,"UTF-8") does NOT throw on malformed input on OXT (it
+-- substitutes U+FFFD), so it could never have served as a validity test.
 --
 -- DESIGN NOTE (important): the bit source is a SCRIPT-LOCAL (sSrc) shared by
 -- all handlers in this file, NOT a passed parameter. This guarantees that each
@@ -20,17 +40,24 @@
 -- luck (the bits after the mode nibble read as TERMINATOR); a multi-segment
 -- input such as ECI+BYTE exposed the misalignment. Script-locals + command-by-
 -- reference are both already proven on the target engine, so this is the
--- highest-confidence design. (Decode is sequential per request — not reentrant,
+-- highest-confidence design. (Decode is sequential per request - not reentrant,
 -- which is fine for server use.)
 --
--- Modes fully supported: NUMERIC, ALPHANUMERIC, BYTE (ISO-8859-1/UTF-8/ASCII),
---   ECI (charset switch), TERMINATOR, FNC1, STRUCTURED_APPEND (skipped).
--- KANJI / HANZI raise the documented §8.7 limitation (no native Shift-JIS/
---   GB2312 in xTalk); the common case is fully covered.
+-- Modes fully supported: NUMERIC, ALPHANUMERIC, BYTE (ISO-8859-1 / UTF-8 /
+--   UTF-16, plus any ECI naming one of those), ECI, TERMINATOR, FNC1 (first and
+--   second position; in an alphanumeric segment "%%" is a literal "%" and a
+--   lone "%" is the GS separator), STRUCTURED_APPEND (sequence + parity).
+-- KANJI / HANZI raise the documented section 8.7 limitation (no Shift-JIS /
+--   GB2312 tables in this build). A BYTE segment under an ECI naming a charset
+--   this build cannot decode (Shift_JIS, GB2312, Big5, Cp125x, ...) keeps the
+--   raw bytes in ["bytes"], maps them byte-for-codepoint into ["text"] and
+--   reports the charset in ["charset"] so a caller can tell. An UNKNOWN ECI
+--   value is a Format error, as in ZXing and the PHP port.
 -- =====================================================================
 
 constant kAlphanumChars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
 constant kDigits = "0123456789"
+constant kGroupSeparator = 29    -- ASCII GS: the FNC1 field separator
 
 local sSrc      -- the shared BitSource for the current decode
 
@@ -42,11 +69,18 @@ end dbsp_read
 
 -- main entry. pBytes is a 0-based dense array of codeword bytes.
 function dbsp_decode pBytes, pVersion, pEcOrdinal
-   local tResult, tRaw, tText, tMode, tBits, tCharset, tSeg, tByteRes, e
+   local tResult, tRaw, tText, tMode, tBits, tCharset, tSeg, tByteRes, e, tErr
+   local tFc1, tFnc1Kind, tHasEci, tUsedCharset, tSaSeq, tSaParity, tHasSa
    put bitSource_new(pBytes) into sSrc
    put empty into tText
    put empty into tRaw
-   put "ISO-8859-1" into tCharset       -- default charset until an ECI says otherwise
+   put empty into tCharset        -- empty = no ECI yet: guess per BYTE segment
+   put false into tFc1
+   put empty into tFnc1Kind
+   put false into tHasEci
+   put empty into tUsedCharset
+   put false into tHasSa
+   put empty into tErr
 
    try
       repeat
@@ -65,24 +99,36 @@ function dbsp_decode pBytes, pVersion, pEcOrdinal
                put tSeg after tText
                break
             case "ALPHANUMERIC"
-               put dbsp_decodeAlphanumeric(pVersion) into tSeg
+               put dbsp_decodeAlphanumeric(pVersion, tFc1) into tSeg
                put tSeg after tText
                break
             case "BYTE"
                put dbsp_decodeByte(pVersion, tCharset) into tByteRes
                put tByteRes["text"] after tText
                put tByteRes["bytes"] after tRaw
+               put tByteRes["charset"] into tUsedCharset
                break
             case "ECI"
                put dbsp_parseEci() into tCharset
+               put true into tHasEci
                break
             case "FNC1_FIRST_POSITION"
+               -- ZXing: symbology detection only; FNC1 alters alphanumeric "%"
+               put true into tFc1
+               put "first" into tFnc1Kind
+               break
             case "FNC1_SECOND_POSITION"
-               -- structural only; no characters emitted here
+               put true into tFc1
+               put "second" into tFnc1Kind
                break
             case "STRUCTURED_APPEND"
-               -- read 4 (sequence) + 4 (total) + 8 (parity) = 16 bits, ignore
-               put dbsp_read(16) into tBits
+               -- ZXing: 8-bit symbol sequence indicator + 8-bit parity
+               if bitSource_available(sSrc) < 16 then
+                  throw "Format: structured append header truncated"
+               end if
+               put dbsp_read(8) into tSaSeq
+               put dbsp_read(8) into tSaParity
+               put true into tHasSa
                break
             case "KANJI"
             case "HANZI"
@@ -92,14 +138,37 @@ function dbsp_decode pBytes, pVersion, pEcOrdinal
          end switch
       end repeat
    catch e
-      put empty into tResult
-      put e into tResult["error"]
-      return tResult
+      put e into tErr
    end try
+   if tErr is not empty then
+      -- keep the tagged contract: an untagged throw (a BitSource exhaustion,
+      -- for instance) is a Format error in ZXing's terms
+      if not ((tErr begins with "Format") or (tErr begins with "NotFound") or (tErr begins with "Checksum")) then
+         put "Format: " & tErr into tErr
+      end if
+      put empty into tResult
+      put tErr into tResult["error"]
+      return tResult
+   end if
 
    put tText into tResult["text"]
    put tRaw into tResult["bytes"]
    put empty into tResult["error"]
+   if tUsedCharset is not empty then put tUsedCharset into tResult["charset"]
+   if tFnc1Kind is not empty then put tFnc1Kind into tResult["fnc1"]
+   if tHasSa then
+      put tSaSeq into tResult["structuredAppendSeq"]
+      put tSaParity into tResult["structuredAppendParity"]
+   end if
+   -- ZXing's symbology modifier: 1 plain, 3 FNC1 first, 5 FNC1 second; +1 with an ECI
+   if tFnc1Kind is "first" then
+      put 3 into tResult["symbologyModifier"]
+   else if tFnc1Kind is "second" then
+      put 5 into tResult["symbologyModifier"]
+   else
+      put 1 into tResult["symbologyModifier"]
+   end if
+   if tHasEci then add 1 to tResult["symbologyModifier"]
    return tResult
 end dbsp_decode
 
@@ -111,15 +180,15 @@ function dbsp_decodeNumeric pVersion
    repeat while tCount >= 3
       put dbsp_read(10) into threeDigits
       if threeDigits >= 1000 then throw "Format: numeric group > 999"
-      put char (trunc(threeDigits / 100) + 1) of kDigits after tOut
-      put char ((trunc(threeDigits / 10) mod 10) + 1) of kDigits after tOut
+      put char ((threeDigits div 100) + 1) of kDigits after tOut
+      put char (((threeDigits div 10) mod 10) + 1) of kDigits after tOut
       put char ((threeDigits mod 10) + 1) of kDigits after tOut
       subtract 3 from tCount
    end repeat
    if tCount = 2 then
       put dbsp_read(7) into twoDigits
       if twoDigits >= 100 then throw "Format: numeric pair > 99"
-      put char (trunc(twoDigits / 10) + 1) of kDigits after tOut
+      put char ((twoDigits div 10) + 1) of kDigits after tOut
       put char ((twoDigits mod 10) + 1) of kDigits after tOut
    else if tCount = 1 then
       put dbsp_read(4) into oneDigit
@@ -129,63 +198,161 @@ function dbsp_decodeNumeric pVersion
    return tOut
 end dbsp_decodeNumeric
 
+-- one alphanumeric character by index; ZXing toAlphaNumericChar throws for >= 45
+-- (an 11-bit pair value 2025..2047 or a 6-bit tail 45..63 is corrupt data)
+function dbsp_alnumChar pIdx
+   if pIdx >= 45 then throw "Format: alphanumeric index " & pIdx & " out of range"
+   return char (pIdx + 1) of kAlphanumChars
+end dbsp_alnumChar
+
 -- ALPHANUMERIC: pairs (11 bits -> v/45, v%45), trailing single (6 bits).
-function dbsp_decodeAlphanumeric pVersion
-   local tCount, tOut, v
+-- In FNC1 mode (pFc1) ZXing rewrites the segment: "%%" -> "%", lone "%" -> GS.
+function dbsp_decodeAlphanumeric pVersion, pFc1
+   local tCount, tOut, v, tRes, i, n, c
    put dbsp_read(mode_charCountBits("ALPHANUMERIC", pVersion)) into tCount
    put empty into tOut
    repeat while tCount >= 2
       put dbsp_read(11) into v
-      put char (trunc(v / 45) + 1) of kAlphanumChars after tOut
-      put char ((v mod 45) + 1) of kAlphanumChars after tOut
+      put dbsp_alnumChar(v div 45) after tOut
+      put dbsp_alnumChar(v mod 45) after tOut
       subtract 2 from tCount
    end repeat
    if tCount = 1 then
       put dbsp_read(6) into v
-      put char (v + 1) of kAlphanumChars after tOut
+      put dbsp_alnumChar(v) after tOut
    end if
-   return tOut
+   if pFc1 is not true then return tOut
+   put empty into tRes
+   put the number of chars of tOut into n
+   put 1 into i
+   repeat while i <= n
+      put char i of tOut into c
+      if c = "%" then
+         if (i < n) and (char (i + 1) of tOut = "%") then
+            put "%" after tRes
+            add 2 to i
+         else
+            put numToCodepoint(kGroupSeparator) after tRes
+            add 1 to i
+         end if
+      else
+         put c after tRes
+         add 1 to i
+      end if
+   end repeat
+   return tRes
 end dbsp_decodeAlphanumeric
 
--- BYTE: `count` bytes; decode via current charset. Returns {text,bytes}.
+-- BYTE: `count` bytes; decode via the ECI charset, or guess when there is
+-- none. Returns {text, bytes, charset}.
 function dbsp_decodeByte pVersion, pCharset
-   local tCount, i, b, tBytes, tRes
+   local tCount, i, b, tBytes, tRes, cs
    put dbsp_read(mode_charCountBits("BYTE", pVersion)) into tCount
+   if bitSource_available(sSrc) < (8 * tCount) then
+      throw "Format: byte segment of " & tCount & " bytes exceeds the data"
+   end if
    put empty into tBytes
    repeat with i = 1 to tCount
       put dbsp_read(8) into b
       put numToByte(b) after tBytes
    end repeat
+   if pCharset is empty then
+      put dbsp_guessCharset(tBytes) into cs
+   else
+      put pCharset into cs
+   end if
    put tBytes into tRes["bytes"]
-   put dbsp_decodeBytes(tBytes, pCharset) into tRes["text"]
+   put cs into tRes["charset"]
+   put dbsp_decodeBytes(tBytes, cs) into tRes["text"]
    return tRes
 end dbsp_decodeByte
 
--- turn a raw byte string into text using the (limited) native charsets.
---
--- PORTABILITY: this does NOT depend on the engine's `textDecode`. On a headless
--- the xTalk engine's `textDecode` is always available, but in a freshly loaded
--- script-only stack on the IDE / standalone / mobile engines it can throw before
--- the text-encoding subsystem is initialised -- which would fail every BYTE-mode
--- QR (URLs, vCards, Wi-Fi, ...). We decode ISO-8859-1 / ASCII by direct
--- byte->codepoint mapping and UTF-8 by a small hand-rolled decoder, so the
--- library works the same on desktop, mobile, and server. (ISO-8859-1 is exactly
--- "each byte 0..255 IS its codepoint", so the mapping is lossless and never
--- throws.)
+-- turn a raw byte string into text using the charsets this build can decode.
+-- ISO-8859-1 / ASCII / anything else: direct byte->codepoint (lossless, and the
+-- raw bytes are also in ["bytes"]).
 function dbsp_decodeBytes pBytes, pCharset
    local cs
    put toUpper(pCharset) into cs
    if (cs = "UTF-8") or (cs = "UTF8") then
       return dbsp_utf8ToText(pBytes)
    end if
-   -- ISO-8859-1 / Latin-1 / ASCII / anything else: direct byte->codepoint
+   if (cs = "UTF-16") or (cs = "UTF-16BE") or (cs = "UTF16") then
+      return dbsp_utf16ToText(pBytes, false)
+   end if
+   if cs = "UTF-16LE" then
+      return dbsp_utf16ToText(pBytes, true)
+   end if
    return dbsp_latin1ToText(pBytes)
 end dbsp_decodeBytes
 
+-- ZXing StringUtils.guessCharset for a platform without Shift_JIS (ZXing
+-- itself sets canBeShiftJIS = false when that charset is unavailable):
+--   * UTF-16 when the bytes start with a UTF-16 byte-order mark;
+--   * UTF-8 when the bytes are structurally valid UTF-8 (lead/continuation
+--     bytes, no truncated sequence) AND carry a UTF-8 BOM or at least one
+--     multi-byte character;
+--   * otherwise ISO-8859-1 when no byte lies in the undefined 0x80..0x9F range;
+--   * otherwise UTF-8 if it was valid, else ISO-8859-1 (the lossless choice
+--     where ZXing would use the platform default).
+function dbsp_guessCharset pBytes
+   local n, i, v, tCanUtf8, tCanIso, tLeft, tMulti, tBom, b1, b2
+   put the number of bytes of pBytes into n
+   if n > 2 then
+      put byteToNum(byte 1 of pBytes) into b1
+      put byteToNum(byte 2 of pBytes) into b2
+      if ((b1 = 254) and (b2 = 255)) or ((b1 = 255) and (b2 = 254)) then return "UTF-16"
+   end if
+   put false into tBom
+   if n > 3 then
+      if (byteToNum(byte 1 of pBytes) = 239) and (byteToNum(byte 2 of pBytes) = 187)             and (byteToNum(byte 3 of pBytes) = 191) then
+         put true into tBom
+      end if
+   end if
+   put true into tCanUtf8
+   put true into tCanIso
+   put 0 into tLeft
+   put 0 into tMulti
+   put 1 into i
+   repeat while (i <= n) and (tCanUtf8 or tCanIso)
+      put byteToNum(byte i of pBytes) into v
+      if tCanUtf8 then
+         if tLeft > 0 then
+            if (v bitAnd 128) = 0 then
+               put false into tCanUtf8
+            else
+               subtract 1 from tLeft
+            end if
+         else if (v bitAnd 128) <> 0 then
+            if (v bitAnd 64) = 0 then
+               put false into tCanUtf8            -- a stray continuation byte
+            else
+               add 1 to tLeft
+               if (v bitAnd 32) <> 0 then
+                  add 1 to tLeft
+                  if (v bitAnd 16) <> 0 then
+                     add 1 to tLeft
+                     if (v bitAnd 8) <> 0 then put false into tCanUtf8
+                  end if
+               end if
+               add 1 to tMulti
+            end if
+         end if
+      end if
+      if tCanIso then
+         if (v > 127) and (v < 160) then put false into tCanIso
+      end if
+      add 1 to i
+   end repeat
+   if tLeft > 0 then put false into tCanUtf8      -- truncated final sequence
+   if tCanUtf8 and (tBom or (tMulti > 0)) then return "UTF-8"
+   if tCanIso then return "ISO-8859-1"
+   if tCanUtf8 then return "UTF-8"
+   return "ISO-8859-1"
+end dbsp_guessCharset
+
 -- ISO-8859-1: every byte maps directly to the codepoint of the same value
 -- (Unicode's first 256 codepoints ARE Latin-1). numToCodepoint is a core string
--- function (not the ICU/encoding library that textDecode needs), so it is
--- available in a script-only stack where textDecode is not.
+-- function, available in a script-only stack whatever the text-encoding state.
 function dbsp_latin1ToText pBytes
    local tTxt, i, n
    put the number of bytes of pBytes into n
@@ -196,56 +363,62 @@ function dbsp_latin1ToText pBytes
    return tTxt
 end dbsp_latin1ToText
 
--- Minimal UTF-8 decoder (1-4 byte sequences) -> text, no textDecode dependency.
--- Malformed bytes degrade gracefully to their Latin-1 interpretation rather than
--- throwing, so a slightly-off payload still yields readable text.
+-- Minimal UTF-8 decoder (1-4 byte sequences, RFC 3629 ranges) -> text.
+-- Malformed bytes degrade to their Latin-1 interpretation one byte at a time
+-- rather than throwing, so a slightly-off payload still yields readable text.
+-- Overlong forms (E0 80..9F, F0 80..8F), UTF-16 surrogates (ED A0..BF) and
+-- code points above U+10FFFF (F4 90..BF) are malformed and treated the same.
 function dbsp_utf8ToText pBytes
-   local tTxt, i, n, b1, b2, b3, b4, cp, tCont
+   local tTxt, i, n, b1, b2, b3, b4, cp, tOk
    put the number of bytes of pBytes into n
    put empty into tTxt
    put 1 into i
    repeat while i <= n
       put byteToNum(byte i of pBytes) into b1
+      put false into tOk
       if b1 < 128 then
          put numToCodepoint(b1) after tTxt
          add 1 to i
-      else if (b1 >= 194) and (b1 <= 223) and (i + 1 <= n) then
+         next repeat
+      end if
+      if (b1 >= 194) and (b1 <= 223) and (i + 1 <= n) then
          put byteToNum(byte (i + 1) of pBytes) into b2
          if (b2 >= 128) and (b2 <= 191) then
             put (((b1 - 192) * 64) + (b2 - 128)) into cp
             put numToCodepoint(cp) after tTxt
             add 2 to i
-         else
-            put numToCodepoint(b1) after tTxt
-            add 1 to i
+            put true into tOk
          end if
       else if (b1 >= 224) and (b1 <= 239) and (i + 2 <= n) then
          put byteToNum(byte (i + 1) of pBytes) into b2
          put byteToNum(byte (i + 2) of pBytes) into b3
          if (b2 >= 128) and (b2 <= 191) and (b3 >= 128) and (b3 <= 191) then
+            put true into tOk
+            if (b1 = 224) and (b2 < 160) then put false into tOk    -- overlong
+            if (b1 = 237) and (b2 > 159) then put false into tOk    -- surrogate
+         end if
+         if tOk then
             put (((b1 - 224) * 4096) + ((b2 - 128) * 64) + (b3 - 128)) into cp
             put numToCodepoint(cp) after tTxt
             add 3 to i
-         else
-            put numToCodepoint(b1) after tTxt
-            add 1 to i
          end if
       else if (b1 >= 240) and (b1 <= 244) and (i + 3 <= n) then
          put byteToNum(byte (i + 1) of pBytes) into b2
          put byteToNum(byte (i + 2) of pBytes) into b3
          put byteToNum(byte (i + 3) of pBytes) into b4
-         if (b2 >= 128) and (b2 <= 191) and (b3 >= 128) and (b3 <= 191) \
-               and (b4 >= 128) and (b4 <= 191) then
-            put (((b1 - 240) * 262144) + ((b2 - 128) * 4096) \
-               + ((b3 - 128) * 64) + (b4 - 128)) into cp
+         if (b2 >= 128) and (b2 <= 191) and (b3 >= 128) and (b3 <= 191)                and (b4 >= 128) and (b4 <= 191) then
+            put true into tOk
+            if (b1 = 240) and (b2 < 144) then put false into tOk    -- overlong
+            if (b1 = 244) and (b2 > 143) then put false into tOk    -- > U+10FFFF
+         end if
+         if tOk then
+            put (((b1 - 240) * 262144) + ((b2 - 128) * 4096)                + ((b3 - 128) * 64) + (b4 - 128)) into cp
             put numToCodepoint(cp) after tTxt
             add 4 to i
-         else
-            put numToCodepoint(b1) after tTxt
-            add 1 to i
          end if
-      else
-         -- continuation byte out of place, or truncated sequence: Latin-1 it
+      end if
+      if not tOk then
+         -- continuation byte out of place, truncated or malformed sequence: Latin-1 it
          put numToCodepoint(b1) after tTxt
          add 1 to i
       end if
@@ -253,9 +426,65 @@ function dbsp_utf8ToText pBytes
    return tTxt
 end dbsp_utf8ToText
 
--- ECI: parse the 1/2/3-byte ECI designator and map to a charset name.
+-- Minimal UTF-16 decoder with surrogate pairs. A byte-order mark decides the
+-- byte order (and is dropped); without one, big-endian unless pLittleEndian.
+-- A lone surrogate or an odd trailing byte becomes U+FFFD, as Java would emit.
+function dbsp_utf16ToText pBytes, pLittleEndian
+   local tTxt, i, n, b1, b2, cu, cu2, tLE
+   put the number of bytes of pBytes into n
+   put (pLittleEndian is true) into tLE
+   put 1 into i
+   if n >= 2 then
+      put byteToNum(byte 1 of pBytes) into b1
+      put byteToNum(byte 2 of pBytes) into b2
+      if (b1 = 254) and (b2 = 255) then
+         put false into tLE
+         put 3 into i
+      else if (b1 = 255) and (b2 = 254) then
+         put true into tLE
+         put 3 into i
+      end if
+   end if
+   put empty into tTxt
+   repeat while (i + 1) <= n
+      put byteToNum(byte i of pBytes) into b1
+      put byteToNum(byte (i + 1) of pBytes) into b2
+      if tLE then
+         put ((b2 * 256) + b1) into cu
+      else
+         put ((b1 * 256) + b2) into cu
+      end if
+      add 2 to i
+      if (cu >= 55296) and (cu <= 56319) then          -- high surrogate D800..DBFF
+         put 65533 into cu2
+         if (i + 1) <= n then
+            put byteToNum(byte i of pBytes) into b1
+            put byteToNum(byte (i + 1) of pBytes) into b2
+            if tLE then
+               put ((b2 * 256) + b1) into cu2
+            else
+               put ((b1 * 256) + b2) into cu2
+            end if
+         end if
+         if (cu2 >= 56320) and (cu2 <= 57343) then     -- low surrogate DC00..DFFF
+            put (65536 + ((cu - 55296) * 1024) + (cu2 - 56320)) into cu
+            add 2 to i
+         else
+            put 65533 into cu
+         end if
+      else if (cu >= 56320) and (cu <= 57343) then
+         put 65533 into cu                               -- lone low surrogate
+      end if
+      put numToCodepoint(cu) after tTxt
+   end repeat
+   if i <= n then put numToCodepoint(65533) after tTxt   -- odd trailing byte
+   return tTxt
+end dbsp_utf16ToText
+
+-- ECI: parse the 1/2/3-byte ECI designator and map to a charset name. An
+-- unknown value is a Format error (ZXing CharacterSetECI.getCharacterSetECIByValue).
 function dbsp_parseEci
-   local firstByte, eciValue, tSecond, tThird
+   local firstByte, eciValue, tSecond, tThird, tName
    put dbsp_read(8) into firstByte
    if (firstByte bitAnd 128) = 0 then
       put (firstByte bitAnd 127) into eciValue
@@ -268,6 +497,8 @@ function dbsp_parseEci
    else
       throw "Format: bad ECI designator"
    end if
-   return eci_charsetName(eciValue)
+   put eci_charsetName(eciValue) into tName
+   if tName is empty then throw "Format: unknown ECI value " & eciValue
+   return tName
 end dbsp_parseEci
 ?>

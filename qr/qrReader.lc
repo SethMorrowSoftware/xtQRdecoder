@@ -4,8 +4,8 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- qrReader.lc — public API: image bytes -> luminance -> binarize -> detect ->
--- decode. Spec §9. Port of ZXing QrReader facade.
+-- qrReader.lc - public API: image bytes -> luminance -> binarize -> detect ->
+-- decode. Spec section 9. Port of ZXing QrReader facade.
 -- Requires: luminanceSource.lc, binaryBitmap.lc, qrCodeReader.lc (and the
 --   whole decode stack they pull in).
 --
@@ -15,40 +15,75 @@
 --   qrDecodeResult(imageBytes [,hints])   -> rich result array with keys
 --       text, bytes, points, ecLevel, version, mask, error
 --   qrDecodeResultRobust(imageBytes [,hints [,maxDim]]) -> rich result array;
---       multi-strategy (hybrid+global x two scales) -- best for real photos
+--       multi-strategy (hybrid+global x a resolution ladder) -- best for photos
+--   qrLibraryVersion()                    -> the library version string
 --
 -- hints may be an xTalk array, or a comma list of "KEY" / "KEY=VALUE"
--- (e.g. "TRY_HARDER" or "NR_ALLOW_SKIP_ROWS=0"). Failure contract: internal
--- NotFound/Format/Checksum never escape -- qrDecodeResult returns ["error"].
+-- (e.g. "TRY_HARDER" or "NR_ALLOW_SKIP_ROWS=0"). A flag hint counts as SET when
+-- present with any value other than false / 0 / empty / "no" / "off"
+-- (qr_hintFlag), so "PURE_BARCODE", "PURE_BARCODE=1" and an array key holding
+-- true all work. Failure contract: internal NotFound/Format/Checksum never
+-- escape -- qrDecodeResult returns ["error"].
+--
+-- HOST HYGIENE: the two delimiter switches here are wrapped save/set/restore, so
+-- the host app gets its itemDelimiter back whatever the engine's scoping of
+-- that property (the xTalk Suite records it as global mutable state on OXT).
 -- =====================================================================
+
+-- the library version: a literal constant (constants must be literals), declared
+-- here, above its only reader, in the module that ships the public API
+constant kQrLibVersion = "0.2.0"
 
 -- normalise hints to an array (pass-through if already one). We detect an
 -- already-array argument via "the keys of" (empty for a non-array / empty
 -- string), avoiding the "is an array" operator which is unexercised here.
 function qr_parseHints pHints
-   local tArr, i, tItem, tKey, tVal, tCount
+   local tArr, i, tItem, tKey, tVal, tCount, tSavedDelim, tKeyLen
    if (the keys of pHints) is not empty then
       return pHints
    end if
    if pHints is empty then
       return tArr
    end if
+   put the itemDelimiter into tSavedDelim
    set the itemDelimiter to comma
    put the number of items of pHints into tCount
    repeat with i = 1 to tCount
       set the itemDelimiter to comma
       put (item i of pHints) into tItem
+      if tItem is empty then next repeat
       if "=" is in tItem then
+         -- split at the FIRST "=" only: "KEY=a=b" keeps the value "a=b"
          set the itemDelimiter to "="
          put (item 1 of tItem) into tKey
-         put (item 2 of tItem) into tVal
+         put the number of chars of tKey into tKeyLen
+         put char (tKeyLen + 2) to (the number of chars of tItem) of tItem into tVal
          put tVal into tArr[tKey]
       else
          put true into tArr[tItem]
       end if
    end repeat
+   set the itemDelimiter to tSavedDelim
    return tArr
 end qr_parseHints
+
+-- is the flag hint pKey SET? Present, and not one of the "off" spellings.
+-- (ZXing tests mere presence; PHP truthiness; the string form of a hint list
+-- makes "KEY=0" / "KEY=no" natural, so those count as off.)
+function qr_hintFlag pHints, pKey
+   local v
+   if not (pKey is among the lines of the keys of pHints) then return false
+   put pHints[pKey] into v
+   if v is empty then return false
+   if v is false then return false
+   if (v is "0") or (v is "no") or (v is "off") then return false
+   return true
+end qr_hintFlag
+
+-- the library version (the literal kQrLibVersion in qrCompat.lc)
+function qrLibraryVersion
+   return kQrLibVersion
+end qrLibraryVersion
 
 -- rich result; never throws (NotFound/Format/Checksum surface via ["error"])
 function qrDecodeResult pImageData, pHints
@@ -57,6 +92,7 @@ function qrDecodeResult pImageData, pHints
    try
       put luminanceSource_newFromData(pImageData) into tSource
       put binaryBitmap_new(tSource) into tBitmap
+      binaryBitmap_ensureMatrix tBitmap          -- binarize once, cached in OUR variable
       put qcr_decode(tBitmap, tHintsArr) into tResult
       return tResult
    catch e
@@ -67,8 +103,8 @@ end qrDecodeResult
 
 -- ROBUST multi-strategy decode for real-world phone photos (glare, blur, slight
 -- tilt, dense codes). The image is decoded to a raw pixel plane exactly ONCE
--- (the costly step), then several (binarizer, max-dimension) strategies are
--- tried in cheapest-first order; the first that decodes wins. This is the path
+-- (the costly step), then a resolution LADDER of (downsample step, binarizer)
+-- rungs is tried cheapest-first; the first that decodes wins. This is the path
 -- the interactive scanner uses.
 --
 -- Why it helps where a single pass fails:
@@ -78,16 +114,27 @@ end qrDecodeResult
 --   * A higher-resolution retry recovers dense (v4+) codes whose thin modules
 --     collapse under the aggressive nearest-neighbour downsample of the fast pass.
 --
--- The result array carries ["strategy"] ("hybrid"/"global"), ["procW"],
--- ["procH"] describing the attempt that produced it (the successful one, or the
--- last tried on failure) -- useful diagnostics when the engine isn't visible.
+-- The ladder: the base cap pMaxDim (default 1200 px on the longer side) gives an
+-- integer step; the finer rung is the ~1.33x cap's step when that is smaller,
+-- else one step finer than the base (when the base step is above 1). Two caps
+-- often map to the SAME step (any photo up to 1200 px is step 1 under both), so
+-- the old fixed four-rung list repeated identical work on every failure; a rung
+-- now runs only when it adds resolution, and the greyscale plane for a step is
+-- built ONCE and shared by both binarizers (they only read it).
+--
+-- The result array carries ["strategy"] ("hybrid"/"global"), ["step"], ["procW"],
+-- ["procH"] describing the attempt that produced it, and ["attempts"], a 0-based
+-- list of every rung tried ({strategy, step, procW, procH, error}). On total
+-- failure ["error"] is the FIRST rung's error (the most specific one: the hybrid
+-- pass at the base scale) and ["attempts"] tells the rest.
 -- NotFound/Format/Checksum never escape; failure surfaces via ["error"].
 --
 -- pMaxDim is the base (fast-pass) cap; omit for 1200. Hints pass straight
--- through (TRY_HARDER, BINARY_MODE, NR_ALLOW_SKIP_ROWS, ...).
+-- through (TRY_HARDER, ALSO_INVERTED, BINARY_MODE, NR_ALLOW_SKIP_ROWS, ...).
 function qrDecodeResultRobust pImageData, pHints, pMaxDim
-   local tHintsArr, tPlane, tStrats, tN, k, tBin, tDim, tBaseDim, tHiDim
-   local tSource, tBitmap, tResult, tLast, e, tErr
+   local tHintsArr, tPlane, tBaseDim, tHiDim, tW, tH, tStepBase, tStepHi
+   local tSteps, tNSteps, k, tStep, tSource, b, tBin, tBitmap, tResult
+   local tFirst, tAttempts, tN, e, tErr
    put qr_parseHints(pHints) into tHintsArr
 
    if (pMaxDim is empty) or (pMaxDim <= 0) then
@@ -95,61 +142,77 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
    else
       put pMaxDim into tBaseDim
    end if
-   put trunc((tBaseDim * 4) / 3) into tHiDim     -- ~1.33x for the hi-res retry
+   put trunc((tBaseDim * 4) / 3) into tHiDim     -- ~1.33x for the finer rung
 
-   -- decode the image once; the per-strategy downsample (fromRawPlane) derives
-   -- the working scales from this plane. A decode failure here is terminal.
+   -- decode the image once; a decode failure here is terminal
    try
       put luminanceSource_decodeRawPlane(pImageData) into tPlane
    catch e
       put e into tErr["error"]
       return tErr
    end try
+   put tPlane["width"] into tW
+   put tPlane["height"] into tH
 
-   -- strategy order: default+fast first (zero change for easy images), then a
-   -- different binarizer, then more resolution. Each entry is "binarizer,maxdim".
-   put ("hybrid," & tBaseDim) into tStrats[0]
-   put ("global," & tBaseDim) into tStrats[1]
-   put ("hybrid," & tHiDim) into tStrats[2]
-   put ("global," & tHiDim) into tStrats[3]
-   put 4 into tN
+   -- plan the ladder in integer downsample steps (1 = full resolution)
+   put luminanceSource_stepForDims(tW, tH, tBaseDim) into tStepBase
+   put luminanceSource_stepForDims(tW, tH, tHiDim) into tStepHi
+   put tStepBase into tSteps[0]
+   put 1 into tNSteps
+   if tStepHi < tStepBase then
+      put tStepHi into tSteps[1]
+      put 2 into tNSteps
+   else if tStepBase > 1 then
+      put (tStepBase - 1) into tSteps[1]
+      put 2 into tNSteps
+   end if
 
-   put empty into tLast
-   repeat with k = 0 to (tN - 1)
-      set the itemDelimiter to comma
-      put (item 1 of tStrats[k]) into tBin
-      put (item 2 of tStrats[k]) into tDim
-      put empty into tSource
-      try
-         put luminanceSource_fromRawPlane(tPlane, tDim) into tSource
+   put 0 into tN
+   put empty into tFirst
+   repeat with k = 0 to (tNSteps - 1)
+      put tSteps[k] into tStep
+      put luminanceSource_fromRawPlaneStep(tPlane, tStep) into tSource
+      repeat with b = 0 to 1
+         if b = 0 then
+            put "hybrid" into tBin
+         else
+            put "global" into tBin
+         end if
          put binaryBitmap_new(tSource, tBin) into tBitmap
-         put qcr_decode(tBitmap, tHintsArr) into tResult
-      catch e
-         put empty into tResult
-         put e into tResult["error"]
-      end try
-      put tBin into tResult["strategy"]
-      put tSource["width"] into tResult["procW"]
-      put tSource["height"] into tResult["procH"]
-      if tResult["error"] is empty then
-         return tResult
-      end if
-      put tResult into tLast
+         binaryBitmap_ensureMatrix tBitmap
+         put qcr_decode(tBitmap, tHintsArr) into tResult      -- never throws
+         put tBin into tResult["strategy"]
+         put tStep into tResult["step"]
+         put tSource["width"] into tResult["procW"]
+         put tSource["height"] into tResult["procH"]
+         put tBin into tAttempts[tN]["strategy"]
+         put tStep into tAttempts[tN]["step"]
+         put tSource["width"] into tAttempts[tN]["procW"]
+         put tSource["height"] into tAttempts[tN]["procH"]
+         put tResult["error"] into tAttempts[tN]["error"]
+         add 1 to tN
+         if tResult["error"] is empty then
+            put tAttempts into tResult["attempts"]
+            return tResult
+         end if
+         if tFirst is empty then put tResult into tFirst
+      end repeat
    end repeat
-   return tLast
+   put tAttempts into tFirst["attempts"]
+   return tFirst
 end qrDecodeResultRobust
 
 -- one-shot: decoded text on success, empty on any failure. With BINARY_MODE set
 -- (hint), returns the raw decoded byte string verbatim (no charset decode) --
--- needed for binary payloads like the 256-byte ramp fixture (spec §9).
+-- needed for binary payloads like the 256-byte ramp fixture (spec section 9).
 function qrDecodeFromData pImageData, pHints
    local tRes, tHintsArr
-   put qrDecodeResult(pImageData, pHints) into tRes
+   put qr_parseHints(pHints) into tHintsArr
+   put qrDecodeResult(pImageData, tHintsArr) into tRes
    if tRes["error"] is not empty then
       return empty
    end if
-   put qr_parseHints(pHints) into tHintsArr
-   if tHintsArr["BINARY_MODE"] is true then
+   if qr_hintFlag(tHintsArr, "BINARY_MODE") then
       return tRes["bytes"]
    end if
    return tRes["text"]

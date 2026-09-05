@@ -4,13 +4,13 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- reedSolomonDecoder.lc — Euclidean Reed–Solomon decoder over GF(256).
--- Port of ZXing Common\Reedsolomon\ReedSolomonDecoder. Spec §8.5.
+-- reedSolomonDecoder.lc - Euclidean Reed-Solomon decoder over GF(256).
+-- Port of ZXing Common\Reedsolomon\ReedSolomonDecoder. Spec section 8.5.
 -- Requires: qrCompat.lc, genericGF.lc, genericGFPoly.lc.
 --
 -- rs_decode mutates the received codeword array IN PLACE (passed by @),
 -- correcting up to floor(twoS/2) errors. Throws "RS: ..." on failure
--- (the decoder layer maps that to a Checksum error per spec §6.6).
+-- (the decoder layer maps that to a Checksum error per spec section 6.6).
 -- =====================================================================
 
 -- received: dense 0-based array of codewords (0..255); twoS = number of EC codewords
@@ -23,7 +23,7 @@ command rs_decode @pReceived, pTwoS
    put poly_new(pReceived) into poly
 
    -- syndromes: S_i = poly( alpha^(i + generatorBase) ), generatorBase = 0
-   put fill_array(0, pTwoS, 0) into syndromeCoeffs
+   put qr_fillArray(0, pTwoS, 0) into syndromeCoeffs
    put true into noError
    repeat with i = 0 to (pTwoS - 1)
       put poly_evaluateAt(poly, gf_exp(i + gf_getGeneratorBase())) into ev
@@ -65,8 +65,11 @@ function rs_runEuclidean a, b, pTwoT
    put poly_zero() into tLast
    put poly_one() into t
 
-   -- run until r's degree is less than R/2  (R == 2t == number of EC codewords)
-   repeat while poly_degree(r) >= (pTwoT div 2)
+   -- run until 2*deg(r) < R  (R == 2t == number of EC codewords). ZXing writes
+   -- `while (2 * r.getDegree() >= R)`; PHP compares against the FLOAT R/2. Both
+   -- differ from an integer `R div 2` when R is odd (v1-L/Q/H, v3-L), and only
+   -- on uncorrectable blocks - but the divergence changed the reported failure.
+   repeat while (2 * poly_degree(r)) >= pTwoT
       put rLast into rLastLast
       put tLast into tLastLast
       put r into rLast
@@ -104,7 +107,7 @@ function rs_findErrorLocations errorLocator
       put poly_getCoefficient(errorLocator, 1) into tRes[0]
       return tRes
    end if
-   put fill_array(0, numErrors, 0) into tRes
+   put qr_fillArray(0, numErrors, 0) into tRes
    put 0 into e
    put gf_getSize() into sz
    put 1 into i
@@ -123,7 +126,7 @@ end rs_findErrorLocations
 function rs_findErrorMagnitudes errorEvaluator, pLocations
    local s, tRes, i, j, xiInverse, denominator, term, termPlus1
    put the number of elements of pLocations into s
-   put fill_array(0, s, 0) into tRes
+   put qr_fillArray(0, s, 0) into tRes
    repeat with i = 0 to (s - 1)
       put gf_inverse(pLocations[i]) into xiInverse
       put 1 into denominator

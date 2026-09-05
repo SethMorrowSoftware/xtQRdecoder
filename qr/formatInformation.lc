@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- formatInformation.lc — decode the 15-bit QR format info. Spec §8.5.
+-- formatInformation.lc - decode the 15-bit QR format info. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\FormatInformation.
 -- Requires: qrCompat.lc, errorCorrectionLevel.lc.
 --
@@ -17,13 +17,13 @@
 -- Returns an array: ["ecLevel"] = EC ordinal (0..3, L/M/Q/H), ["dataMask"] = 0..7.
 --
 -- FORMAT_INFO_DECODE_LOOKUP rows are "dataBits,maskedSequence" (verified by
--- regenerating from BCH gen 0x537 ^ 0x5412 — see tools/verify, 32 entries).
+-- regenerating from BCH gen 0x537 ^ 0x5412 - see tools/verify, 32 entries).
 -- dataBits high 2 bits = EC field value (M=00,L=01,H=10,Q=11), low 3 = mask ref.
 -- =====================================================================
 
 -- The QR format-info mask (0x5412). The lookup column sFmtSeq below already
 -- has this applied (entries = bch(data) XOR this), so on-symbol reads are
--- compared directly — no run-time XOR needed. Kept for documentation.
+-- compared directly - no run-time XOR needed. Kept for documentation.
 constant kFormatInfoMaskQR = 21522    -- 0x5412
 
 local sFmtReady, sFmtData, sFmtSeq
@@ -57,7 +57,7 @@ end fmt_ensure
 function fmt_popcount n
    local c
    put 0 into c
-   put u32(n) into n
+   put qr_u32(n) into n
    repeat while n > 0
       add (n bitAnd 1) to c
       put (n div 2) into n
@@ -80,13 +80,13 @@ function fmt_decode pFormatInfo1, pFormatInfo2
          return fmt_unpack(sFmtData[i])
       end if
       -- otherwise track the closest over BOTH copies
-      put fmt_popcount(u32(pFormatInfo1 bitXor targetInfo)) into d1
+      put fmt_popcount(qr_u32(pFormatInfo1 bitXor targetInfo)) into d1
       if d1 < bestDifference then
          put sFmtData[i] into bestData
          put d1 into bestDifference
       end if
       if pFormatInfo1 <> pFormatInfo2 then
-         put fmt_popcount(u32(pFormatInfo2 bitXor targetInfo)) into d2
+         put fmt_popcount(qr_u32(pFormatInfo2 bitXor targetInfo)) into d2
          if d2 < bestDifference then
             put sFmtData[i] into bestData
             put d2 into bestDifference
@@ -102,7 +102,7 @@ end fmt_decode
 -- split a 5-bit data value into {ecLevel ordinal, dataMask}
 function fmt_unpack pDataBits
    local tRes
-   put ecl_forBits(uShr(pDataBits, 3) bitAnd 3) into tRes["ecLevel"]
+   put ecl_forBits(qr_uShr(pDataBits, 3) bitAnd 3) into tRes["ecLevel"]
    put (pDataBits bitAnd 7) into tRes["dataMask"]
    return tRes
 end fmt_unpack

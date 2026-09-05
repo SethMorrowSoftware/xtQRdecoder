@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_parser.lc — DataBlock + DecodedBitStreamParser tests. Spec §8.5, §10.
+-- suite_parser.lc - DataBlock + DecodedBitStreamParser tests. Spec section 8.5, section 10.
 -- Defines: command suite_parser.
 -- Requires loaded: qrCompat.lc, version.lc, errorCorrectionLevel.lc, mode.lc,
 --   bitSource.lc, characterSetECI.lc, dataBlock.lc, decodedBitStreamParser.lc.
@@ -60,10 +60,10 @@ command suite_parser
    t_eq "byte error empty", r["error"], empty
    t_eq "byte Hi!", r["text"], "Hi!"
 
-   -- ECI 26 (UTF-8) + BYTE "café"
+   -- ECI 26 (UTF-8) + BYTE "cafe"
    put dbsp_decode(par_bytes("113,164,5,99,97,102,195,169,0"), 1, 0) into r
    t_eq "eci utf8 error empty", r["error"], empty
-   t_eq "eci utf8 café", r["text"], textDecode(numToByte(99) & numToByte(97) & numToByte(102) & numToByte(195) & numToByte(169), "UTF-8")
+   t_eq "eci utf8 cafe", r["text"], textDecode(numToByte(99) & numToByte(97) & numToByte(102) & numToByte(195) & numToByte(169), "UTF-8")
 
    -- CharacterSetECI name lookups
    t_eq "eci 26 = UTF-8", eci_charsetName(26), "UTF-8"

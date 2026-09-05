@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-add_spdx.py — one-shot: insert the SPDX/copyright header into every source file.
+add_spdx.py - one-shot: insert the SPDX/copyright header into every source file.
 
 Idempotent: a file that already contains an "SPDX-License-Identifier" line is
 left untouched. For .lc files the block is inserted right after the leading
@@ -55,7 +55,9 @@ def main() -> int:
     targets = sorted((ROOT / "qr").glob("*.lc")) + sorted((ROOT / "tools").glob("*.py"))
     changed = 0
     for p in targets:
-        if p.name == "add_spdx.py":
+        # check_livecodescript.py is vendored VERBATIM from the xTalk Suite and
+        # must stay byte-identical to the suite's copy (its own header applies)
+        if p.name in ("add_spdx.py", "check_livecodescript.py"):
             continue
         if process(p):
             changed += 1

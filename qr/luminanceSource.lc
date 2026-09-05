@@ -4,49 +4,43 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- luminanceSource.lc — luminance plane for the binarizers. Spec §7.
+-- luminanceSource.lc - luminance plane for the binarizers. Spec section 7.
 -- Port of ZXing LuminanceSource / GDLuminanceSource (server variant).
 -- Requires: qrCompat.lc (only for completeness; uses builtins).
 --
 -- Instance (Pattern A):
 --   pObj["width"], pObj["height"]
---   pObj["lum"][i]   — flat 0-based greyscale 0..255, row-major (i = y*width + x)
+--   pObj["lum"][i]   - flat 0-based greyscale 0..255, row-major (i = y*width + x)
 --
 -- TWO construction paths, deliberately separated:
---   * newFromImageData(w,h,raw)  — PURE byte math (§7.3). Fully unit-testable
+--   * newFromImageData(w,h,raw)  - PURE byte math (section 7.3). Fully unit-testable
 --     with synthetic 4-byte/pixel data; no engine image object involved.
---   * newFromData(bytes)         — decodes a PNG/JPG/GIF/BMP via the engine
---     IMAGE OBJECT (§7.1). This is the ONE piece that may not work in a
+--   * newFromData(bytes)         - decodes a PNG/JPG/GIF/BMP via the engine
+--     IMAGE OBJECT (section 7.1). This is the ONE piece that may not work in a
 --     headless cPanel server; qr_imageprobe.lc tests exactly that. Not part
 --     of the unit suite.
 -- =====================================================================
 
--- §7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
--- raw layout per §7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
+-- section 7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
+-- raw layout per section 7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
 function luminanceSource_newFromImageData pW, pH, pRaw
-   local tObj, p, o, r, g, b, n, tLum
+   local tObj, p, o, n, tLum
    put pW into tObj["width"]
    put pH into tObj["height"]
    put (pW * pH) into n
-   -- Hot loop (one iteration per pixel). Three behaviour-preserving speedups vs
-   -- the naive form (spec §11 -- this is the documented cost centre):
-   --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE
-   --     at the end, so each iteration does one array-key write instead of a
-   --     nested tObj["lum"][idx] lookup-then-write;
-   --   * use the loop counter p directly as the 0-based pixel index (idx == p);
-   --   * carry the byte offset o with `add 4` instead of recomputing p*4.
-   -- Result is bit-identical: pixel p reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
-   -- byte1=alpha,2=R,3=G,4=B layout of §7.2) and writes lum[p].
+   -- Hot loop (one iteration per pixel; spec section 11 - the documented cost
+   -- centre). TWO statements per pixel:
+   --   * accumulate into a FLAT local (tLum) stored into tObj["lum"] ONCE;
+   --   * the loop counter p is the 0-based pixel index; the byte offset o is
+   --     carried with `add 4` (pixel p reads bytes 4p+2/4p+3/4p+4 = R/G/B);
+   --   * the greyscale rule "r if r=g=b, else (r+2g+b)/4 truncated" is written
+   --     branch-free as (r + 2g + b) div 4: when r=g=b that is (4r) div 4 = r,
+   --     and for non-negative integers div IS the truncated quotient. Bit-
+   --     identical to the branching form (proven under the headless model).
    put 0 into o
    repeat with p = 0 to (n - 1)
-      put byteToNum(byte (o + 2) of pRaw) into r
-      put byteToNum(byte (o + 3) of pRaw) into g
-      put byteToNum(byte (o + 4) of pRaw) into b
-      if (r = g) and (g = b) then
-         put r into tLum[p]
-      else
-         put trunc((r + (2 * g) + b) / 4) into tLum[p]
-      end if
+      put ((byteToNum(byte (o + 2) of pRaw) + (2 * byteToNum(byte (o + 3) of pRaw)) \
+            + byteToNum(byte (o + 4) of pRaw)) div 4) into tLum[p]
       add 4 to o
    end repeat
    put tLum into tObj["lum"]
@@ -62,45 +56,74 @@ function luminanceSource_newFromLuminances pW, pH, pLum
    return tObj
 end luminanceSource_newFromLuminances
 
--- IMAGE-OBJECT PATH (§7.1). Requires a working engine image object. A headless
--- engine may lack a default stack to host a control, so we ensure one exists
--- first; qr_imageprobe.lc confirms this path on a given engine.
+-- IMAGE-OBJECT PATH (section 7.1). Requires a working engine image object;
+-- qr_imageprobe.lc confirms this path on a given engine.
 --
 -- Decode the image bytes to a raw 4-byte/pixel plane via the engine image
 -- object, ONCE. Returns {["width"],["height"],["raw"]}. Separated from the
 -- greyscale/downsample step so a robust reader can decode the (costly) image a
 -- single time and then derive several luminance sources at different scales
--- from the same raw plane (spec §11: the image decode + pixel loops dominate).
+-- from the same raw plane (spec section 11: image decode + pixel loops dominate).
+--
+-- HOST-APP SAFETY (xtalk-suite engine notes 5.3 / 5.5, lessons L2-02, L3-03):
+-- an unqualified control reference resolves against THE DEFAULTSTACK (whatever
+-- stack is frontmost, i.e. the host's), and `create stack` opens the stack it
+-- makes. Until 2026-09 this handler created its scratch image on the host's
+-- own front card after the first call, firing newImage/deleteImage into the
+-- host's scripts and marking its stack dirty. Now: remember the host's
+-- defaultStack, park the scratch image on the library's own invisible
+-- "qrHostStack", lock messages around the create/fill/read/delete, and put the
+-- defaultStack (and the lockMessages state) back on EVERY exit - the failing
+-- one included (the throw happens after `end try`: a throw inside a catch is
+-- lost on OXT, engine notes 3.2). The scratch image has a fixed name and is
+-- deleted before reuse, so an aborted call can never leak a control.
+-- EVIDENCE: verified statically and by construction from the suite's engine
+-- notes; this exact sequence needs an OXT pass on a desktop engine (it cannot
+-- run under the headless model, which supplies its own PNG decoder here).
 --
 -- pMaxDim is accepted for signature compatibility but does not resize here:
 -- downsampling is performed by the caller (luminanceSource_fromRawPlane), so this
 -- handler always returns the full-resolution pixels. (The imageData layout after
 -- an in-engine resize is build-specific, so resizing is left to the host app.)
 function luminanceSource_decodeRawPlane pImageData, pMaxDim
-   local tW, tH, tRaw, tName, e, tPlane
-   -- ensure a host stack exists (ignore if a default one already does)
+   local tW, tH, tRaw, tName, e, tPlane, tSavedStack, tSavedLock, tErr, tHost
+   put "qrHostStack" into tHost
+   put "qrScratchImage" into tName
+   put the defaultStack into tSavedStack
+   put the lockMessages into tSavedLock
+   put empty into tErr
+   put 0 into tW
+   put 0 into tH
+   put empty into tRaw
+   lock messages
    try
-      if there is not a stack "qrHostStack" then
-         create invisible stack "qrHostStack"
+      if there is not a stack tHost then
+         create invisible stack tHost
       end if
+      set the defaultStack to tHost
+      if there is an image tName then delete image tName
+      create invisible image tName
+      set the lockLoc of image tName to true
+      put pImageData into image tName                  -- decode PNG/JPG/GIF/BMP
+      put the formattedWidth of image tName into tW
+      put the formattedHeight of image tName into tH
+      set the width of image tName to tW
+      set the height of image tName to tH
+      put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
+      delete image tName
    catch e
-      -- a default stack may already be available; proceed regardless
+      put e into tErr
    end try
-   put "qrSrc_" & the milliseconds into tName       -- avoid name collisions
-   create invisible image tName
-   set the lockLoc of image tName to true
-   put pImageData into image tName                  -- decode PNG/JPG/GIF/BMP
-   put the formattedWidth of image tName into tW
-   put the formattedHeight of image tName into tH
-   set the width of image tName to tW
-   set the height of image tName to tH
-   put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
-   delete image tName
+   if tSavedStack is not empty then set the defaultStack to tSavedStack
+   set the lockMessages to tSavedLock
+   if tErr is not empty then
+      throw "NotFound: the engine image object could not decode the image -- " & tErr
+   end if
    -- Guard a silent decode failure. On a build whose engine lacks a codec for
    -- this format (notably JPEG on some headless xTalk server builds), the
    -- image object decodes to 0x0 / empty imageData rather than erroring -- which
    -- the rest of the pipeline would mistake for a blank photo and report as a
-   -- generic "no QR". Surface the real reason instead (spec §7.1).
+   -- generic "no QR". Surface the real reason instead (spec section 7.1).
    if (tW <= 0) or (tH <= 0) then
       throw "NotFound: image did not decode (0 x 0) -- unsupported format? this engine build may lack a JPEG codec; try a PNG"
    end if
@@ -129,15 +152,22 @@ end luminanceSource_stepForDims
 -- build a luminance source from an already-decoded raw plane, downsampling so
 -- neither side exceeds pMaxDim (omit pMaxDim for full resolution).
 function luminanceSource_fromRawPlane pPlane, pMaxDim
-   local tW, tH, tStep
+   local tStep
+   put luminanceSource_stepForDims(pPlane["width"], pPlane["height"], pMaxDim) into tStep
+   return luminanceSource_fromRawPlaneStep(pPlane, tStep)
+end luminanceSource_fromRawPlane
+
+-- the same, for an explicit integer downsample step (1 = full resolution); the
+-- robust reader plans its resolution ladder in steps so no rung repeats work
+function luminanceSource_fromRawPlaneStep pPlane, pStep
+   local tW, tH
    put pPlane["width"] into tW
    put pPlane["height"] into tH
-   put luminanceSource_stepForDims(tW, tH, pMaxDim) into tStep
-   if tStep > 1 then
-      return luminanceSource_downsampleRaw(tW, tH, pPlane["raw"], tStep)
+   if pStep > 1 then
+      return luminanceSource_downsampleRaw(tW, tH, pPlane["raw"], pStep)
    end if
    return luminanceSource_newFromImageData(tW, tH, pPlane["raw"])
-end luminanceSource_fromRawPlane
+end luminanceSource_fromRawPlaneStep
 
 -- decode image bytes straight to a luminance source (optionally downsampled).
 -- Behaviour-preserving wrapper over decodeRawPlane + fromRawPlane; this is the
@@ -152,27 +182,32 @@ function luminanceSource_newFromData pImageData, pMaxDim
 end luminanceSource_newFromData
 
 -- Build a luminance source from a 4-byte/pixel raw plane, sampling every
--- pStep-th pixel in x and y (nearest-neighbour downsample). Reuses the verified
--- §7.3 greyscale by reassembling a reduced 4-bpp raw and calling newFromImageData.
+-- pStep-th pixel in x and y (nearest-neighbour downsample), in ONE pass: the
+-- kept pixel's R/G/B bytes (o+2, o+3, o+4) go straight through the section 7.3
+-- greyscale rule of newFromImageData above. (Until 2026-09 this rebuilt a
+-- reduced raw string first and then converted it - two passes over every kept
+-- pixel; the bytes read and the values written are identical.)
 function luminanceSource_downsampleRaw pW, pH, pRaw, pStep
-   local tOutW, tOutH, sx, sy, tOStep, o, tReduced
+   local tOutW, tOutH, sx, sy, tOStep, o, p, tLum, tObj
    put (((pW - 1) div pStep) + 1) into tOutW
    put (((pH - 1) div pStep) + 1) into tOutH
-   put empty into tReduced
-   -- Carry the source byte offset incrementally. Within a row each kept pixel is
-   -- pStep source pixels (= pStep*4 bytes) past the previous one, so advance o by
-   -- a constant add instead of recomputing ((sy*pStep)*pW + sx*pStep)*4 for every
-   -- output pixel. The byte ranges copied are identical (same idiom as the
-   -- per-pixel `add 4` in luminanceSource_newFromImageData).
+   -- Within a row each kept pixel is pStep source pixels (= pStep*4 bytes) past
+   -- the previous one, so o advances by a constant add per kept pixel.
    put (pStep * 4) into tOStep
+   put 0 into p
    repeat with sy = 0 to (tOutH - 1)
       put (((sy * pStep) * pW) * 4) into o
       repeat with sx = 0 to (tOutW - 1)
-         put (byte (o + 1) to (o + 4) of pRaw) after tReduced
+         put ((byteToNum(byte (o + 2) of pRaw) + (2 * byteToNum(byte (o + 3) of pRaw)) \
+               + byteToNum(byte (o + 4) of pRaw)) div 4) into tLum[p]
          add tOStep to o
+         add 1 to p
       end repeat
    end repeat
-   return luminanceSource_newFromImageData(tOutW, tOutH, tReduced)
+   put tOutW into tObj["width"]
+   put tOutH into tObj["height"]
+   put tLum into tObj["lum"]
+   return tObj
 end luminanceSource_downsampleRaw
 
 function luminanceSource_getWidth pObj

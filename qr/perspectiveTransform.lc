@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- perspectiveTransform.lc — 3x3 projective transform. Spec §8.4.
+-- perspectiveTransform.lc - 3x3 projective transform. Spec section 8.4.
 -- Port of ZXing Common\PerspectiveTransform. Requires: nothing (pure float).
 --
 -- A transform (Pattern A) is an array of nine coefficients:
@@ -15,7 +15,7 @@
 --   denom = a13*x + a23*y + a33
 --   x' = (a11*x + a21*y + a31)/denom ;  y' = (a12*x + a22*y + a32)/denom
 --
--- All float math -- no integer-semantics traps (spec §6 does not apply here).
+-- All float math -- no integer-semantics traps (spec section 6 does not apply here).
 -- =====================================================================
 
 function pt_squareToQuadrilateral pX0, pY0, pX1, pY1, pX2, pY2, pX3, pY3

@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_tables.lc — tests for the Stage-6 enum/table modules. Spec §8.5, §10.
+-- suite_tables.lc - tests for the Stage-6 enum/table modules. Spec section 8.5, section 10.
 -- Defines: command suite_tables.
 -- Requires loaded: qrCompat.lc, errorCorrectionLevel.lc, mode.lc, dataMask.lc,
 --                  formatInformation.lc, version.lc, bitMatrix.lc.

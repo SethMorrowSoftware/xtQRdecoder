@@ -4,8 +4,8 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- alignmentPatternFinder.lc — locate the bottom-right alignment pattern (v2+).
--- Port of ZXing Qrcode\Detector\AlignmentPatternFinder. Spec §8.4.
+-- alignmentPatternFinder.lc - locate the bottom-right alignment pattern (v2+).
+-- Port of ZXing Qrcode\Detector\AlignmentPatternFinder. Spec section 8.4.
 -- Requires: qrCompat.lc, bitMatrix.lc.
 --
 -- Stateless apart from a small accumulator: apf_find searches a sub-region for
@@ -100,15 +100,17 @@ end apf_handlePossibleCenter
 function apf_find pImg, pStartX, pStartY, pWidth, pHeight, pModuleSize
    local tMaxJ, tMiddleI, iGen, i, j, tSC, tCurState, tAcc, tResult
    put (pStartX + pWidth) into tMaxJ
-   put (pStartY + (pHeight / 2)) into tMiddleI
+   -- row schedule: middle row first, then alternately below/above it. ZXing
+   -- (Java) uses INTEGER division here; the PHP port's float middle skipped the
+   -- true middle row for odd heights and visited one row below the region.
+   put (pStartY + (pHeight div 2)) into tMiddleI
    put 0 into tAcc["np"]
    repeat with iGen = 0 to (pHeight - 1)
       if (iGen bitAnd 1) = 0 then
-         put (tMiddleI + ((iGen + 1) / 2)) into i
+         put (tMiddleI + ((iGen + 1) div 2)) into i
       else
-         put (tMiddleI - ((iGen + 1) / 2)) into i
+         put (tMiddleI - ((iGen + 1) div 2)) into i
       end if
-      put trunc(i) into i
       put 0 into tSC[0]
       put 0 into tSC[1]
       put 0 into tSC[2]

@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_detector.lc — end-to-end DETECTOR test on a synthetic "photo".
+-- suite_detector.lc - end-to-end DETECTOR test on a synthetic "photo".
 -- Defines: commands suite_detector, suite_detectorV2. Requires loaded: the full stack plus
 --   mathUtils, resultPoint, perspectiveTransform, gridSampler,
 --   finderPatternFinder, alignmentPatternFinder, detector, decoder.

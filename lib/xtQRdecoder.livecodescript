@@ -2,21 +2,28 @@ script "xtQRdecoder"
 -- SPDX-License-Identifier: Apache-2.0
 -- Copyright 2026 Seth Morrow
 --
--- xtQRdecoder — a pure xTalk QR Code decoder, combined into a single
+-- xtQRdecoder - a pure xTalk QR Code decoder, combined into a single
 -- script-only stack for use on desktop, mobile, and server.
 --
 -- This file is GENERATED from the qr/*.lc modules by
--- tools/build_livecodescript.py — do not edit it by hand; edit the modules and
+-- tools/build_livecodescript.py - do not edit it by hand; edit the modules and
 -- rebuild. The modules are the single source of truth.
 --
 -- A line-for-line port of khanamiryan/php-qrcode-detector-decoder, itself a
 -- hand-port of ZXing (Apache-2.0). See the repository NOTICE file for full
 -- attribution.
 --
--- USAGE (desktop / mobile / server):
---   start using stack (the folder of me & "/xtQRdecoder.livecodescript")
+-- USAGE (desktop / mobile / server) - load it once, e.g. in preOpenStack,
+-- from the folder that holds your own stack file:
+--   local tDir
+--   put the effective filename of this stack into tDir
+--   set the itemDelimiter to "/"
+--   delete the last item of tDir          -- the folder of the host stack
+--   start using stack (tDir & "/xtQRdecoder.livecodescript")
 --   put qrDecodeResultRobust(url ("binfile:" & tImagePath), "TRY_HARDER") into tRes
 --   if tRes["error"] is empty then answer tRes["text"]
+-- (There is no `folder` property of a stack; `the effective filename of this
+-- stack` is the engine-proven way to locate a sibling file.)
 --
 -- PUBLIC API (see the README for the full reference):
 --   qrDecodeFromData(imageBytes [,hints])        -> text  (empty on failure)
@@ -28,12 +35,12 @@ script "xtQRdecoder"
 
 -- ===================== module: qrCompat ================
 -- =====================================================================
--- qrCompat.lc  —  Java/PHP integer + bitwise compatibility layer
+-- qrCompat.lc  -  Java/PHP integer + bitwise compatibility layer
 -- Part of the xTalk port of khanamiryan/php-qrcode-detector-decoder
 -- (itself a hand-port of ZXing, Apache-2.0).
 --
 -- Target: 9.6.3-era xTalk engines and earlier, including headless server builds.
--- Spec reference: §6, "the hard part: integer, bitwise, helper semantics".
+-- Spec reference: section 6, "the hard part: integer, bitwise, helper semantics".
 --
 -- WHY THIS MODULE EXISTS
 -- ZXing assumes Java `int` == signed 32-bit two's-complement that WRAPS on
@@ -53,11 +60,11 @@ script "xtQRdecoder"
 --      shown in a trailing comment.
 --   2. bitAnd/bitOr/bitXor have LOWER precedence than '=', '<', '+', etc. in
 --      xTalk, so EVERY bitwise sub-expression is wrapped in parentheses.
---   3. shl() is precision-safe: the spec's `u32(a * (2^n))` overflows 2^53 and
+--   3. qr_shl() is precision-safe: the spec's `qr_u32(a * (2^n))` overflows 2^53 and
 --      silently loses LOW-order bits when shifting a full 32-bit word left by a
---      large count (e.g. BitMatrix.getEnclosingRectangle). See shl() below.
+--      large count (e.g. BitMatrix.getEnclosingRectangle). See qr_shl() below.
 --   4. binaryDecode needs an OUTPUT variable; the spec's one-liner for
---      floatToIntBits is not valid xTalk. Corrected below.
+--      qr_floatToIntBits is not valid xTalk. Corrected below.
 -- =====================================================================
 
 
@@ -70,63 +77,65 @@ constant kMaxInt32 = 2147483648     -- 2^31; sign-bit threshold (NOT Integer.MAX
 -- ---- core normalisation ----------------------------------------------
 -- Normalise any integer into the unsigned 32-bit range [0, 2^32).
 -- Java/PHP -1 -> 4294967295 ; -16777216 -> 4278190080 ; 2^32 -> 0.
-function u32 n
+function qr_u32 n
    put n mod kUInt32 into n
    if n < 0 then add kUInt32 to n
    return n
-end u32
+end qr_u32
 
 -- Mask to a single unsigned byte (the ubiquitous Java "& 0xFF").
-function u8 n
+function qr_u8 n
    return (n bitAnd 255)            -- 0xFF
-end u8
+end qr_u8
 
 
 -- ---- shift emulation (Java <<, >>>, >>) ------------------------------
 -- xTalk has no shift operators; emulate with arithmetic. The shift count
--- is masked to 0..31 to match Java's `count & 31` for 32-bit ints.
+-- is masked to 0..31 with `bitAnd 31`, exactly Java's `count & 31` for 32-bit
+-- ints (a negative count maps to its unsigned low five bits: -1 -> 31; `mod`
+-- would keep the sign and yield 0.5 for qr_shl(1, -1)).
 
 -- Logical/arithmetic LEFT shift, 32-bit  (Java: a << n).
 -- PRECISION-SAFE: drop the bits that would shift out past bit 31 BEFORE
 -- multiplying, so the product stays < 2^32 (well under the 2^53 exact limit).
--- A naive u32(a * 2^n) loses low bits when a is large and n is large.
-function shl a, n
+-- A naive qr_u32(a * 2^n) loses low bits when a is large and n is large.
+function qr_shl a, n
    local m
-   put (n mod 32) into n
-   put u32(a) into a
+   put (n bitAnd 31) into n
+   put qr_u32(a) into a
    put (2 ^ (32 - n)) into m         -- modulus discards the out-shifted high bits
    return ((a mod m) * (2 ^ n))      -- result is already in [0, 2^32)
-end shl
+end qr_shl
 
 -- UNSIGNED right shift  (Java: a >>> n). Operand treated as unsigned 32-bit.
 -- Replaces the PHP shims uRShift() and sdvig3().
-function uShr a, n
-   put (n mod 32) into n
-   return (u32(a) div (2 ^ n))
-end uShr
+function qr_uShr a, n
+   put (n bitAnd 31) into n
+   return (qr_u32(a) div (2 ^ n))
+end qr_uShr
 
 -- ARITHMETIC right shift  (Java: a >> n) on a word interpreted as SIGNED 32-bit.
 -- Returns the unsigned 32-bit BIT-PATTERN of the result (i.e. sign-extended).
-function aShr a, n
+function qr_aShr a, n
    local d
-   put (n mod 32) into n
-   put u32(a) into a
+   put (n bitAnd 31) into n
+   put qr_u32(a) into a
    put (2 ^ n) into d
    if a < kMaxInt32 then
       return (a div d)                                  -- top bit clear: same as >>>
    else
       -- top bit set (negative): OR in the high sign-extension bits.
       -- (kUInt32 - (kUInt32 div d)) is exactly the top-n-bits mask.
-      return u32(((a div d) bitOr (kUInt32 - (kUInt32 div d))))
+      return qr_u32(((a div d) bitOr (kUInt32 - (kUInt32 div d))))
    end if
-end aShr
+end qr_aShr
 
 
--- ---- Integer.numberOfTrailingZeros -----------------------------------
+-- ---- Integer.qr_numberOfTrailingZeros -----------------------------------
 -- Count low-order zero bits; i == 0 -> 32. Used by BitArray.getNextSet/Unset.
-function numberOfTrailingZeros i
+function qr_numberOfTrailingZeros i
    local n
-   put u32(i) into i
+   put qr_u32(i) into i
    if i = 0 then return 32
    put 0 into n
    repeat while (i bitAnd 1) = 0
@@ -134,36 +143,36 @@ function numberOfTrailingZeros i
       put (i div 2) into i
    end repeat
    return n
-end numberOfTrailingZeros
+end qr_numberOfTrailingZeros
 
 
--- ---- Java String.hashCode  (h = 31*h + c) over BYTES -----------------
--- Only used for equality/dedup, never on the decode-critical path. u32 each
+-- ---- Java String.qr_hashCode  (h = 31*h + c) over BYTES -----------------
+-- Only used for equality/dedup, never on the decode-critical path. qr_u32 each
 -- step so the value matches Java's bit pattern exactly.
-function hashCode s
+function qr_hashCode s
    local h, k
    put 0 into h
    repeat with k = 1 to the number of bytes of s
-      put u32((31 * h) + byteToNum(byte k of s)) into h
+      put qr_u32((31 * h) + byteToNum(byte k of s)) into h
    end repeat
    return h
-end hashCode
+end qr_hashCode
 
 
--- ---- Float.floatToIntBits --------------------------------------------
+-- ---- Float.qr_floatToIntBits --------------------------------------------
 -- IEEE-754 single-precision raw bits. The spec's one-liner is NOT valid
 -- xTalk (binaryDecode requires an output variable) -- corrected here.
 -- binaryEncode/binaryDecode use machine byte order on both sides, so the
 -- round-trip is endian-safe. Likely unused on the QR path (it appears only
 -- in ResultPoint / PerspectiveTransform hashing) -- included for completeness.
-function floatToIntBits f
+function qr_floatToIntBits f
    local tBits
    get binaryDecode("i", binaryEncode("f", f), tBits)
-   return u32(tBits)
-end floatToIntBits
+   return qr_u32(tBits)
+end qr_floatToIntBits
 
 
--- ---- fill_array  (customFunctions.php) -------------------------------
+-- ---- qr_fillArray  (customFunctions.php) -------------------------------
 -- Build a dense, 0-based array of pCount copies of pValue starting at pIndex.
 -- QUIRK preserved from PHP: pCount <= 0 returns a SINGLE-element array (one
 -- slot holding pValue). BitMatrix / binarizer sizing relies on this in
@@ -171,7 +180,7 @@ end floatToIntBits
 -- this reproduces the PHP "[0]" result, and the integer layer (incl. this
 -- helper) is engine-verified by suite_qrCompat. The degenerate pCount<=0 branch
 -- is not reached by the QR path; it is kept only for source fidelity.
-function fill_array pIndex, pCount, pValue
+function qr_fillArray pIndex, pCount, pValue
    local tArr, k
    if pCount <= 0 then
       put pValue into tArr[pIndex]
@@ -181,36 +190,36 @@ function fill_array pIndex, pCount, pValue
       put pValue into tArr[k]
    end repeat
    return tArr
-end fill_array
+end qr_fillArray
 
 
--- ---- System.arraycopy  (in place, for performance) -------------------
+-- ---- System.qr_arraycopy  (in place, for performance) -------------------
 -- Copy pLen elements from pSrc[pSrcPos..] to pDest[pDestPos..]. 0-based,
 -- matching the source. Pass BOTH arrays by reference (@) so the large bit /
 -- luminance arrays are never copied by value (spec 5, 11).
 -- CAVEAT: forward copy. If src and dest alias with overlapping FORWARD regions
 -- the result differs from Java's temp-buffer semantics. No such overlapping
 -- self-copy occurs on the QR decode path.
-command arraycopy @pSrc, pSrcPos, @pDest, pDestPos, pLen
+command qr_arraycopy @pSrc, pSrcPos, @pDest, pDestPos, pLen
    local k
    repeat with k = 0 to (pLen - 1)
       put pSrc[pSrcPos + k] into pDest[pDestPos + k]
    end repeat
-end arraycopy
+end qr_arraycopy
 
 
 -- ---- string byte access (0-based, like PHP $s[$i]) -------------------
 -- Returns the unsigned byte value (0..255) at 0-based index i of string s.
 -- Keeps call sites readable and 0-based (spec 6.7).
-function byteAt s, i
+function qr_byteAt s, i
    return byteToNum(byte (i + 1) of s)
-end byteAt
+end qr_byteAt
 
 -- ===================== module: genericGF ===============
 -- =====================================================================
--- genericGF.lc — Galois field GF(256) for QR Reed–Solomon.
+-- genericGF.lc - Galois field GF(256) for QR Reed-Solomon.
 -- Port of ZXing Common\Reedsolomon\GenericGF (only QR_CODE_FIELD_256).
--- Spec §8.5 "ReedSolomon group". Requires: qrCompat.lc, genericGFPoly.lc.
+-- Spec section 8.5 "ReedSolomon group". Requires: qrCompat.lc, genericGFPoly.lc.
 --
 -- QR field parameters: primitive 0x011D (285), size 256, generatorBase 0.
 -- The exp/log tables are built once (lazily) and kept script-local; all
@@ -300,8 +309,8 @@ end gf_buildMonomial
 
 -- ===================== module: genericGFPoly ===========
 -- =====================================================================
--- genericGFPoly.lc — polynomials over GF(256).
--- Port of ZXing Common\Reedsolomon\GenericGFPoly. Spec §8.5.
+-- genericGFPoly.lc - polynomials over GF(256).
+-- Port of ZXing Common\Reedsolomon\GenericGFPoly. Spec section 8.5.
 -- Requires: qrCompat.lc, genericGF.lc.
 --
 -- REPRESENTATION: a polynomial is its 0-based coefficient array; index 0 is
@@ -413,7 +422,7 @@ function poly_multiply p, q
    if poly_isZero(p) or poly_isZero(q) then return poly_zero()
    put the number of elements of p into pn
    put the number of elements of q into qn
-   put fill_array(0, (pn + qn - 1), 0) into tProduct
+   put qr_fillArray(0, (pn + qn - 1), 0) into tProduct
    repeat with i = 0 to (pn - 1)
       repeat with j = 0 to (qn - 1)
          put gf_addOrSubtract(tProduct[i + j], gf_multiply(p[i], q[j])) into tProduct[i + j]
@@ -440,7 +449,7 @@ function poly_multiplyByMonomial p, pDegree, pCoeff
    if pDegree < 0 then throw "RS: multiplyByMonomial negative degree"
    if pCoeff = 0 then return poly_zero()
    put the number of elements of p into n
-   put fill_array(0, (n + pDegree), 0) into tProduct
+   put qr_fillArray(0, (n + pDegree), 0) into tProduct
    repeat with i = 0 to (n - 1)
       put gf_multiply(p[i], pCoeff) into tProduct[i]
    end repeat
@@ -470,13 +479,13 @@ end poly_divide
 
 -- ===================== module: reedSolomonDecoder ======
 -- =====================================================================
--- reedSolomonDecoder.lc — Euclidean Reed–Solomon decoder over GF(256).
--- Port of ZXing Common\Reedsolomon\ReedSolomonDecoder. Spec §8.5.
+-- reedSolomonDecoder.lc - Euclidean Reed-Solomon decoder over GF(256).
+-- Port of ZXing Common\Reedsolomon\ReedSolomonDecoder. Spec section 8.5.
 -- Requires: qrCompat.lc, genericGF.lc, genericGFPoly.lc.
 --
 -- rs_decode mutates the received codeword array IN PLACE (passed by @),
 -- correcting up to floor(twoS/2) errors. Throws "RS: ..." on failure
--- (the decoder layer maps that to a Checksum error per spec §6.6).
+-- (the decoder layer maps that to a Checksum error per spec section 6.6).
 -- =====================================================================
 
 -- received: dense 0-based array of codewords (0..255); twoS = number of EC codewords
@@ -489,7 +498,7 @@ command rs_decode @pReceived, pTwoS
    put poly_new(pReceived) into poly
 
    -- syndromes: S_i = poly( alpha^(i + generatorBase) ), generatorBase = 0
-   put fill_array(0, pTwoS, 0) into syndromeCoeffs
+   put qr_fillArray(0, pTwoS, 0) into syndromeCoeffs
    put true into noError
    repeat with i = 0 to (pTwoS - 1)
       put poly_evaluateAt(poly, gf_exp(i + gf_getGeneratorBase())) into ev
@@ -531,8 +540,11 @@ function rs_runEuclidean a, b, pTwoT
    put poly_zero() into tLast
    put poly_one() into t
 
-   -- run until r's degree is less than R/2  (R == 2t == number of EC codewords)
-   repeat while poly_degree(r) >= (pTwoT div 2)
+   -- run until 2*deg(r) < R  (R == 2t == number of EC codewords). ZXing writes
+   -- `while (2 * r.getDegree() >= R)`; PHP compares against the FLOAT R/2. Both
+   -- differ from an integer `R div 2` when R is odd (v1-L/Q/H, v3-L), and only
+   -- on uncorrectable blocks - but the divergence changed the reported failure.
+   repeat while (2 * poly_degree(r)) >= pTwoT
       put rLast into rLastLast
       put tLast into tLastLast
       put r into rLast
@@ -570,7 +582,7 @@ function rs_findErrorLocations errorLocator
       put poly_getCoefficient(errorLocator, 1) into tRes[0]
       return tRes
    end if
-   put fill_array(0, numErrors, 0) into tRes
+   put qr_fillArray(0, numErrors, 0) into tRes
    put 0 into e
    put gf_getSize() into sz
    put 1 into i
@@ -589,7 +601,7 @@ end rs_findErrorLocations
 function rs_findErrorMagnitudes errorEvaluator, pLocations
    local s, tRes, i, j, xiInverse, denominator, term, termPlus1
    put the number of elements of pLocations into s
-   put fill_array(0, s, 0) into tRes
+   put qr_fillArray(0, s, 0) into tRes
    repeat with i = 0 to (s - 1)
       put gf_inverse(pLocations[i]) into xiInverse
       put 1 into denominator
@@ -610,15 +622,15 @@ end rs_findErrorMagnitudes
 
 -- ===================== module: bitArray ================
 -- =====================================================================
--- bitArray.lc — packed bit vector. Port of ZXing Common\BitArray. Spec §8.2.
+-- bitArray.lc - packed bit vector. Port of ZXing Common\BitArray. Spec section 8.2.
 -- Requires: qrCompat.lc.
 --
 -- Instance (Pattern A) is an array:
---   pObj["size"]     — number of valid bits
---   pObj["bits"][w]  — dense 0-based unsigned-32-bit words (w = 0 .. wordCount-1)
+--   pObj["size"]     - number of valid bits
+--   pObj["bits"][w]  - dense 0-based unsigned-32-bit words (w = 0 .. wordCount-1)
 -- Words are kept dense so "the number of elements of pObj['bits']" == wordCount,
 -- matching Java's bits.length (which getNextSet/Unset iterate against).
--- All packed words stay in [0, 2^32) (spec §6.1); shifts go through qrCompat.
+-- All packed words stay in [0, 2^32) (spec section 6.1); shifts go through qrCompat.
 -- =====================================================================
 
 function bitArray_new pSize
@@ -654,23 +666,23 @@ command bitArray_ensureCapacity @pObj, pBitsNeeded
 end bitArray_ensureCapacity
 
 function bitArray_get pObj, i
-   return ((pObj["bits"][(i div 32)] bitAnd shl(1, (i bitAnd 31))) <> 0)
+   return ((pObj["bits"][(i div 32)] bitAnd qr_shl(1, (i bitAnd 31))) <> 0)
 end bitArray_get
 
 command bitArray_set @pObj, i
    local w
    put (i div 32) into w
-   put u32(pObj["bits"][w] bitOr shl(1, (i bitAnd 31))) into pObj["bits"][w]
+   put qr_u32(pObj["bits"][w] bitOr qr_shl(1, (i bitAnd 31))) into pObj["bits"][w]
 end bitArray_set
 
 command bitArray_flip @pObj, i
    local w
    put (i div 32) into w
-   put u32(pObj["bits"][w] bitXor shl(1, (i bitAnd 31))) into pObj["bits"][w]
+   put qr_u32(pObj["bits"][w] bitXor qr_shl(1, (i bitAnd 31))) into pObj["bits"][w]
 end bitArray_flip
 
 command bitArray_setBulk @pObj, i, pNewBits
-   put u32(pNewBits) into pObj["bits"][(i div 32)]
+   put qr_u32(pNewBits) into pObj["bits"][(i div 32)]
 end bitArray_setBulk
 
 command bitArray_clear @pObj
@@ -689,13 +701,13 @@ function bitArray_getNextSet pObj, pFrom
    put the number of elements of pObj["bits"] into tWordCount
    put (pFrom div 32) into tBitsOffset
    put pObj["bits"][tBitsOffset] into tCurrent
-   put (tCurrent bitAnd u32(bitNot(shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
+   put (tCurrent bitAnd qr_u32(bitNot(qr_shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
    repeat while tCurrent = 0
       add 1 to tBitsOffset
       if tBitsOffset = tWordCount then return tSize
       put pObj["bits"][tBitsOffset] into tCurrent
    end repeat
-   put ((tBitsOffset * 32) + numberOfTrailingZeros(tCurrent)) into tResult
+   put ((tBitsOffset * 32) + qr_numberOfTrailingZeros(tCurrent)) into tResult
    return min(tResult, tSize)
 end bitArray_getNextSet
 
@@ -706,14 +718,14 @@ function bitArray_getNextUnset pObj, pFrom
    if pFrom >= tSize then return tSize
    put the number of elements of pObj["bits"] into tWordCount
    put (pFrom div 32) into tBitsOffset
-   put u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
-   put (tCurrent bitAnd u32(bitNot(shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
+   put qr_u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
+   put (tCurrent bitAnd qr_u32(bitNot(qr_shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
    repeat while tCurrent = 0
       add 1 to tBitsOffset
       if tBitsOffset = tWordCount then return tSize
-      put u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
+      put qr_u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
    end repeat
-   put ((tBitsOffset * 32) + numberOfTrailingZeros(tCurrent)) into tResult
+   put ((tBitsOffset * 32) + qr_numberOfTrailingZeros(tCurrent)) into tResult
    return min(tResult, tSize)
 end bitArray_getNextUnset
 
@@ -738,8 +750,8 @@ command bitArray_setRange @pObj, pStart, pEnd
       else
          put (e bitAnd 31) into tLastBit
       end if
-      put u32(shl(2, tLastBit) - shl(1, tFirstBit)) into tMask   -- ones firstBit..lastBit
-      put u32(pObj["bits"][i] bitOr tMask) into pObj["bits"][i]
+      put qr_u32(qr_shl(2, tLastBit) - qr_shl(1, tFirstBit)) into tMask   -- ones firstBit..lastBit
+      put qr_u32(pObj["bits"][i] bitOr tMask) into pObj["bits"][i]
    end repeat
 end bitArray_setRange
 
@@ -762,7 +774,7 @@ function bitArray_isRange pObj, pStart, pEnd, pValue
       else
          put (e bitAnd 31) into tLastBit
       end if
-      put u32(shl(2, tLastBit) - shl(1, tFirstBit)) into tMask
+      put qr_u32(qr_shl(2, tLastBit) - qr_shl(1, tFirstBit)) into tMask
       if pValue then
          put tMask into tWanted
       else
@@ -778,7 +790,7 @@ command bitArray_appendBit @pObj, pBit
    bitArray_ensureCapacity pObj, (pObj["size"] + 1)
    if pBit then
       put (pObj["size"] div 32) into w
-      put u32(pObj["bits"][w] bitOr shl(1, (pObj["size"] bitAnd 31))) into pObj["bits"][w]
+      put qr_u32(pObj["bits"][w] bitOr qr_shl(1, (pObj["size"] bitAnd 31))) into pObj["bits"][w]
    end if
    add 1 to pObj["size"]
 end bitArray_appendBit
@@ -789,7 +801,7 @@ command bitArray_appendBits @pObj, pValue, pNumBits
    if (pNumBits < 0) or (pNumBits > 32) then throw "BitArray: numBits must be 0..32"
    bitArray_ensureCapacity pObj, (pObj["size"] + pNumBits)
    repeat with nbl = pNumBits down to 1
-      bitArray_appendBit pObj, ((uShr(pValue, (nbl - 1)) bitAnd 1) = 1)
+      bitArray_appendBit pObj, ((qr_uShr(pValue, (nbl - 1)) bitAnd 1) = 1)
    end repeat
 end bitArray_appendBits
 
@@ -798,7 +810,7 @@ command bitArray_xor @pObj, pOther
    if pObj["size"] <> pOther["size"] then throw "BitArray: sizes don't match"
    put the number of elements of pObj["bits"] into n
    repeat with i = 0 to (n - 1)
-      put u32(pObj["bits"][i] bitXor pOther["bits"][i]) into pObj["bits"][i]
+      put qr_u32(pObj["bits"][i] bitXor pOther["bits"][i]) into pObj["bits"][i]
    end repeat
 end bitArray_xor
 
@@ -809,7 +821,7 @@ function bitArray_toBytes pObj, pBitOffset, pNumBytes
    repeat with i = 0 to (pNumBytes - 1)
       put 0 into theByte
       repeat with j = 0 to 7
-         if bitArray_get(pObj, bo) then put u32(theByte bitOr shl(1, (7 - j))) into theByte
+         if bitArray_get(pObj, bo) then put qr_u32(theByte bitOr qr_shl(1, (7 - j))) into theByte
          add 1 to bo
       end repeat
       put theByte into tOut[i]
@@ -817,7 +829,7 @@ function bitArray_toBytes pObj, pBitOffset, pNumBytes
    return tOut
 end bitArray_toBytes
 
--- reverse the bit order within [0, size)  (classic bit-reversal; spec §6.2)
+-- reverse the bit order within [0, size)  (classic bit-reversal; spec section 6.2)
 command bitArray_reverse @pObj
    local tSize, tLen, tOldLen, tOrigCount, i, x, newBits
    local leftOffset, currentInt, nextInt
@@ -829,22 +841,22 @@ command bitArray_reverse @pObj
       put 0 into newBits[i]
    end repeat
    repeat with i = 0 to (tOldLen - 1)
-      put u32(pObj["bits"][i]) into x
-      put ((uShr(x, 1) bitAnd 1431655765) bitOr u32(shl((x bitAnd 1431655765), 1))) into x   -- 0x55555555
-      put ((uShr(x, 2) bitAnd 858993459) bitOr u32(shl((x bitAnd 858993459), 2))) into x     -- 0x33333333
-      put ((uShr(x, 4) bitAnd 252645135) bitOr u32(shl((x bitAnd 252645135), 4))) into x     -- 0x0f0f0f0f
-      put ((uShr(x, 8) bitAnd 16711935) bitOr u32(shl((x bitAnd 16711935), 8))) into x       -- 0x00ff00ff
-      put ((uShr(x, 16) bitAnd 65535) bitOr u32(shl((x bitAnd 65535), 16))) into x           -- 0x0000ffff
+      put qr_u32(pObj["bits"][i]) into x
+      put ((qr_uShr(x, 1) bitAnd 1431655765) bitOr qr_u32(qr_shl((x bitAnd 1431655765), 1))) into x   -- 0x55555555
+      put ((qr_uShr(x, 2) bitAnd 858993459) bitOr qr_u32(qr_shl((x bitAnd 858993459), 2))) into x     -- 0x33333333
+      put ((qr_uShr(x, 4) bitAnd 252645135) bitOr qr_u32(qr_shl((x bitAnd 252645135), 4))) into x     -- 0x0f0f0f0f
+      put ((qr_uShr(x, 8) bitAnd 16711935) bitOr qr_u32(qr_shl((x bitAnd 16711935), 8))) into x       -- 0x00ff00ff
+      put ((qr_uShr(x, 16) bitAnd 65535) bitOr qr_u32(qr_shl((x bitAnd 65535), 16))) into x           -- 0x0000ffff
       put x into newBits[(tLen - i)]
    end repeat
    if tSize <> (tOldLen * 32) then
       put ((tOldLen * 32) - tSize) into leftOffset
-      put uShr(newBits[0], leftOffset) into currentInt
+      put qr_uShr(newBits[0], leftOffset) into currentInt
       repeat with i = 1 to (tOldLen - 1)
          put newBits[i] into nextInt
-         put u32(currentInt bitOr shl(nextInt, (32 - leftOffset))) into currentInt
+         put qr_u32(currentInt bitOr qr_shl(nextInt, (32 - leftOffset))) into currentInt
          put currentInt into newBits[(i - 1)]
-         put uShr(nextInt, leftOffset) into currentInt
+         put qr_uShr(nextInt, leftOffset) into currentInt
       end repeat
       put currentInt into newBits[(tOldLen - 1)]
    end if
@@ -857,7 +869,7 @@ end bitArray_clone
 
 -- ===================== module: bitMatrix ===============
 -- =====================================================================
--- bitMatrix.lc — packed 2-D bit grid. Port of ZXing Common\BitMatrix. Spec §8.1.
+-- bitMatrix.lc - packed 2-D bit grid. Port of ZXing Common\BitMatrix. Spec section 8.1.
 -- Requires: qrCompat.lc, bitArray.lc (for getRow/setRow/rotate180).
 --
 -- Instance (Pattern A) is an array:
@@ -865,17 +877,40 @@ end bitArray_clone
 --   pObj["rowSize"]  = (width + 31) div 32   (words per row)
 --   pObj["bits"][w]  = dense 0-based unsigned-32-bit words, length rowSize*height
 --
--- get/getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
--- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.shl
--- is precision-safe: shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
--- matching Java's overflow-discard semantics bit-for-bit (spec §6.2).
+-- getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
+-- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.qr_shl
+-- is precision-safe: qr_shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
+-- matching Java's overflow-discard semantics bit-for-bit (spec section 6.2).
+--
+-- HOT PATH: get/set/unset/flip run once per pixel in the binarizers, the finder
+-- and the sampler. They use a power-of-two table (sBMPow2[b] = 2^b, built once
+-- by bitMatrix_new) instead of the qr_shl/qr_uShr/qr_u32 helper calls: for a word in
+-- [0, 2^32) and a bit index in 0..31, `word div 2^b` IS qr_uShr(word, b) and
+-- `word bitOr 2^b` IS qr_u32(word bitOr qr_shl(1, b)) - bit-identical, proven under
+-- the headless model on every fixture, with no `^` operator on the hot path
+-- (some OXT parsers are reported to reject `^` inside a compound expression).
+-- Every matrix comes from bitMatrix_new, so the table always exists.
 --
 -- NOTE: the giant hard-coded debug array literal in PHP BitMatrix::set() is
--- dead cruft and is intentionally NOT ported (spec §8.1 warning).
+-- dead cruft and is intentionally NOT ported (spec section 8.1 warning).
 -- =====================================================================
+
+local sBMPow2, sBMPow2Ready      -- sBMPow2[b] = 2^b, b = 0..31; built once
+
+command bm_ensurePow2
+   local b, v
+   if sBMPow2Ready is true then exit bm_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sBMPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sBMPow2Ready
+end bm_ensurePow2
 
 function bitMatrix_new pWidth, pHeight
    local tObj, tRowSize, tCount, k, tBits
+   bm_ensurePow2
    if pWidth < 1 then throw "BitMatrix: dimensions must be > 0"
    if pHeight is empty then put pWidth into pHeight
    if pHeight < 1 then throw "BitMatrix: dimensions must be > 0"
@@ -902,28 +937,36 @@ function bitMatrix_getHeight pObj
    return pObj["height"]
 end bitMatrix_getHeight
 
+-- A read outside the matrix answers false (white). ZXing/PHP behave that way
+-- for the reads the detector actually makes (padding bits are zero; PHP's get
+-- auto-vivifies a missing word to 0), and the finder's cross-check loops walk
+-- one pixel past every edge, so the guard makes those reads independent of
+-- whether the engine short-circuits `and` or errors on arithmetic over empty.
 function bitMatrix_get pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   return ((uShr(pObj["bits"][tOffset], (x bitAnd 31)) bitAnd 1) <> 0)
+   if (x < 0) or (y < 0) or (x >= pObj["width"]) or (y >= pObj["height"]) then
+      return false
+   end if
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   return (((pObj["bits"][tOffset] div sBMPow2[x bitAnd 31]) bitAnd 1) = 1)
 end bitMatrix_get
 
 command bitMatrix_set @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitOr shl(1, (x bitAnd 31))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitOr sBMPow2[x bitAnd 31]) into pObj["bits"][tOffset]
 end bitMatrix_set
 
 command bitMatrix_unset @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitAnd u32(bitNot(shl(1, (x bitAnd 31))))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitAnd (4294967295 - sBMPow2[x bitAnd 31])) into pObj["bits"][tOffset]
 end bitMatrix_unset
 
 command bitMatrix_flip @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitXor shl(1, (x bitAnd 31))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitXor sBMPow2[x bitAnd 31]) into pObj["bits"][tOffset]
 end bitMatrix_flip
 
 command bitMatrix_clear @pObj
@@ -946,7 +989,7 @@ command bitMatrix_setRegion @pObj, pLeft, pTop, pWidth, pHeight
       put (y * tRowSize) into tOffset
       repeat with x = pLeft to (tRight - 1)
          put (tOffset + (x div 32)) into tIdx
-         put u32(pObj["bits"][tIdx] bitOr shl(1, (x bitAnd 31))) into pObj["bits"][tIdx]
+         put qr_u32(pObj["bits"][tIdx] bitOr qr_shl(1, (x bitAnd 31))) into pObj["bits"][tIdx]
       end repeat
    end repeat
 end bitMatrix_setRegion
@@ -968,7 +1011,7 @@ command bitMatrix_setRow @pObj, y, pRow
    put pObj["rowSize"] into tRowSize
    put (y * tRowSize) into tOffset
    repeat with x = 0 to (tRowSize - 1)
-      put u32(pRow["bits"][x]) into pObj["bits"][tOffset + x]
+      put qr_u32(pRow["bits"][x]) into pObj["bits"][tOffset + x]
    end repeat
 end bitMatrix_setRow
 
@@ -993,7 +1036,7 @@ command bitMatrix_xor @pObj, pMask
    end if
    put the number of elements of pObj["bits"] into n
    repeat with i = 0 to (n - 1)
-      put u32(pObj["bits"][i] bitXor pMask["bits"][i]) into pObj["bits"][i]
+      put qr_u32(pObj["bits"][i] bitXor pMask["bits"][i]) into pObj["bits"][i]
    end repeat
 end bitMatrix_xor
 
@@ -1016,14 +1059,14 @@ function bitMatrix_getEnclosingRectangle pObj
             if y > tBottom then put y into tBottom
             if (x32 * 32) < tLeft then
                put 0 into tBitN
-               repeat while shl(theBits, (31 - tBitN)) = 0
+               repeat while qr_shl(theBits, (31 - tBitN)) = 0
                   add 1 to tBitN
                end repeat
                if ((x32 * 32) + tBitN) < tLeft then put ((x32 * 32) + tBitN) into tLeft
             end if
             if ((x32 * 32) + 31) > tRight then
                put 31 into tBitN
-               repeat while uShr(theBits, tBitN) = 0
+               repeat while qr_uShr(theBits, tBitN) = 0
                   subtract 1 from tBitN
                end repeat
                if ((x32 * 32) + tBitN) > tRight then put ((x32 * 32) + tBitN) into tRight
@@ -1053,7 +1096,7 @@ function bitMatrix_getTopLeftOnBit pObj
    put ((bitsOffset mod rs) * 32) into x
    put pObj["bits"][bitsOffset] into theBits
    put 0 into tBitN
-   repeat while shl(theBits, (31 - tBitN)) = 0
+   repeat while qr_shl(theBits, (31 - tBitN)) = 0
       add 1 to tBitN
    end repeat
    add tBitN to x
@@ -1076,7 +1119,7 @@ function bitMatrix_getBottomRightOnBit pObj
    put ((bitsOffset mod rs) * 32) into x
    put pObj["bits"][bitsOffset] into theBits
    put 31 into tBitN
-   repeat while uShr(theBits, tBitN) = 0
+   repeat while qr_uShr(theBits, tBitN) = 0
       subtract 1 from tBitN
    end repeat
    add tBitN to x
@@ -1089,18 +1132,58 @@ function bitMatrix_clone pObj
    return pObj          -- xTalk deep-copies arrays on return
 end bitMatrix_clone
 
+-- the transpose of a SQUARE matrix, as a new matrix: (x,y) -> (y,x). This is
+-- ZXing BitMatrixParser.mirror() (which flips the bits across the diagonal in
+-- place); the decoder uses it for the mirrored-symbol retry.
+function bitMatrix_transposed pObj
+   local tW, tH, tOut, x, y
+   put pObj["width"] into tW
+   put pObj["height"] into tH
+   if tW <> tH then throw "BitMatrix: transpose needs a square matrix"
+   put bitMatrix_new(tW, tH) into tOut
+   repeat with y = 0 to (tH - 1)
+      repeat with x = 0 to (tW - 1)
+         if bitMatrix_get(pObj, x, y) then bitMatrix_set tOut, y, x
+      end repeat
+   end repeat
+   return tOut
+end bitMatrix_transposed
+
+-- invert every module in place: ZXing BitMatrix.flip() with no arguments -
+-- complement every word, then clear the padding bits beyond the logical width
+-- in the last word of each row so they stay zero. Used for the ALSO_INVERTED
+-- retry (a white-on-black symbol).
+command bitMatrix_flipAll @pObj
+   local tBits, tCount, k, tRem, tMask, y, tOff, rs
+   put pObj["bits"] into tBits
+   put the number of elements of tBits into tCount
+   repeat with k = 0 to (tCount - 1)
+      put (4294967295 - tBits[k]) into tBits[k]    -- 0xFFFFFFFF - w == bitNot w within [0, 2^32)
+   end repeat
+   put (pObj["width"] mod 32) into tRem
+   if tRem <> 0 then
+      put pObj["rowSize"] into rs
+      put (qr_shl(1, tRem) - 1) into tMask
+      repeat with y = 0 to (pObj["height"] - 1)
+         put ((y * rs) + rs - 1) into tOff
+         put (tBits[tOff] bitAnd tMask) into tBits[tOff]
+      end repeat
+   end if
+   put tBits into pObj["bits"]
+end bitMatrix_flipAll
+
 -- ===================== module: bitSource ===============
 -- =====================================================================
--- bitSource.lc — MSB-first bit reader over a byte array.
--- Port of ZXing Common\BitSource. Spec §8.3. Requires: qrCompat.lc.
+-- bitSource.lc - MSB-first bit reader over a byte array.
+-- Port of ZXing Common\BitSource. Spec section 8.3. Requires: qrCompat.lc.
 --
 -- Instance (Pattern A):
---   pObj["bytes"][k]    — dense 0-based array of byte values 0..255
---   pObj["byteOffset"]  — current byte index
---   pObj["bitOffset"]   — current bit within that byte (0 = MSB)
+--   pObj["bytes"][k]    - dense 0-based array of byte values 0..255
+--   pObj["byteOffset"]  - current byte index
+--   pObj["bitOffset"]   - current bit within that byte (0 = MSB)
 --
 -- readBits is a COMMAND (it mutates the offsets) that returns its value via
--- `the result` (spec §5 convention: mutators are commands). Call site:
+-- `the result` (spec section 5 convention: mutators are commands). Call site:
 --     bitSource_readBits tSrc, 4
 --     put the result into tValue
 -- This drives DecodedBitStreamParser.
@@ -1139,9 +1222,9 @@ command bitSource_readBits @pObj, pNumBits
       put (8 - pObj["bitOffset"]) into bitsLeft
       put min(n, bitsLeft) into toRead
       put (bitsLeft - toRead) into bitsToNotRead
-      put shl((255 div (2 ^ (8 - toRead))), bitsToNotRead) into tMask
+      put qr_shl((255 div (2 ^ (8 - toRead))), bitsToNotRead) into tMask
       put pObj["bytes"][pObj["byteOffset"]] into curByte
-      put uShr((curByte bitAnd tMask), bitsToNotRead) into tResult
+      put qr_uShr((curByte bitAnd tMask), bitsToNotRead) into tResult
       subtract toRead from n
       add toRead to pObj["bitOffset"]
       if pObj["bitOffset"] = 8 then
@@ -1154,15 +1237,15 @@ command bitSource_readBits @pObj, pNumBits
    if n > 0 then
       repeat while n >= 8
          put pObj["bytes"][pObj["byteOffset"]] into curByte
-         put u32((shl(tResult, 8)) bitOr (curByte bitAnd 255)) into tResult
+         put qr_u32((qr_shl(tResult, 8)) bitOr (curByte bitAnd 255)) into tResult
          add 1 to pObj["byteOffset"]
          subtract 8 from n
       end repeat
       if n > 0 then
          put (8 - n) into bitsToNotRead
-         put shl((255 div (2 ^ bitsToNotRead)), bitsToNotRead) into tMask
+         put qr_shl((255 div (2 ^ bitsToNotRead)), bitsToNotRead) into tMask
          put pObj["bytes"][pObj["byteOffset"]] into curByte
-         put u32((shl(tResult, n)) bitOr uShr((curByte bitAnd tMask), bitsToNotRead)) into tResult
+         put qr_u32((qr_shl(tResult, n)) bitOr qr_uShr((curByte bitAnd tMask), bitsToNotRead)) into tResult
          add n to pObj["bitOffset"]
       end if
    end if
@@ -1172,49 +1255,43 @@ end bitSource_readBits
 
 -- ===================== module: luminanceSource =========
 -- =====================================================================
--- luminanceSource.lc — luminance plane for the binarizers. Spec §7.
+-- luminanceSource.lc - luminance plane for the binarizers. Spec section 7.
 -- Port of ZXing LuminanceSource / GDLuminanceSource (server variant).
 -- Requires: qrCompat.lc (only for completeness; uses builtins).
 --
 -- Instance (Pattern A):
 --   pObj["width"], pObj["height"]
---   pObj["lum"][i]   — flat 0-based greyscale 0..255, row-major (i = y*width + x)
+--   pObj["lum"][i]   - flat 0-based greyscale 0..255, row-major (i = y*width + x)
 --
 -- TWO construction paths, deliberately separated:
---   * newFromImageData(w,h,raw)  — PURE byte math (§7.3). Fully unit-testable
+--   * newFromImageData(w,h,raw)  - PURE byte math (section 7.3). Fully unit-testable
 --     with synthetic 4-byte/pixel data; no engine image object involved.
---   * newFromData(bytes)         — decodes a PNG/JPG/GIF/BMP via the engine
---     IMAGE OBJECT (§7.1). This is the ONE piece that may not work in a
+--   * newFromData(bytes)         - decodes a PNG/JPG/GIF/BMP via the engine
+--     IMAGE OBJECT (section 7.1). This is the ONE piece that may not work in a
 --     headless cPanel server; qr_imageprobe.lc tests exactly that. Not part
 --     of the unit suite.
 -- =====================================================================
 
--- §7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
--- raw layout per §7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
+-- section 7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
+-- raw layout per section 7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
 function luminanceSource_newFromImageData pW, pH, pRaw
-   local tObj, p, o, r, g, b, n, tLum
+   local tObj, p, o, n, tLum
    put pW into tObj["width"]
    put pH into tObj["height"]
    put (pW * pH) into n
-   -- Hot loop (one iteration per pixel). Three behaviour-preserving speedups vs
-   -- the naive form (spec §11 -- this is the documented cost centre):
-   --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE
-   --     at the end, so each iteration does one array-key write instead of a
-   --     nested tObj["lum"][idx] lookup-then-write;
-   --   * use the loop counter p directly as the 0-based pixel index (idx == p);
-   --   * carry the byte offset o with `add 4` instead of recomputing p*4.
-   -- Result is bit-identical: pixel p reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
-   -- byte1=alpha,2=R,3=G,4=B layout of §7.2) and writes lum[p].
+   -- Hot loop (one iteration per pixel; spec section 11 - the documented cost
+   -- centre). TWO statements per pixel:
+   --   * accumulate into a FLAT local (tLum) stored into tObj["lum"] ONCE;
+   --   * the loop counter p is the 0-based pixel index; the byte offset o is
+   --     carried with `add 4` (pixel p reads bytes 4p+2/4p+3/4p+4 = R/G/B);
+   --   * the greyscale rule "r if r=g=b, else (r+2g+b)/4 truncated" is written
+   --     branch-free as (r + 2g + b) div 4: when r=g=b that is (4r) div 4 = r,
+   --     and for non-negative integers div IS the truncated quotient. Bit-
+   --     identical to the branching form (proven under the headless model).
    put 0 into o
    repeat with p = 0 to (n - 1)
-      put byteToNum(byte (o + 2) of pRaw) into r
-      put byteToNum(byte (o + 3) of pRaw) into g
-      put byteToNum(byte (o + 4) of pRaw) into b
-      if (r = g) and (g = b) then
-         put r into tLum[p]
-      else
-         put trunc((r + (2 * g) + b) / 4) into tLum[p]
-      end if
+      put ((byteToNum(byte (o + 2) of pRaw) + (2 * byteToNum(byte (o + 3) of pRaw)) \
+            + byteToNum(byte (o + 4) of pRaw)) div 4) into tLum[p]
       add 4 to o
    end repeat
    put tLum into tObj["lum"]
@@ -1230,45 +1307,74 @@ function luminanceSource_newFromLuminances pW, pH, pLum
    return tObj
 end luminanceSource_newFromLuminances
 
--- IMAGE-OBJECT PATH (§7.1). Requires a working engine image object. A headless
--- engine may lack a default stack to host a control, so we ensure one exists
--- first; qr_imageprobe.lc confirms this path on a given engine.
+-- IMAGE-OBJECT PATH (section 7.1). Requires a working engine image object;
+-- qr_imageprobe.lc confirms this path on a given engine.
 --
 -- Decode the image bytes to a raw 4-byte/pixel plane via the engine image
 -- object, ONCE. Returns {["width"],["height"],["raw"]}. Separated from the
 -- greyscale/downsample step so a robust reader can decode the (costly) image a
 -- single time and then derive several luminance sources at different scales
--- from the same raw plane (spec §11: the image decode + pixel loops dominate).
+-- from the same raw plane (spec section 11: image decode + pixel loops dominate).
+--
+-- HOST-APP SAFETY (xtalk-suite engine notes 5.3 / 5.5, lessons L2-02, L3-03):
+-- an unqualified control reference resolves against THE DEFAULTSTACK (whatever
+-- stack is frontmost, i.e. the host's), and `create stack` opens the stack it
+-- makes. Until 2026-09 this handler created its scratch image on the host's
+-- own front card after the first call, firing newImage/deleteImage into the
+-- host's scripts and marking its stack dirty. Now: remember the host's
+-- defaultStack, park the scratch image on the library's own invisible
+-- "qrHostStack", lock messages around the create/fill/read/delete, and put the
+-- defaultStack (and the lockMessages state) back on EVERY exit - the failing
+-- one included (the throw happens after `end try`: a throw inside a catch is
+-- lost on OXT, engine notes 3.2). The scratch image has a fixed name and is
+-- deleted before reuse, so an aborted call can never leak a control.
+-- EVIDENCE: verified statically and by construction from the suite's engine
+-- notes; this exact sequence needs an OXT pass on a desktop engine (it cannot
+-- run under the headless model, which supplies its own PNG decoder here).
 --
 -- pMaxDim is accepted for signature compatibility but does not resize here:
 -- downsampling is performed by the caller (luminanceSource_fromRawPlane), so this
 -- handler always returns the full-resolution pixels. (The imageData layout after
 -- an in-engine resize is build-specific, so resizing is left to the host app.)
 function luminanceSource_decodeRawPlane pImageData, pMaxDim
-   local tW, tH, tRaw, tName, e, tPlane
-   -- ensure a host stack exists (ignore if a default one already does)
+   local tW, tH, tRaw, tName, e, tPlane, tSavedStack, tSavedLock, tErr, tHost
+   put "qrHostStack" into tHost
+   put "qrScratchImage" into tName
+   put the defaultStack into tSavedStack
+   put the lockMessages into tSavedLock
+   put empty into tErr
+   put 0 into tW
+   put 0 into tH
+   put empty into tRaw
+   lock messages
    try
-      if there is not a stack "qrHostStack" then
-         create invisible stack "qrHostStack"
+      if there is not a stack tHost then
+         create invisible stack tHost
       end if
+      set the defaultStack to tHost
+      if there is an image tName then delete image tName
+      create invisible image tName
+      set the lockLoc of image tName to true
+      put pImageData into image tName                  -- decode PNG/JPG/GIF/BMP
+      put the formattedWidth of image tName into tW
+      put the formattedHeight of image tName into tH
+      set the width of image tName to tW
+      set the height of image tName to tH
+      put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
+      delete image tName
    catch e
-      -- a default stack may already be available; proceed regardless
+      put e into tErr
    end try
-   put "qrSrc_" & the milliseconds into tName       -- avoid name collisions
-   create invisible image tName
-   set the lockLoc of image tName to true
-   put pImageData into image tName                  -- decode PNG/JPG/GIF/BMP
-   put the formattedWidth of image tName into tW
-   put the formattedHeight of image tName into tH
-   set the width of image tName to tW
-   set the height of image tName to tH
-   put the imageData of image tName into tRaw       -- 4 bytes/pixel, row-major
-   delete image tName
+   if tSavedStack is not empty then set the defaultStack to tSavedStack
+   set the lockMessages to tSavedLock
+   if tErr is not empty then
+      throw "NotFound: the engine image object could not decode the image -- " & tErr
+   end if
    -- Guard a silent decode failure. On a build whose engine lacks a codec for
    -- this format (notably JPEG on some headless xTalk server builds), the
    -- image object decodes to 0x0 / empty imageData rather than erroring -- which
    -- the rest of the pipeline would mistake for a blank photo and report as a
-   -- generic "no QR". Surface the real reason instead (spec §7.1).
+   -- generic "no QR". Surface the real reason instead (spec section 7.1).
    if (tW <= 0) or (tH <= 0) then
       throw "NotFound: image did not decode (0 x 0) -- unsupported format? this engine build may lack a JPEG codec; try a PNG"
    end if
@@ -1297,15 +1403,22 @@ end luminanceSource_stepForDims
 -- build a luminance source from an already-decoded raw plane, downsampling so
 -- neither side exceeds pMaxDim (omit pMaxDim for full resolution).
 function luminanceSource_fromRawPlane pPlane, pMaxDim
-   local tW, tH, tStep
+   local tStep
+   put luminanceSource_stepForDims(pPlane["width"], pPlane["height"], pMaxDim) into tStep
+   return luminanceSource_fromRawPlaneStep(pPlane, tStep)
+end luminanceSource_fromRawPlane
+
+-- the same, for an explicit integer downsample step (1 = full resolution); the
+-- robust reader plans its resolution ladder in steps so no rung repeats work
+function luminanceSource_fromRawPlaneStep pPlane, pStep
+   local tW, tH
    put pPlane["width"] into tW
    put pPlane["height"] into tH
-   put luminanceSource_stepForDims(tW, tH, pMaxDim) into tStep
-   if tStep > 1 then
-      return luminanceSource_downsampleRaw(tW, tH, pPlane["raw"], tStep)
+   if pStep > 1 then
+      return luminanceSource_downsampleRaw(tW, tH, pPlane["raw"], pStep)
    end if
    return luminanceSource_newFromImageData(tW, tH, pPlane["raw"])
-end luminanceSource_fromRawPlane
+end luminanceSource_fromRawPlaneStep
 
 -- decode image bytes straight to a luminance source (optionally downsampled).
 -- Behaviour-preserving wrapper over decodeRawPlane + fromRawPlane; this is the
@@ -1320,27 +1433,32 @@ function luminanceSource_newFromData pImageData, pMaxDim
 end luminanceSource_newFromData
 
 -- Build a luminance source from a 4-byte/pixel raw plane, sampling every
--- pStep-th pixel in x and y (nearest-neighbour downsample). Reuses the verified
--- §7.3 greyscale by reassembling a reduced 4-bpp raw and calling newFromImageData.
+-- pStep-th pixel in x and y (nearest-neighbour downsample), in ONE pass: the
+-- kept pixel's R/G/B bytes (o+2, o+3, o+4) go straight through the section 7.3
+-- greyscale rule of newFromImageData above. (Until 2026-09 this rebuilt a
+-- reduced raw string first and then converted it - two passes over every kept
+-- pixel; the bytes read and the values written are identical.)
 function luminanceSource_downsampleRaw pW, pH, pRaw, pStep
-   local tOutW, tOutH, sx, sy, tOStep, o, tReduced
+   local tOutW, tOutH, sx, sy, tOStep, o, p, tLum, tObj
    put (((pW - 1) div pStep) + 1) into tOutW
    put (((pH - 1) div pStep) + 1) into tOutH
-   put empty into tReduced
-   -- Carry the source byte offset incrementally. Within a row each kept pixel is
-   -- pStep source pixels (= pStep*4 bytes) past the previous one, so advance o by
-   -- a constant add instead of recomputing ((sy*pStep)*pW + sx*pStep)*4 for every
-   -- output pixel. The byte ranges copied are identical (same idiom as the
-   -- per-pixel `add 4` in luminanceSource_newFromImageData).
+   -- Within a row each kept pixel is pStep source pixels (= pStep*4 bytes) past
+   -- the previous one, so o advances by a constant add per kept pixel.
    put (pStep * 4) into tOStep
+   put 0 into p
    repeat with sy = 0 to (tOutH - 1)
       put (((sy * pStep) * pW) * 4) into o
       repeat with sx = 0 to (tOutW - 1)
-         put (byte (o + 1) to (o + 4) of pRaw) after tReduced
+         put ((byteToNum(byte (o + 2) of pRaw) + (2 * byteToNum(byte (o + 3) of pRaw)) \
+               + byteToNum(byte (o + 4) of pRaw)) div 4) into tLum[p]
          add tOStep to o
+         add 1 to p
       end repeat
    end repeat
-   return luminanceSource_newFromImageData(tOutW, tOutH, tReduced)
+   put tOutW into tObj["width"]
+   put tOutH into tObj["height"]
+   put tLum into tObj["lum"]
+   return tObj
 end luminanceSource_downsampleRaw
 
 function luminanceSource_getWidth pObj
@@ -1386,15 +1504,28 @@ end luminanceSource_crop
 
 -- ===================== module: globalHistogramBinarizer 
 -- =====================================================================
--- globalHistogramBinarizer.lc — global black-point via 32-bucket histogram.
--- Port of ZXing GlobalHistogramBinarizer. Spec §8 / module inventory.
+-- globalHistogramBinarizer.lc - global black-point via 32-bucket histogram.
+-- Port of ZXing GlobalHistogramBinarizer. Spec section 8 / module inventory.
 -- Requires: qrCompat.lc, bitMatrix.lc, luminanceSource.lc.
 --
 -- ghb_getBlackMatrix(pSrc) -> BitMatrix (true = black). Samples 4 rows to
 -- build a 32-bucket luminance histogram, estimates a black point, then
 -- thresholds the whole image. Throws "NotFound: ..." when contrast is too low
--- (mirrors ZXing throwing NotFoundException; spec §6.6).
+-- (mirrors ZXing throwing NotFoundException; spec section 6.6).
 -- =====================================================================
+
+local sGHPow2, sGHPow2Ready      -- sGHPow2[b] = 2^b, b = 0..31; built once
+
+command ghb_ensurePow2
+   local b, v
+   if sGHPow2Ready is true then exit ghb_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sGHPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sGHPow2Ready
+end ghb_ensurePow2
 
 constant kLumBits    = 5
 constant kLumShift   = 3      -- 8 - kLumBits
@@ -1454,12 +1585,12 @@ function ghb_estimateBlackPoint pBuckets
       end if
    end repeat
 
-   return shl(bestValley, kLumShift)
+   return qr_shl(bestValley, kLumShift)
 end ghb_estimateBlackPoint
 
 function ghb_getBlackMatrix pSrc
    local tW, tH, tLum, tMatrix, x, y, tRow, tRight, tLeft, tPixel
-   local tBuckets, b, blackPoint, tOffset, tRowBase
+   local tBuckets, b, blackPoint, tOffset, tRowBase, tBits, tRowSize, tWordOff, tAcc, tBit
    put pSrc["width"] into tW
    put pSrc["height"] into tH
    put pSrc["lum"] into tLum
@@ -1478,27 +1609,45 @@ function ghb_getBlackMatrix pSrc
       put (tRow * tW) into tRowBase
       repeat with x = tLeft to (tRight - 1)
          put tLum[tRowBase + x] into tPixel
-         add 1 to tBuckets[uShr(tPixel, kLumShift)]
+         add 1 to tBuckets[qr_uShr(tPixel, kLumShift)]
       end repeat
    end repeat
 
    put ghb_estimateBlackPoint(tBuckets) into blackPoint
 
-   -- threshold the whole image: pixel < blackPoint => black
+   -- threshold the whole image: pixel < blackPoint => black. HOT PATH (2026-09):
+   -- the matrix is fresh (all zero), so each 32-pixel word is accumulated in a
+   -- local and stored once - exactly the bits bitMatrix_set would have set one
+   -- command call at a time (proven bit-identical under the headless model).
+   ghb_ensurePow2
+   put tMatrix["bits"] into tBits
+   put tMatrix["rowSize"] into tRowSize
    repeat with y = 0 to (tH - 1)
       put (y * tW) into tOffset
+      put (y * tRowSize) into tWordOff
+      put 0 into tAcc
+      put 0 into tBit
       repeat with x = 0 to (tW - 1)
-         if tLum[tOffset + x] < blackPoint then bitMatrix_set tMatrix, x, y
+         if tLum[tOffset + x] < blackPoint then add sGHPow2[tBit] to tAcc
+         add 1 to tBit
+         if tBit = 32 then
+            if tAcc <> 0 then put tAcc into tBits[tWordOff]
+            add 1 to tWordOff
+            put 0 into tAcc
+            put 0 into tBit
+         end if
       end repeat
+      if tAcc <> 0 then put tAcc into tBits[tWordOff]
    end repeat
+   put tBits into tMatrix["bits"]
 
    return tMatrix
 end ghb_getBlackMatrix
 
 -- ===================== module: hybridBinarizer =========
 -- =====================================================================
--- hybridBinarizer.lc — local adaptive threshold (the default binarizer).
--- Port of ZXing HybridBinarizer. Spec §8 / module inventory.
+-- hybridBinarizer.lc - local adaptive threshold (the default binarizer).
+-- Port of ZXing HybridBinarizer. Spec section 8 / module inventory.
 -- Requires: qrCompat.lc, bitMatrix.lc, luminanceSource.lc, globalHistogramBinarizer.lc.
 --
 -- hb_getBlackMatrix(pSrc) -> BitMatrix (true = black). Divides the image into
@@ -1512,10 +1661,30 @@ end ghb_getBlackMatrix
 -- dynamic range exceeds MIN_DYNAMIC_RANGE, sums the remaining rows without
 -- updating min/max. xTalk's `repeat with` ignores in-body changes to its
 -- loop counter, so that early-out cannot be expressed by mutating the counter
--- without double-counting. We sum all 64 pixels in a plain double loop — the
+-- without double-counting. We sum all 64 pixels in a plain double loop - the
 -- RESULT is identical (the sum is the same; once range>24 the final low-range
--- branch is skipped either way), only the per-block cost differs. (spec §11)
+-- branch is skipped either way), only the per-block cost differs. (spec section 11)
 -- =====================================================================
+
+-- HOT PATH (2026-09): the threshold step writes the black matrix's 32-bit
+-- words directly. A block row is 8 pixels; when those 8 bits fall inside ONE
+-- word (the common, aligned case) they are accumulated in a local and OR-ed
+-- into the word once; the clamped last block of a row may straddle two words
+-- and takes the per-pixel path. The bits set are exactly those bitMatrix_set
+-- would have set one command call at a time (proven bit-identical under the
+-- headless model on every fixture).
+local sHBPow2, sHBPow2Ready      -- sHBPow2[b] = 2^b, b = 0..31; built once
+
+command hb_ensurePow2
+   local b, v
+   if sHBPow2Ready is true then exit hb_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sHBPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sHBPow2Ready
+end hb_ensurePow2
 
 constant kBlockSizePower = 3      -- 8x8 blocks
 constant kBlockSize      = 8      -- 1 << kBlockSizePower
@@ -1579,13 +1748,13 @@ function hb_calculateBlackPoints pSrc, pSubW, pSubH, pW, pH
 end hb_calculateBlackPoints
 
 -- threshold the 8x8 block at (tBx,tBy) against the 5x5-smoothed local average.
--- pLum (the whole luminance plane) and pBP (the black points) are taken BY
--- REFERENCE -- this command only reads them, but @ guarantees the large arrays
+-- pBits (the matrix's flat word array), pLum (the whole luminance plane) and
+-- pBP (the black points) are taken BY REFERENCE: @ guarantees the large arrays
 -- are never copied per block (this runs once per 8x8 block, i.e. tens of
--- thousands of times on a big image). Same big-array-by-ref idiom as arraycopy.
-command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
-   local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx, tPixel
-   local tNbBase, tRowY, tRowBase
+-- thousands of times on a big image). Same big-array-by-ref idiom as qr_arraycopy.
+command hb_thresholdBlock @pBits, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH, pRowSize
+   local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx
+   local tNbBase, tRowY, tRowBase, tBit0, tOneWord, tAcc, tOff, x
    put (tBx * kBlockSize) into tXoff
    if (tXoff + kBlockSize) > pW then put (pW - kBlockSize) into tXoff
    put (tBy * kBlockSize) into tYoff
@@ -1602,21 +1771,37 @@ command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
    end repeat
    put (tSum div 25) into tAvg
 
-   -- hoist the pixel-row base (and the row's y, reused as the set() y-arg) out of
-   -- the inner loop: per-pixel index arithmetic drops to a single add (tRowBase +
-   -- xx). The flat index and the (x,y) passed to bitMatrix_set are unchanged.
+   -- the 8 pixels of a block row share one 32-bit word when the block's first
+   -- bit index within its word is <= 24 (every 8-aligned block; only a clamped
+   -- last block can straddle two words)
+   put (tXoff bitAnd 31) into tBit0
+   put (tBit0 <= 24) into tOneWord
    repeat with yy = 0 to (kBlockSize - 1)
       put (tYoff + yy) into tRowY
       put ((tRowY * pW) + tXoff) into tRowBase
-      repeat with xx = 0 to (kBlockSize - 1)
-         put pLum[tRowBase + xx] into tPixel
-         if tPixel <= tAvg then bitMatrix_set pMatrix, (tXoff + xx), tRowY
-      end repeat
+      if tOneWord then
+         put 0 into tAcc
+         repeat with xx = 0 to (kBlockSize - 1)
+            if pLum[tRowBase + xx] <= tAvg then add sHBPow2[tBit0 + xx] to tAcc
+         end repeat
+         if tAcc <> 0 then
+            put ((tRowY * pRowSize) + (tXoff div 32)) into tOff
+            put (pBits[tOff] bitOr tAcc) into pBits[tOff]
+         end if
+      else
+         repeat with xx = 0 to (kBlockSize - 1)
+            if pLum[tRowBase + xx] <= tAvg then
+               put (tXoff + xx) into x
+               put ((tRowY * pRowSize) + (x div 32)) into tOff
+               put (pBits[tOff] bitOr sHBPow2[x bitAnd 31]) into pBits[tOff]
+            end if
+         end repeat
+      end if
    end repeat
 end hb_thresholdBlock
 
 function hb_getBlackMatrix pSrc
-   local tW, tH, tSubW, tSubH, tBP, tMatrix, tBx, tBy, tLum
+   local tW, tH, tSubW, tSubH, tBP, tMatrix, tBx, tBy, tLum, tBits, tRowSize
    put pSrc["width"] into tW
    put pSrc["height"] into tH
 
@@ -1632,29 +1817,34 @@ function hb_getBlackMatrix pSrc
 
    put hb_calculateBlackPoints(pSrc, tSubW, tSubH, tW, tH) into tBP
    put bitMatrix_new(tW, tH) into tMatrix
-   -- Hoist the luminance plane into a local ONCE, then pass it (and the black
-   -- points) by reference per block, instead of re-evaluating pSrc["lum"] -- a
-   -- subarray extraction -- on every one of the tSubW*tSubH iterations.
+   -- Hoist the luminance plane and the matrix's word array into locals ONCE,
+   -- then pass them (and the black points) by reference per block, instead of
+   -- re-evaluating a subarray extraction on every one of the tSubW*tSubH
+   -- iterations; the words go back into the matrix once at the end.
+   hb_ensurePow2
    put pSrc["lum"] into tLum
+   put tMatrix["bits"] into tBits
+   put tMatrix["rowSize"] into tRowSize
    repeat with tBy = 0 to (tSubH - 1)
       repeat with tBx = 0 to (tSubW - 1)
-         hb_thresholdBlock tMatrix, tLum, tBP, tBx, tBy, tSubW, tSubH, tW, tH
+         hb_thresholdBlock tBits, tLum, tBP, tBx, tBy, tSubW, tSubH, tW, tH, tRowSize
       end repeat
    end repeat
+   put tBits into tMatrix["bits"]
    return tMatrix
 end hb_getBlackMatrix
 
 -- ===================== module: binaryBitmap ============
 -- =====================================================================
--- binaryBitmap.lc — caches the black matrix for the reader. Spec §3, §module inv.
+-- binaryBitmap.lc - caches the black matrix for the reader. Spec section 3, sectionmodule inv.
 -- Port of ZXing BinaryBitmap. Requires: bitMatrix.lc, hybridBinarizer.lc,
 -- globalHistogramBinarizer.lc, luminanceSource.lc.
 --
 -- Instance (Pattern A):
---   pObj["src"]       — luminanceSource array
---   pObj["binarizer"] — "hybrid" (default) or "global"
---   pObj["matrix"]    — cached BitMatrix (computed lazily by the selected binarizer)
---   pObj["hasMatrix"] — whether the cache is populated
+--   pObj["src"]       - luminanceSource array
+--   pObj["binarizer"] - "hybrid" (default) or "global"
+--   pObj["matrix"]    - cached BitMatrix (computed lazily by the selected binarizer)
+--   pObj["hasMatrix"] - whether the cache is populated
 --
 -- The detector pulls the binarized BitMatrix from here; binaryBitmap_getBlackMatrix
 -- computes it once (HybridBinarizer, the default) and caches it.
@@ -1703,7 +1893,7 @@ function binaryBitmap_getBlackMatrix pObj
 end binaryBitmap_getBlackMatrix
 
 -- ASCII preview of the cached matrix ("X" = black, " " = white), for debugging
--- and for the §10.5 cross-oracle dump against the PHP reference.
+-- and for the section 10.5 cross-oracle dump against the PHP reference.
 function binaryBitmap_toString pObj
    local m, w, h, x, y, s, tLine
    binaryBitmap_ensureMatrix pObj
@@ -1727,10 +1917,10 @@ end binaryBitmap_toString
 
 -- ===================== module: errorCorrectionLevel ====
 -- =====================================================================
--- errorCorrectionLevel.lc — QR error-correction levels. Spec §8.5.
+-- errorCorrectionLevel.lc - QR error-correction levels. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\ErrorCorrectionLevel. Requires: nothing.
 --
--- THE ORDINAL/BIT SUBTLETY (spec §13 checklist item):
+-- THE ORDINAL/BIT SUBTLETY (spec section 13 checklist item):
 -- ZXing orders the enum L, M, Q, H (ordinals 0,1,2,3) but the 2-bit field
 -- stored in the format information is:  M=00, L=01, H=10, Q=11.
 -- The ECBlocks array in Version is indexed by getOrdinal() (the L,M,Q,H order),
@@ -1787,7 +1977,7 @@ end ecl_forBits
 
 -- ===================== module: mode ====================
 -- =====================================================================
--- mode.lc — QR encoding-mode table. Spec §8.5.
+-- mode.lc - QR encoding-mode table. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\Mode. Requires: nothing.
 --
 -- A "mode" is identified by its canonical NAME string (e.g. "NUMERIC").
@@ -1795,7 +1985,7 @@ end ecl_forBits
 -- mode_charCountBits(name, version) returns the character-count bit width for
 -- the version range: offset 0 if v<=9, 1 if v<=26, else 2.
 --
--- Table (verbatim, spec §8.5):
+-- Table (verbatim, spec section 8.5):
 --   mode                 ccBits [v1-9,v10-26,v27-40]   4-bit value
 --   TERMINATOR           0,0,0                          0x00
 --   NUMERIC              10,12,14                       0x01
@@ -1876,7 +2066,7 @@ end mode_charCountBits
 
 -- ===================== module: dataMask ================
 -- =====================================================================
--- dataMask.lc — the 8 QR data-mask predicates. Spec §8.5.
+-- dataMask.lc - the 8 QR data-mask predicates. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\DataMask. Requires: qrCompat.lc, bitMatrix.lc.
 --
 -- dataMask_isMasked(ref, i, j) -> boolean   (i = row, j = column)
@@ -1920,21 +2110,42 @@ function dataMask_isMasked pRef, i, j
    throw "Format: bad data mask reference " & pRef
 end dataMask_isMasked
 
--- flip the masked cells of the dimension x dimension matrix, in place
+local sDMPow2, sDMPow2Ready      -- sDMPow2[b] = 2^b, b = 0..31; built once
+
+command dm_ensurePow2
+   local b, v
+   if sDMPow2Ready is true then exit dm_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sDMPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sDMPow2Ready
+end dm_ensurePow2
+
+-- flip the masked cells of the dimension x dimension matrix, in place. The
+-- flips go to the matrix's word array directly (x = j, y = i) - the same bits
+-- bitMatrix_flip toggles one command call at a time.
 command dataMask_unmask @pBits, pDimension, pRef
-   local i, j
+   local i, j, tWords, tRowSize, tRowBase, tOff
+   dm_ensurePow2
+   put pBits["bits"] into tWords
+   put pBits["rowSize"] into tRowSize
    repeat with i = 0 to (pDimension - 1)
+      put (i * tRowSize) into tRowBase
       repeat with j = 0 to (pDimension - 1)
          if dataMask_isMasked(pRef, i, j) then
-            bitMatrix_flip pBits, j, i        -- (x=j, y=i)
+            put (tRowBase + (j div 32)) into tOff
+            put (tWords[tOff] bitXor sDMPow2[j bitAnd 31]) into tWords[tOff]
          end if
       end repeat
    end repeat
+   put tWords into pBits["bits"]
 end dataMask_unmask
 
 -- ===================== module: formatInformation =======
 -- =====================================================================
--- formatInformation.lc — decode the 15-bit QR format info. Spec §8.5.
+-- formatInformation.lc - decode the 15-bit QR format info. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\FormatInformation.
 -- Requires: qrCompat.lc, errorCorrectionLevel.lc.
 --
@@ -1947,13 +2158,13 @@ end dataMask_unmask
 -- Returns an array: ["ecLevel"] = EC ordinal (0..3, L/M/Q/H), ["dataMask"] = 0..7.
 --
 -- FORMAT_INFO_DECODE_LOOKUP rows are "dataBits,maskedSequence" (verified by
--- regenerating from BCH gen 0x537 ^ 0x5412 — see tools/verify, 32 entries).
+-- regenerating from BCH gen 0x537 ^ 0x5412 - see tools/verify, 32 entries).
 -- dataBits high 2 bits = EC field value (M=00,L=01,H=10,Q=11), low 3 = mask ref.
 -- =====================================================================
 
 -- The QR format-info mask (0x5412). The lookup column sFmtSeq below already
 -- has this applied (entries = bch(data) XOR this), so on-symbol reads are
--- compared directly — no run-time XOR needed. Kept for documentation.
+-- compared directly - no run-time XOR needed. Kept for documentation.
 constant kFormatInfoMaskQR = 21522    -- 0x5412
 
 local sFmtReady, sFmtData, sFmtSeq
@@ -1987,7 +2198,7 @@ end fmt_ensure
 function fmt_popcount n
    local c
    put 0 into c
-   put u32(n) into n
+   put qr_u32(n) into n
    repeat while n > 0
       add (n bitAnd 1) to c
       put (n div 2) into n
@@ -2010,13 +2221,13 @@ function fmt_decode pFormatInfo1, pFormatInfo2
          return fmt_unpack(sFmtData[i])
       end if
       -- otherwise track the closest over BOTH copies
-      put fmt_popcount(u32(pFormatInfo1 bitXor targetInfo)) into d1
+      put fmt_popcount(qr_u32(pFormatInfo1 bitXor targetInfo)) into d1
       if d1 < bestDifference then
          put sFmtData[i] into bestData
          put d1 into bestDifference
       end if
       if pFormatInfo1 <> pFormatInfo2 then
-         put fmt_popcount(u32(pFormatInfo2 bitXor targetInfo)) into d2
+         put fmt_popcount(qr_u32(pFormatInfo2 bitXor targetInfo)) into d2
          if d2 < bestDifference then
             put sFmtData[i] into bestData
             put d2 into bestDifference
@@ -2032,20 +2243,25 @@ end fmt_decode
 -- split a 5-bit data value into {ecLevel ordinal, dataMask}
 function fmt_unpack pDataBits
    local tRes
-   put ecl_forBits(uShr(pDataBits, 3) bitAnd 3) into tRes["ecLevel"]
+   put ecl_forBits(qr_uShr(pDataBits, 3) bitAnd 3) into tRes["ecLevel"]
    put (pDataBits bitAnd 7) into tRes["dataMask"]
    return tRes
 end fmt_unpack
 
 -- ===================== module: version =================
 -- =====================================================================
--- version.lc — QR Version/EC-block tables (v1-40). Spec §8.5 (largest table).
+-- version.lc - QR Version/EC-block tables (v1-40). Spec section 8.5 (largest table).
 -- Port of ZXing Qrcode\Decoder\Version. Requires: qrCompat.lc, errorCorrectionLevel.lc.
 --
--- The table below was GENERATED from the ZXing data and independently verified:
---   * every version x level total codewords matches the ISO/IEC 18004 totals
---     (160/160 checks), and
---   * the 34 version-info words regenerate from BCH gen 0x1F25.
+-- The table below was GENERATED from the ZXing data and is re-verified by a
+-- COMMITTED oracle, tools/verify_tables.py (run in CI): every row is diffed
+-- field by field against ZXing's Version.java data, every version x level
+-- total matches the ISO/IEC 18004 codeword totals derived from first
+-- principles, and the 34 version-info words regenerate from BCH gen 0x1F25.
+-- (2026-09: rows 39 and 40 carried wrong alignment-centre lists - eight
+-- entries, two of them beyond the symbol - so v39/v40 symbols threw
+-- "BitMatrix: region must fit inside matrix"; found by a synthetic-fixture
+-- corpus generated with an independent encoder and fixed from ZXing's table.)
 -- Each row (delimited by "~"):  ver ~ alignCenters ~ Lblocks ~ Mblocks ~ Qblocks ~ Hblocks
 -- alignCenters: comma list (empty for v1).
 -- a "blocks" field is "ecw/count,data[/count,data]"  (ecw = EC codewords/block).
@@ -2054,7 +2270,7 @@ end fmt_unpack
 --   sVer[v]["dimension"]   = 17 + 4v
 --   sVer[v]["align"]       = comma list of centres
 --   sVer[v]["ec"][ord]     = "ecw;count,data;count,data..."  (ord 0..3 = L,M,Q,H)
--- ECBlocks are indexed by EC ORDINAL (L,M,Q,H) per ErrorCorrectionLevel (spec §8.5).
+-- ECBlocks are indexed by EC ORDINAL (L,M,Q,H) per ErrorCorrectionLevel (spec section 8.5).
 --
 -- VERSION_DECODE_INFO: the 34 raw 18-bit version-info patterns for v7-40.
 -- =====================================================================
@@ -2091,7 +2307,7 @@ end ver_ensure
 function ver_popcount n
    local c
    put 0 into c
-   put u32(n) into n
+   put qr_u32(n) into n
    repeat while n > 0
       add (n bitAnd 1) to c
       put (n div 2) into n
@@ -2111,12 +2327,23 @@ function ver_parseBlocks pBlk
    return tOut
 end ver_parseBlocks
 
+-- ZXing Version.getVersionForNumber throws for anything outside 1..40; the
+-- table lookups below would otherwise hand back empty fields that flow into
+-- arithmetic far from the cause.
+command ver_checkNumber pVersion
+   if (pVersion is not an integer) or (pVersion < 1) or (pVersion > 40) then
+      throw "Format: version " & pVersion & " out of range 1..40"
+   end if
+end ver_checkNumber
+
 function ver_getDimensionForVersion pVersion
+   ver_checkNumber pVersion
    ver_ensure
    return sVer[pVersion]["dimension"]
 end ver_getDimensionForVersion
 
 function ver_getAlignmentCenters pVersion
+   ver_checkNumber pVersion
    ver_ensure
    return sVer[pVersion]["align"]      -- comma list (may be empty)
 end ver_getAlignmentCenters
@@ -2124,6 +2351,7 @@ end ver_getAlignmentCenters
 -- EC codewords per block, for version + EC ordinal
 function ver_getEcCodewordsPerBlock pVersion, pEcOrdinal
    local tEC
+   ver_checkNumber pVersion
    ver_ensure
    put sVer[pVersion]["ec"][pEcOrdinal] into tEC
    set the itemDelimiter to ";"
@@ -2133,6 +2361,7 @@ end ver_getEcCodewordsPerBlock
 -- returns the block layout as lines "count,dataCodewords" for version+ordinal
 function ver_getEcBlocks pVersion, pEcOrdinal
    local tEC, tOut, i
+   ver_checkNumber pVersion
    ver_ensure
    put sVer[pVersion]["ec"][pEcOrdinal] into tEC
    set the itemDelimiter to ";"
@@ -2159,10 +2388,32 @@ function ver_getTotalDataCodewords pVersion, pEcOrdinal
    return tSum
 end ver_getTotalDataCodewords
 
--- version implied by a sampled dimension: (dimension - 17) / 4
+-- total codewords (data + EC) in a symbol of this version; the same for every
+-- EC level, so the L layout (ordinal 0) is summed. ZXing Version.getTotalCodewords.
+function ver_getTotalCodewords pVersion
+   local tBlocks, tLn, tSum, cnt, dat, tEcw
+   put ver_getEcCodewordsPerBlock(pVersion, 0) into tEcw
+   put ver_getEcBlocks(pVersion, 0) into tBlocks
+   put 0 into tSum
+   set the lineDelimiter to lf
+   repeat for each line tLn in tBlocks
+      if tLn is empty then next repeat
+      set the itemDelimiter to comma
+      put (item 1 of tLn) into cnt
+      put (item 2 of tLn) into dat
+      add (cnt * (dat + tEcw)) to tSum
+   end repeat
+   return tSum
+end ver_getTotalCodewords
+
+-- version implied by a sampled dimension: (dimension - 17) / 4; a dimension
+-- outside 21..177 is a Format error, as in ZXing (getVersionForNumber throws).
 function ver_getProvisionalVersionForDimension pDimension
+   local tVer
    if ((pDimension mod 4) <> 1) then throw "Format: dimension not %4==1"
-   return ((pDimension - 17) div 4)
+   put ((pDimension - 17) div 4) into tVer
+   ver_checkNumber tVer
+   return tVer
 end ver_getProvisionalVersionForDimension
 
 -- decode the 18-bit version information (Hamming-nearest within <=3 bits)
@@ -2178,7 +2429,7 @@ function ver_decodeVersionInformation pVersionBits
       if targetVersion = pVersionBits then
          return (i + 6)               -- index 1 => v7
       end if
-      put ver_popcount(u32(pVersionBits bitXor targetVersion)) into bitsDifference
+      put ver_popcount(qr_u32(pVersionBits bitXor targetVersion)) into bitsDifference
       if bitsDifference < bestDifference then
          put (i + 6) into bestVersion
          put bitsDifference into bestDifference
@@ -2231,20 +2482,20 @@ function ver_tableData
    put "36~6,24,50,76,102,128,154~30/6,121/14,122~28/6,47/34,48~30/46,24/10,25~30/2,15/64,16" & lf after t
    put "37~6,28,54,80,106,132,158~30/17,122/4,123~28/29,46/14,47~30/49,24/10,25~30/24,15/46,16" & lf after t
    put "38~6,32,58,84,110,136,162~30/4,122/18,123~28/13,46/32,47~30/48,24/14,25~30/42,15/32,16" & lf after t
-   put "39~6,26,52,78,104,130,156,182~30/20,117/4,118~28/40,47/7,48~30/43,24/22,25~30/10,15/67,16" & lf after t
-   put "40~6,30,58,86,114,142,170,198~30/19,118/6,119~28/18,47/31,48~30/34,24/34,25~30/20,15/61,16" & lf after t
+   put "39~6,26,54,82,110,138,166~30/20,117/4,118~28/40,47/7,48~30/43,24/22,25~30/10,15/67,16" & lf after t
+   put "40~6,30,58,86,114,142,170~30/19,118/6,119~28/18,47/31,48~30/34,24/34,25~30/20,15/61,16" & lf after t
    return t
 end ver_tableData
 
 -- ===================== module: characterSetECI =========
 -- =====================================================================
--- characterSetECI.lc — ECI numeric value -> charset name. Spec §8.6.
+-- characterSetECI.lc - ECI numeric value -> charset name. Spec section 8.6.
 -- Port of (the used subset of) ZXing Common\CharacterSetECI.
 -- Requires: nothing.
 --
 -- Only the values likely to appear are mapped; the byte decoder
 -- (decodedBitStreamParser) only natively handles ASCII / ISO-8859-1 / UTF-8
--- (spec §8.7), so other charsets resolve to a name that decoder treats as a
+-- (spec section 8.7), so other charsets resolve to a name that decoder treats as a
 -- best-effort fallback.
 -- =====================================================================
 
@@ -2308,12 +2559,12 @@ function eci_charsetName pValue
       case 30
          return "EUC-KR"
    end switch
-   return "ISO-8859-1"           -- unknown ECI: safe byte-preserving default
+   return empty                  -- unknown ECI: the caller throws Format (ZXing/PHP)
 end eci_charsetName
 
 -- ===================== module: dataBlock ===============
 -- =====================================================================
--- dataBlock.lc — de-interleave codewords into Reed–Solomon blocks. Spec §8.5.
+-- dataBlock.lc - de-interleave codewords into Reed-Solomon blocks. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\DataBlock. Requires: qrCompat.lc, version.lc,
 -- errorCorrectionLevel.lc.
 --
@@ -2324,10 +2575,10 @@ end eci_charsetName
 -- laid out by the version table, all instances expanded).
 --
 -- ZXing's two-pass fill (spec: "critical and easy to get wrong"):
---   pass 1 — distribute DATA codewords round-robin across all blocks, filling
+--   pass 1 - distribute DATA codewords round-robin across all blocks, filling
 --            the common (shorter) length first, then the one extra data
 --            codeword that the longer blocks each carry.
---   pass 2 — distribute EC codewords round-robin across all blocks, where the
+--   pass 2 - distribute EC codewords round-robin across all blocks, where the
 --            longer blocks' EC region starts one slot later.
 -- =====================================================================
 
@@ -2335,7 +2586,7 @@ end eci_charsetName
 function db_getDataBlocks pRaw, pVersion, pEcOrdinal
    local tEcwPerBlock, tBlockSpec, tLn, cnt, dat
    local tBlocks, tNum, b, i, j
-   local tMaxData, tShorterNumData, tLongerStart, tRawIndex, tMaxLen, tIdx
+   local tMaxData, tShorterNumData, tLongerStart, tRawIndex, tMaxLen, tIdx, tTotalLen
 
    put ver_getEcCodewordsPerBlock(pVersion, pEcOrdinal) into tEcwPerBlock
    put ver_getEcBlocks(pVersion, pEcOrdinal) into tBlockSpec   -- lines "count,data"
@@ -2355,6 +2606,17 @@ function db_getDataBlocks pRaw, pVersion, pEcOrdinal
          add 1 to tNum
       end repeat
    end repeat
+
+   -- ZXing/PHP refuse a raw stream whose length is not the version's total:
+   -- without this, a short read would feed empty values into Reed-Solomon and
+   -- fail far from the cause.
+   put 0 into tTotalLen
+   repeat with b = 0 to (tNum - 1)
+      add tBlocks[b]["len"] to tTotalLen
+   end repeat
+   if (the number of elements of pRaw) <> tTotalLen then
+      throw "Format: codeword count " & (the number of elements of pRaw) & " <> " & tTotalLen
+   end if
 
    -- largest data length; "shorter" blocks have tMaxData-1 ... but per ZXing the
    -- shorter length is the FIRST block's numData; longer blocks carry +1.
@@ -2409,14 +2671,34 @@ end db_getDataBlocks
 
 -- ===================== module: decodedBitStreamParser ==
 -- =====================================================================
--- decodedBitStreamParser.lc — bits -> text per encoding mode. Spec §8.5.
+-- decodedBitStreamParser.lc - bits -> text per encoding mode. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\DecodedBitStreamParser.
 -- Requires: qrCompat.lc, bitSource.lc, mode.lc, characterSetECI.lc.
 --
 -- dbsp_decode(bytes, version, ecOrdinal) -> array result:
---   ["text"]   decoded text
---   ["bytes"]  raw decoded byte string (concatenation of byte segments)
---   ["error"]  set + result empty on FormatException
+--   ["text"]     decoded text
+--   ["bytes"]    raw decoded byte string (concatenation of BYTE segments)
+--   ["error"]    set + result empty on a Format error
+--   ["charset"]  the charset the BYTE segments were decoded with ("UTF-8",
+--                "ISO-8859-1", "UTF-16", or the ECI's name), when any BYTE segment
+--   ["fnc1"]     "first" / "second" when an FNC1 mode indicator was present
+--   ["symbologyModifier"]  ZXing's 1..6 code (FNC1 kind x ECI presence)
+--   ["structuredAppendSeq"], ["structuredAppendParity"]  when present (raw
+--                8-bit values; seq = index*16 + (total-1) per ISO/IEC 18004)
+--
+-- CHARSET SELECTION (ZXing DecodedBitStreamParser.decodeByteSegment): a BYTE
+-- segment is decoded with the charset named by the current ECI; with NO ECI
+-- the bytes are GUESSED exactly as ZXing's StringUtils.guessCharset does on a
+-- platform without Shift_JIS: UTF-16 by BOM, UTF-8 when the bytes are valid
+-- UTF-8 and carry a BOM or at least one multi-byte character, else ISO-8859-1.
+-- (Until 2026-09 the port always used ISO-8859-1 without an ECI, so every
+-- UTF-8 payload from a phone-generated code - accents, emoji - came back as
+-- mojibake; found by the synthetic corpus and confirmed against ZXing.)
+--
+-- PORTABILITY: the byte decoders are hand-rolled (no textDecode): ISO-8859-1
+-- is byte = codepoint; UTF-8 and UTF-16 are small explicit decoders. Note that
+-- textDecode(...,"UTF-8") does NOT throw on malformed input on OXT (it
+-- substitutes U+FFFD), so it could never have served as a validity test.
 --
 -- DESIGN NOTE (important): the bit source is a SCRIPT-LOCAL (sSrc) shared by
 -- all handlers in this file, NOT a passed parameter. This guarantees that each
@@ -2425,17 +2707,24 @@ end db_getDataBlocks
 -- luck (the bits after the mode nibble read as TERMINATOR); a multi-segment
 -- input such as ECI+BYTE exposed the misalignment. Script-locals + command-by-
 -- reference are both already proven on the target engine, so this is the
--- highest-confidence design. (Decode is sequential per request — not reentrant,
+-- highest-confidence design. (Decode is sequential per request - not reentrant,
 -- which is fine for server use.)
 --
--- Modes fully supported: NUMERIC, ALPHANUMERIC, BYTE (ISO-8859-1/UTF-8/ASCII),
---   ECI (charset switch), TERMINATOR, FNC1, STRUCTURED_APPEND (skipped).
--- KANJI / HANZI raise the documented §8.7 limitation (no native Shift-JIS/
---   GB2312 in xTalk); the common case is fully covered.
+-- Modes fully supported: NUMERIC, ALPHANUMERIC, BYTE (ISO-8859-1 / UTF-8 /
+--   UTF-16, plus any ECI naming one of those), ECI, TERMINATOR, FNC1 (first and
+--   second position; in an alphanumeric segment "%%" is a literal "%" and a
+--   lone "%" is the GS separator), STRUCTURED_APPEND (sequence + parity).
+-- KANJI / HANZI raise the documented section 8.7 limitation (no Shift-JIS /
+--   GB2312 tables in this build). A BYTE segment under an ECI naming a charset
+--   this build cannot decode (Shift_JIS, GB2312, Big5, Cp125x, ...) keeps the
+--   raw bytes in ["bytes"], maps them byte-for-codepoint into ["text"] and
+--   reports the charset in ["charset"] so a caller can tell. An UNKNOWN ECI
+--   value is a Format error, as in ZXing and the PHP port.
 -- =====================================================================
 
 constant kAlphanumChars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
 constant kDigits = "0123456789"
+constant kGroupSeparator = 29    -- ASCII GS: the FNC1 field separator
 
 local sSrc      -- the shared BitSource for the current decode
 
@@ -2447,11 +2736,18 @@ end dbsp_read
 
 -- main entry. pBytes is a 0-based dense array of codeword bytes.
 function dbsp_decode pBytes, pVersion, pEcOrdinal
-   local tResult, tRaw, tText, tMode, tBits, tCharset, tSeg, tByteRes, e
+   local tResult, tRaw, tText, tMode, tBits, tCharset, tSeg, tByteRes, e, tErr
+   local tFc1, tFnc1Kind, tHasEci, tUsedCharset, tSaSeq, tSaParity, tHasSa
    put bitSource_new(pBytes) into sSrc
    put empty into tText
    put empty into tRaw
-   put "ISO-8859-1" into tCharset       -- default charset until an ECI says otherwise
+   put empty into tCharset        -- empty = no ECI yet: guess per BYTE segment
+   put false into tFc1
+   put empty into tFnc1Kind
+   put false into tHasEci
+   put empty into tUsedCharset
+   put false into tHasSa
+   put empty into tErr
 
    try
       repeat
@@ -2470,24 +2766,36 @@ function dbsp_decode pBytes, pVersion, pEcOrdinal
                put tSeg after tText
                break
             case "ALPHANUMERIC"
-               put dbsp_decodeAlphanumeric(pVersion) into tSeg
+               put dbsp_decodeAlphanumeric(pVersion, tFc1) into tSeg
                put tSeg after tText
                break
             case "BYTE"
                put dbsp_decodeByte(pVersion, tCharset) into tByteRes
                put tByteRes["text"] after tText
                put tByteRes["bytes"] after tRaw
+               put tByteRes["charset"] into tUsedCharset
                break
             case "ECI"
                put dbsp_parseEci() into tCharset
+               put true into tHasEci
                break
             case "FNC1_FIRST_POSITION"
+               -- ZXing: symbology detection only; FNC1 alters alphanumeric "%"
+               put true into tFc1
+               put "first" into tFnc1Kind
+               break
             case "FNC1_SECOND_POSITION"
-               -- structural only; no characters emitted here
+               put true into tFc1
+               put "second" into tFnc1Kind
                break
             case "STRUCTURED_APPEND"
-               -- read 4 (sequence) + 4 (total) + 8 (parity) = 16 bits, ignore
-               put dbsp_read(16) into tBits
+               -- ZXing: 8-bit symbol sequence indicator + 8-bit parity
+               if bitSource_available(sSrc) < 16 then
+                  throw "Format: structured append header truncated"
+               end if
+               put dbsp_read(8) into tSaSeq
+               put dbsp_read(8) into tSaParity
+               put true into tHasSa
                break
             case "KANJI"
             case "HANZI"
@@ -2497,14 +2805,37 @@ function dbsp_decode pBytes, pVersion, pEcOrdinal
          end switch
       end repeat
    catch e
-      put empty into tResult
-      put e into tResult["error"]
-      return tResult
+      put e into tErr
    end try
+   if tErr is not empty then
+      -- keep the tagged contract: an untagged throw (a BitSource exhaustion,
+      -- for instance) is a Format error in ZXing's terms
+      if not ((tErr begins with "Format") or (tErr begins with "NotFound") or (tErr begins with "Checksum")) then
+         put "Format: " & tErr into tErr
+      end if
+      put empty into tResult
+      put tErr into tResult["error"]
+      return tResult
+   end if
 
    put tText into tResult["text"]
    put tRaw into tResult["bytes"]
    put empty into tResult["error"]
+   if tUsedCharset is not empty then put tUsedCharset into tResult["charset"]
+   if tFnc1Kind is not empty then put tFnc1Kind into tResult["fnc1"]
+   if tHasSa then
+      put tSaSeq into tResult["structuredAppendSeq"]
+      put tSaParity into tResult["structuredAppendParity"]
+   end if
+   -- ZXing's symbology modifier: 1 plain, 3 FNC1 first, 5 FNC1 second; +1 with an ECI
+   if tFnc1Kind is "first" then
+      put 3 into tResult["symbologyModifier"]
+   else if tFnc1Kind is "second" then
+      put 5 into tResult["symbologyModifier"]
+   else
+      put 1 into tResult["symbologyModifier"]
+   end if
+   if tHasEci then add 1 to tResult["symbologyModifier"]
    return tResult
 end dbsp_decode
 
@@ -2516,15 +2847,15 @@ function dbsp_decodeNumeric pVersion
    repeat while tCount >= 3
       put dbsp_read(10) into threeDigits
       if threeDigits >= 1000 then throw "Format: numeric group > 999"
-      put char (trunc(threeDigits / 100) + 1) of kDigits after tOut
-      put char ((trunc(threeDigits / 10) mod 10) + 1) of kDigits after tOut
+      put char ((threeDigits div 100) + 1) of kDigits after tOut
+      put char (((threeDigits div 10) mod 10) + 1) of kDigits after tOut
       put char ((threeDigits mod 10) + 1) of kDigits after tOut
       subtract 3 from tCount
    end repeat
    if tCount = 2 then
       put dbsp_read(7) into twoDigits
       if twoDigits >= 100 then throw "Format: numeric pair > 99"
-      put char (trunc(twoDigits / 10) + 1) of kDigits after tOut
+      put char ((twoDigits div 10) + 1) of kDigits after tOut
       put char ((twoDigits mod 10) + 1) of kDigits after tOut
    else if tCount = 1 then
       put dbsp_read(4) into oneDigit
@@ -2534,63 +2865,161 @@ function dbsp_decodeNumeric pVersion
    return tOut
 end dbsp_decodeNumeric
 
+-- one alphanumeric character by index; ZXing toAlphaNumericChar throws for >= 45
+-- (an 11-bit pair value 2025..2047 or a 6-bit tail 45..63 is corrupt data)
+function dbsp_alnumChar pIdx
+   if pIdx >= 45 then throw "Format: alphanumeric index " & pIdx & " out of range"
+   return char (pIdx + 1) of kAlphanumChars
+end dbsp_alnumChar
+
 -- ALPHANUMERIC: pairs (11 bits -> v/45, v%45), trailing single (6 bits).
-function dbsp_decodeAlphanumeric pVersion
-   local tCount, tOut, v
+-- In FNC1 mode (pFc1) ZXing rewrites the segment: "%%" -> "%", lone "%" -> GS.
+function dbsp_decodeAlphanumeric pVersion, pFc1
+   local tCount, tOut, v, tRes, i, n, c
    put dbsp_read(mode_charCountBits("ALPHANUMERIC", pVersion)) into tCount
    put empty into tOut
    repeat while tCount >= 2
       put dbsp_read(11) into v
-      put char (trunc(v / 45) + 1) of kAlphanumChars after tOut
-      put char ((v mod 45) + 1) of kAlphanumChars after tOut
+      put dbsp_alnumChar(v div 45) after tOut
+      put dbsp_alnumChar(v mod 45) after tOut
       subtract 2 from tCount
    end repeat
    if tCount = 1 then
       put dbsp_read(6) into v
-      put char (v + 1) of kAlphanumChars after tOut
+      put dbsp_alnumChar(v) after tOut
    end if
-   return tOut
+   if pFc1 is not true then return tOut
+   put empty into tRes
+   put the number of chars of tOut into n
+   put 1 into i
+   repeat while i <= n
+      put char i of tOut into c
+      if c = "%" then
+         if (i < n) and (char (i + 1) of tOut = "%") then
+            put "%" after tRes
+            add 2 to i
+         else
+            put numToCodepoint(kGroupSeparator) after tRes
+            add 1 to i
+         end if
+      else
+         put c after tRes
+         add 1 to i
+      end if
+   end repeat
+   return tRes
 end dbsp_decodeAlphanumeric
 
--- BYTE: `count` bytes; decode via current charset. Returns {text,bytes}.
+-- BYTE: `count` bytes; decode via the ECI charset, or guess when there is
+-- none. Returns {text, bytes, charset}.
 function dbsp_decodeByte pVersion, pCharset
-   local tCount, i, b, tBytes, tRes
+   local tCount, i, b, tBytes, tRes, cs
    put dbsp_read(mode_charCountBits("BYTE", pVersion)) into tCount
+   if bitSource_available(sSrc) < (8 * tCount) then
+      throw "Format: byte segment of " & tCount & " bytes exceeds the data"
+   end if
    put empty into tBytes
    repeat with i = 1 to tCount
       put dbsp_read(8) into b
       put numToByte(b) after tBytes
    end repeat
+   if pCharset is empty then
+      put dbsp_guessCharset(tBytes) into cs
+   else
+      put pCharset into cs
+   end if
    put tBytes into tRes["bytes"]
-   put dbsp_decodeBytes(tBytes, pCharset) into tRes["text"]
+   put cs into tRes["charset"]
+   put dbsp_decodeBytes(tBytes, cs) into tRes["text"]
    return tRes
 end dbsp_decodeByte
 
--- turn a raw byte string into text using the (limited) native charsets.
---
--- PORTABILITY: this does NOT depend on the engine's `textDecode`. On a headless
--- the xTalk engine's `textDecode` is always available, but in a freshly loaded
--- script-only stack on the IDE / standalone / mobile engines it can throw before
--- the text-encoding subsystem is initialised -- which would fail every BYTE-mode
--- QR (URLs, vCards, Wi-Fi, ...). We decode ISO-8859-1 / ASCII by direct
--- byte->codepoint mapping and UTF-8 by a small hand-rolled decoder, so the
--- library works the same on desktop, mobile, and server. (ISO-8859-1 is exactly
--- "each byte 0..255 IS its codepoint", so the mapping is lossless and never
--- throws.)
+-- turn a raw byte string into text using the charsets this build can decode.
+-- ISO-8859-1 / ASCII / anything else: direct byte->codepoint (lossless, and the
+-- raw bytes are also in ["bytes"]).
 function dbsp_decodeBytes pBytes, pCharset
    local cs
    put toUpper(pCharset) into cs
    if (cs = "UTF-8") or (cs = "UTF8") then
       return dbsp_utf8ToText(pBytes)
    end if
-   -- ISO-8859-1 / Latin-1 / ASCII / anything else: direct byte->codepoint
+   if (cs = "UTF-16") or (cs = "UTF-16BE") or (cs = "UTF16") then
+      return dbsp_utf16ToText(pBytes, false)
+   end if
+   if cs = "UTF-16LE" then
+      return dbsp_utf16ToText(pBytes, true)
+   end if
    return dbsp_latin1ToText(pBytes)
 end dbsp_decodeBytes
 
+-- ZXing StringUtils.guessCharset for a platform without Shift_JIS (ZXing
+-- itself sets canBeShiftJIS = false when that charset is unavailable):
+--   * UTF-16 when the bytes start with a UTF-16 byte-order mark;
+--   * UTF-8 when the bytes are structurally valid UTF-8 (lead/continuation
+--     bytes, no truncated sequence) AND carry a UTF-8 BOM or at least one
+--     multi-byte character;
+--   * otherwise ISO-8859-1 when no byte lies in the undefined 0x80..0x9F range;
+--   * otherwise UTF-8 if it was valid, else ISO-8859-1 (the lossless choice
+--     where ZXing would use the platform default).
+function dbsp_guessCharset pBytes
+   local n, i, v, tCanUtf8, tCanIso, tLeft, tMulti, tBom, b1, b2
+   put the number of bytes of pBytes into n
+   if n > 2 then
+      put byteToNum(byte 1 of pBytes) into b1
+      put byteToNum(byte 2 of pBytes) into b2
+      if ((b1 = 254) and (b2 = 255)) or ((b1 = 255) and (b2 = 254)) then return "UTF-16"
+   end if
+   put false into tBom
+   if n > 3 then
+      if (byteToNum(byte 1 of pBytes) = 239) and (byteToNum(byte 2 of pBytes) = 187)             and (byteToNum(byte 3 of pBytes) = 191) then
+         put true into tBom
+      end if
+   end if
+   put true into tCanUtf8
+   put true into tCanIso
+   put 0 into tLeft
+   put 0 into tMulti
+   put 1 into i
+   repeat while (i <= n) and (tCanUtf8 or tCanIso)
+      put byteToNum(byte i of pBytes) into v
+      if tCanUtf8 then
+         if tLeft > 0 then
+            if (v bitAnd 128) = 0 then
+               put false into tCanUtf8
+            else
+               subtract 1 from tLeft
+            end if
+         else if (v bitAnd 128) <> 0 then
+            if (v bitAnd 64) = 0 then
+               put false into tCanUtf8            -- a stray continuation byte
+            else
+               add 1 to tLeft
+               if (v bitAnd 32) <> 0 then
+                  add 1 to tLeft
+                  if (v bitAnd 16) <> 0 then
+                     add 1 to tLeft
+                     if (v bitAnd 8) <> 0 then put false into tCanUtf8
+                  end if
+               end if
+               add 1 to tMulti
+            end if
+         end if
+      end if
+      if tCanIso then
+         if (v > 127) and (v < 160) then put false into tCanIso
+      end if
+      add 1 to i
+   end repeat
+   if tLeft > 0 then put false into tCanUtf8      -- truncated final sequence
+   if tCanUtf8 and (tBom or (tMulti > 0)) then return "UTF-8"
+   if tCanIso then return "ISO-8859-1"
+   if tCanUtf8 then return "UTF-8"
+   return "ISO-8859-1"
+end dbsp_guessCharset
+
 -- ISO-8859-1: every byte maps directly to the codepoint of the same value
 -- (Unicode's first 256 codepoints ARE Latin-1). numToCodepoint is a core string
--- function (not the ICU/encoding library that textDecode needs), so it is
--- available in a script-only stack where textDecode is not.
+-- function, available in a script-only stack whatever the text-encoding state.
 function dbsp_latin1ToText pBytes
    local tTxt, i, n
    put the number of bytes of pBytes into n
@@ -2601,56 +3030,62 @@ function dbsp_latin1ToText pBytes
    return tTxt
 end dbsp_latin1ToText
 
--- Minimal UTF-8 decoder (1-4 byte sequences) -> text, no textDecode dependency.
--- Malformed bytes degrade gracefully to their Latin-1 interpretation rather than
--- throwing, so a slightly-off payload still yields readable text.
+-- Minimal UTF-8 decoder (1-4 byte sequences, RFC 3629 ranges) -> text.
+-- Malformed bytes degrade to their Latin-1 interpretation one byte at a time
+-- rather than throwing, so a slightly-off payload still yields readable text.
+-- Overlong forms (E0 80..9F, F0 80..8F), UTF-16 surrogates (ED A0..BF) and
+-- code points above U+10FFFF (F4 90..BF) are malformed and treated the same.
 function dbsp_utf8ToText pBytes
-   local tTxt, i, n, b1, b2, b3, b4, cp, tCont
+   local tTxt, i, n, b1, b2, b3, b4, cp, tOk
    put the number of bytes of pBytes into n
    put empty into tTxt
    put 1 into i
    repeat while i <= n
       put byteToNum(byte i of pBytes) into b1
+      put false into tOk
       if b1 < 128 then
          put numToCodepoint(b1) after tTxt
          add 1 to i
-      else if (b1 >= 194) and (b1 <= 223) and (i + 1 <= n) then
+         next repeat
+      end if
+      if (b1 >= 194) and (b1 <= 223) and (i + 1 <= n) then
          put byteToNum(byte (i + 1) of pBytes) into b2
          if (b2 >= 128) and (b2 <= 191) then
             put (((b1 - 192) * 64) + (b2 - 128)) into cp
             put numToCodepoint(cp) after tTxt
             add 2 to i
-         else
-            put numToCodepoint(b1) after tTxt
-            add 1 to i
+            put true into tOk
          end if
       else if (b1 >= 224) and (b1 <= 239) and (i + 2 <= n) then
          put byteToNum(byte (i + 1) of pBytes) into b2
          put byteToNum(byte (i + 2) of pBytes) into b3
          if (b2 >= 128) and (b2 <= 191) and (b3 >= 128) and (b3 <= 191) then
+            put true into tOk
+            if (b1 = 224) and (b2 < 160) then put false into tOk    -- overlong
+            if (b1 = 237) and (b2 > 159) then put false into tOk    -- surrogate
+         end if
+         if tOk then
             put (((b1 - 224) * 4096) + ((b2 - 128) * 64) + (b3 - 128)) into cp
             put numToCodepoint(cp) after tTxt
             add 3 to i
-         else
-            put numToCodepoint(b1) after tTxt
-            add 1 to i
          end if
       else if (b1 >= 240) and (b1 <= 244) and (i + 3 <= n) then
          put byteToNum(byte (i + 1) of pBytes) into b2
          put byteToNum(byte (i + 2) of pBytes) into b3
          put byteToNum(byte (i + 3) of pBytes) into b4
-         if (b2 >= 128) and (b2 <= 191) and (b3 >= 128) and (b3 <= 191) \
-               and (b4 >= 128) and (b4 <= 191) then
-            put (((b1 - 240) * 262144) + ((b2 - 128) * 4096) \
-               + ((b3 - 128) * 64) + (b4 - 128)) into cp
+         if (b2 >= 128) and (b2 <= 191) and (b3 >= 128) and (b3 <= 191)                and (b4 >= 128) and (b4 <= 191) then
+            put true into tOk
+            if (b1 = 240) and (b2 < 144) then put false into tOk    -- overlong
+            if (b1 = 244) and (b2 > 143) then put false into tOk    -- > U+10FFFF
+         end if
+         if tOk then
+            put (((b1 - 240) * 262144) + ((b2 - 128) * 4096)                + ((b3 - 128) * 64) + (b4 - 128)) into cp
             put numToCodepoint(cp) after tTxt
             add 4 to i
-         else
-            put numToCodepoint(b1) after tTxt
-            add 1 to i
          end if
-      else
-         -- continuation byte out of place, or truncated sequence: Latin-1 it
+      end if
+      if not tOk then
+         -- continuation byte out of place, truncated or malformed sequence: Latin-1 it
          put numToCodepoint(b1) after tTxt
          add 1 to i
       end if
@@ -2658,9 +3093,65 @@ function dbsp_utf8ToText pBytes
    return tTxt
 end dbsp_utf8ToText
 
--- ECI: parse the 1/2/3-byte ECI designator and map to a charset name.
+-- Minimal UTF-16 decoder with surrogate pairs. A byte-order mark decides the
+-- byte order (and is dropped); without one, big-endian unless pLittleEndian.
+-- A lone surrogate or an odd trailing byte becomes U+FFFD, as Java would emit.
+function dbsp_utf16ToText pBytes, pLittleEndian
+   local tTxt, i, n, b1, b2, cu, cu2, tLE
+   put the number of bytes of pBytes into n
+   put (pLittleEndian is true) into tLE
+   put 1 into i
+   if n >= 2 then
+      put byteToNum(byte 1 of pBytes) into b1
+      put byteToNum(byte 2 of pBytes) into b2
+      if (b1 = 254) and (b2 = 255) then
+         put false into tLE
+         put 3 into i
+      else if (b1 = 255) and (b2 = 254) then
+         put true into tLE
+         put 3 into i
+      end if
+   end if
+   put empty into tTxt
+   repeat while (i + 1) <= n
+      put byteToNum(byte i of pBytes) into b1
+      put byteToNum(byte (i + 1) of pBytes) into b2
+      if tLE then
+         put ((b2 * 256) + b1) into cu
+      else
+         put ((b1 * 256) + b2) into cu
+      end if
+      add 2 to i
+      if (cu >= 55296) and (cu <= 56319) then          -- high surrogate D800..DBFF
+         put 65533 into cu2
+         if (i + 1) <= n then
+            put byteToNum(byte i of pBytes) into b1
+            put byteToNum(byte (i + 1) of pBytes) into b2
+            if tLE then
+               put ((b2 * 256) + b1) into cu2
+            else
+               put ((b1 * 256) + b2) into cu2
+            end if
+         end if
+         if (cu2 >= 56320) and (cu2 <= 57343) then     -- low surrogate DC00..DFFF
+            put (65536 + ((cu - 55296) * 1024) + (cu2 - 56320)) into cu
+            add 2 to i
+         else
+            put 65533 into cu
+         end if
+      else if (cu >= 56320) and (cu <= 57343) then
+         put 65533 into cu                               -- lone low surrogate
+      end if
+      put numToCodepoint(cu) after tTxt
+   end repeat
+   if i <= n then put numToCodepoint(65533) after tTxt   -- odd trailing byte
+   return tTxt
+end dbsp_utf16ToText
+
+-- ECI: parse the 1/2/3-byte ECI designator and map to a charset name. An
+-- unknown value is a Format error (ZXing CharacterSetECI.getCharacterSetECIByValue).
 function dbsp_parseEci
-   local firstByte, eciValue, tSecond, tThird
+   local firstByte, eciValue, tSecond, tThird, tName
    put dbsp_read(8) into firstByte
    if (firstByte bitAnd 128) = 0 then
       put (firstByte bitAnd 127) into eciValue
@@ -2673,13 +3164,15 @@ function dbsp_parseEci
    else
       throw "Format: bad ECI designator"
    end if
-   return eci_charsetName(eciValue)
+   put eci_charsetName(eciValue) into tName
+   if tName is empty then throw "Format: unknown ECI value " & eciValue
+   return tName
 end dbsp_parseEci
 
 -- ===================== module: bitMatrixParser =========
 -- =====================================================================
--- bitMatrixParser.lc — read format/version/codewords from a sampled matrix.
--- Port of ZXing Qrcode\Decoder\BitMatrixParser. Spec §8.5.
+-- bitMatrixParser.lc - read format/version/codewords from a sampled matrix.
+-- Port of ZXing Qrcode\Decoder\BitMatrixParser. Spec section 8.5.
 -- Requires: qrCompat.lc, bitMatrix.lc, version.lc, formatInformation.lc,
 --           errorCorrectionLevel.lc.
 --
@@ -2696,8 +3189,8 @@ end dbsp_parseEci
 function bmp_new pBits
    local p, tDim
    put bitMatrix_getHeight(pBits) into tDim
-   if (tDim < 21) or ((tDim bitAnd 3) <> 1) then
-      throw "Format: dimension " & tDim & " is not 4k+1 / >=21"
+   if (tDim < 21) or (tDim > 177) or ((tDim bitAnd 3) <> 1) then
+      throw "Format: dimension " & tDim & " is not 4k+1 in 21..177"
    end if
    put pBits into p["bits"]
    put tDim into p["dimension"]
@@ -2771,16 +3264,12 @@ function bmp_readVersion pParser
    if provVer <= 6 then
       return provVer
    end if
-   -- v7+: read the two 18-bit version-info blocks (bottom-left + top-right)
-   put 0 into versionBits
-   repeat with i = 5 down to 0
-      repeat with j = tDim - 9 down to tDim - 11
-         put bmp_copyBit(pParser, i, j, versionBits) into versionBits
-      end repeat
-   end repeat
-   put ver_decodeVersionInformation(versionBits) into tVer
-   if tVer is not empty then return tVer
-   -- second copy (transpose of the read coordinates)
+   -- v7+: read the two 18-bit version-info blocks. ZXing reads the TOP-RIGHT
+   -- block first (x = dim-9..dim-11, y = 5..0), then the bottom-left copy, and
+   -- accepts a decoded version only if its dimension is the sampled dimension -
+   -- a damaged block that decodes (within 3 bits) to ANOTHER version would
+   -- otherwise drive the unmask/function-pattern/codeword steps with the wrong
+   -- geometry (ZXing BitMatrixParser.readVersion).
    put 0 into versionBits
    repeat with j = 5 down to 0
       repeat with i = tDim - 9 down to tDim - 11
@@ -2788,7 +3277,16 @@ function bmp_readVersion pParser
       end repeat
    end repeat
    put ver_decodeVersionInformation(versionBits) into tVer
-   if tVer is not empty then return tVer
+   if (tVer is not empty) and (ver_getDimensionForVersion(tVer) = tDim) then return tVer
+   -- second copy (bottom-left: x = 5..0, y = dim-9..dim-11)
+   put 0 into versionBits
+   repeat with i = 5 down to 0
+      repeat with j = tDim - 9 down to tDim - 11
+         put bmp_copyBit(pParser, i, j, versionBits) into versionBits
+      end repeat
+   end repeat
+   put ver_decodeVersionInformation(versionBits) into tVer
+   if (tVer is not empty) and (ver_getDimensionForVersion(tVer) = tDim) then return tVer
    throw "Format: could not read version"
 end bmp_readVersion
 
@@ -2840,7 +3338,7 @@ end bmp_buildFunctionPattern
 -- read all data codewords in the standard zig-zag, skipping function modules.
 -- Returns a dense 0-based array of byte values. (The data mask is NOT applied
 -- here; the decoder applies it to the matrix first, matching ZXing's flow when
--- it uses readCodewords after unmasking — see decoder.lc.)
+-- it uses readCodewords after unmasking - see decoder.lc.)
 function bmp_readCodewords pParser, pVersion
    local fp, tDim, tRes, idx, bitsRead, currentByte
    local col, row, readingUp, c, i
@@ -2878,75 +3376,110 @@ function bmp_readCodewords pParser, pVersion
       put not readingUp into readingUp
       subtract 2 from col
    end repeat
+   -- ZXing/PHP: the zig-zag must yield exactly the version's codeword total
+   if idx <> ver_getTotalCodewords(pVersion) then
+      throw "Format: read " & idx & " codewords, expected " & ver_getTotalCodewords(pVersion)
+   end if
    return tRes
 end bmp_readCodewords
 
 -- ===================== module: decoder =================
 -- =====================================================================
--- decoder.lc — orchestrate matrix parse -> RS -> bitstream. Spec §8.5.
+-- decoder.lc - orchestrate matrix parse -> RS -> bitstream. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\Decoder. Requires: qrCompat.lc, bitMatrix.lc,
 --   bitMatrixParser.lc, version.lc, formatInformation.lc, dataMask.lc,
 --   dataBlock.lc, reedSolomonDecoder.lc, decodedBitStreamParser.lc,
 --   errorCorrectionLevel.lc.
 --
 -- dec_decode(bits) -> result array from decodedBitStreamParser:
---   ["text"], ["bytes"], ["error"], plus ["ecLevel"], ["version"], ["mask"].
+--   ["text"], ["bytes"], ["error"], plus ["ecLevel"], ["version"], ["mask"],
+--   and ["mirrored"] = true when the symbol only decoded transposed.
 -- On any NotFound/Format/Checksum the result has ["error"] set and empty text.
 --
--- Flow (dec_decodeParser):
+-- Flow (dec_tryParser):
 --   1. read format info -> ecLevel, dataMask
 --   2. read version
---   3. un-mask the matrix with the chosen data mask
+--   3. un-mask a COPY of the matrix with the chosen data mask
 --   4. read raw codewords (zig-zag, skipping function modules)
 --   5. de-interleave into RS blocks; correct each block; concatenate data
 --   6. DecodedBitStreamParser.decode
--- A mirrored-symbol retry wraps this: on failure, transpose and try once more.
+-- The mirrored-symbol retry wraps this (ZXing Decoder.decode): on failure the
+-- format information and version are re-read TRANSPOSED; the matrix is then
+-- physically transposed (bitMatrix_transposed) before un-masking and reading
+-- the codewords, because the data mask is defined in the symbol's own frame.
+-- (Until 2026-09 the port un-masked the untransposed copy and then read it
+-- transposed, so every mirrored symbol failed Reed-Solomon; found by the
+-- synthetic-fixture corpus and confirmed against ZXing.)
+--
+-- ERROR TAGS: the public contract is "NotFound: / Format: / Checksum:". A
+-- Reed-Solomon failure ("RS: ...") becomes "Checksum: RS: ..." here (ZXing maps
+-- ReedSolomonException to ChecksumException); any untagged internal error is
+-- reported as "Format: ...".
 -- =====================================================================
 
 function dec_decode pBits
-   local parser, tRes, e
+   local parser, tRes, tFirst
    put bmp_new(pBits) into parser
    -- first attempt
    put dec_tryParser(parser) into tRes
    if tRes["error"] is empty then
       return tRes
    end if
+   put tRes into tFirst
    -- mirror retry: re-read everything transposed
    bmp_setMirror parser, true
    put dec_tryParser(parser) into tRes
    if tRes["error"] is empty then
       put true into tRes["mirrored"]
+      return tRes
    end if
-   return tRes
+   return tFirst          -- ZXing reports the ORIGINAL reading's error
 end dec_decode
 
 -- one decode attempt; returns the bitstream result (with error set on failure).
 function dec_tryParser pParser
-   local tFmt, tEcLevel, tMask, tVersion, tBits, tCodewords
-   local tBlocks, tNum, b, tCorrected, i, tData, tDataIdx, tSaved
-   local tResult, tErr, e
+   local tFmt, tEcLevel, tMask, tVersion, tBits, tCodewords, tCwErr
+   local tBlocks, tNum, b, tCorrected, i, tData, tDataIdx, tSaved, tSavedMirror
+   local tResult, tErr, e, e2, tEcw
 
+   put empty into tErr
    try
+      -- format information and version are read through bmp_get, which honours
+      -- the parser's mirror flag (ZXing reads both "preemptively" when mirrored)
       put bmp_readFormatInformation(pParser) into tFmt
       put tFmt["ecLevel"] into tEcLevel
       put tFmt["dataMask"] into tMask
       put bmp_readVersion(pParser) into tVersion
 
-      -- un-mask the data modules, then read codewords from the matrix.
-      -- Work on a copy so the parser's matrix stays intact for a mirror retry.
+      -- Work on a COPY of the matrix so the parser's own matrix stays intact for
+      -- the retry. A mirrored reading transposes the copy FIRST (ZXing
+      -- BitMatrixParser.mirror), then un-masks and reads codewords in that frame.
       put pParser["bits"] into tBits
-      dataMask_unmask tBits, ver_getDimensionForVersion(tVersion), tMask
+      if pParser["mirror"] is true then
+         put bitMatrix_transposed(tBits) into tBits
+      end if
+      dataMask_unmask tBits, pParser["dimension"], tMask
       put pParser["bits"] into tSaved
+      put pParser["mirror"] into tSavedMirror
       put tBits into pParser["bits"]
-      put bmp_readCodewords(pParser, tVersion) into tCodewords
-      put tSaved into pParser["bits"]
+      put false into pParser["mirror"]           -- the copy is already in the right frame
+      put empty into tCwErr
+      try
+         put bmp_readCodewords(pParser, tVersion) into tCodewords
+      catch e2
+         put e2 into tCwErr
+      end try
+      put tSaved into pParser["bits"]            -- restore on every path
+      put tSavedMirror into pParser["mirror"]
+      if tCwErr is not empty then throw tCwErr
 
-      -- de-interleave + per-block Reed–Solomon correction
+      -- de-interleave + per-block Reed-Solomon correction
       put db_getDataBlocks(tCodewords, tVersion, tEcLevel) into tBlocks
       put tBlocks["n"] into tNum
+      put ver_getEcCodewordsPerBlock(tVersion, tEcLevel) into tEcw
       put 0 into tDataIdx             -- concatenated corrected data codewords
       repeat with b = 0 to (tNum - 1)
-         put dec_correctBlock(tBlocks[b], ver_getEcCodewordsPerBlock(tVersion, tEcLevel)) into tCorrected
+         put dec_correctBlock(tBlocks[b], tEcw) into tCorrected
          repeat with i = 0 to (tBlocks[b]["numData"] - 1)
             put tCorrected[i] into tData[tDataIdx]
             add 1 to tDataIdx
@@ -2963,22 +3496,35 @@ function dec_tryParser pParser
       put tMask into tResult["mask"]
       return tResult
    catch e
-      put empty into tErr
-      put e into tErr["error"]
-      return tErr
+      put e into tErr
    end try
+   -- the tagged contract: an internal invariant ("BitMatrix: ...") surfacing
+   -- here is a Format error in ZXing's terms
+   if not ((tErr begins with "NotFound") or (tErr begins with "Format") or (tErr begins with "Checksum")) then
+      put "Format: " & tErr into tErr
+   end if
+   put empty into tResult
+   put tErr into tResult["error"]
+   return tResult
 end dec_tryParser
 
--- correct one block's codewords with Reed–Solomon; returns the corrected
--- data codewords (0-based, length numData).
+-- correct one block's codewords with Reed-Solomon; returns the corrected
+-- data codewords (0-based, length numData). An uncorrectable block is a
+-- Checksum error (ZXing Decoder.correctErrors wraps ReedSolomonException).
 function dec_correctBlock pBlock, pEcwPerBlock
-   local tLen, tCw, i, tOut
+   local tLen, tCw, i, tOut, e, tErr
    put pBlock["len"] into tLen
    -- build a dense 0-based array of all codewords (data + ec) for rs_decode
    repeat with i = 0 to (tLen - 1)
       put pBlock["cw"][i] into tCw[i]
    end repeat
-   rs_decode tCw, pEcwPerBlock          -- corrects in place; throws on failure
+   put empty into tErr
+   try
+      rs_decode tCw, pEcwPerBlock          -- corrects in place; throws "RS: ..." on failure
+   catch e
+      put e into tErr
+   end try
+   if tErr is not empty then throw "Checksum: " & tErr    -- after the try (engine notes 3.2)
    repeat with i = 0 to (pBlock["numData"] - 1)
       put tCw[i] into tOut[i]
    end repeat
@@ -2987,7 +3533,7 @@ end dec_correctBlock
 
 -- ===================== module: mathUtils ===============
 -- =====================================================================
--- mathUtils.lc — rounding + distance helpers. Spec §8.4.
+-- mathUtils.lc - rounding + distance helpers. Spec section 8.4.
 -- Port of ZXing Common\Detector\MathUtils. Requires: nothing (builtins only).
 --
 -- PHP authority:
@@ -3015,7 +3561,7 @@ end mu_distance
 
 -- ===================== module: resultPoint =============
 -- =====================================================================
--- resultPoint.lc — 2-D point + the orderBestPatterns ordering. Spec §8.4.
+-- resultPoint.lc - 2-D point + the orderBestPatterns ordering. Spec section 8.4.
 -- Port of ZXing ResultPoint. Requires: mathUtils.lc.
 --
 -- A point (Pattern A) is an array: pPt["x"], pPt["y"]. FinderPattern and
@@ -3080,7 +3626,7 @@ end rp_orderBestPatterns
 
 -- ===================== module: perspectiveTransform ====
 -- =====================================================================
--- perspectiveTransform.lc — 3x3 projective transform. Spec §8.4.
+-- perspectiveTransform.lc - 3x3 projective transform. Spec section 8.4.
 -- Port of ZXing Common\PerspectiveTransform. Requires: nothing (pure float).
 --
 -- A transform (Pattern A) is an array of nine coefficients:
@@ -3091,7 +3637,7 @@ end rp_orderBestPatterns
 --   denom = a13*x + a23*y + a33
 --   x' = (a11*x + a21*y + a31)/denom ;  y' = (a12*x + a22*y + a32)/denom
 --
--- All float math -- no integer-semantics traps (spec §6 does not apply here).
+-- All float math -- no integer-semantics traps (spec section 6 does not apply here).
 -- =====================================================================
 
 function pt_squareToQuadrilateral pX0, pY0, pX1, pY1, pX2, pY2, pX3, pY3
@@ -3202,7 +3748,7 @@ end pt_transformPoints
 
 -- ===================== module: gridSampler =============
 -- =====================================================================
--- gridSampler.lc — sample a module grid through a transform. Spec §8.4.
+-- gridSampler.lc - sample a module grid through a transform. Spec section 8.4.
 -- Port of ZXing Common\GridSampler + DefaultGridSampler.
 -- Requires: qrCompat.lc, bitMatrix.lc, perspectiveTransform.lc.
 --
@@ -3211,9 +3757,24 @@ end pt_transformPoints
 --   column, run them through the transform, clamp endpoints to the image edge
 --   (checkAndNudgePoints), then read image.get at each sampled pixel.
 --
--- A sample point landing outside the image throws NotFound -- this mirrors the
--- PHP ArrayIndexOutOfBounds -> NotFoundException wrapper (a "twisted" transform).
+-- A row whose END points land more than one pixel outside the image throws
+-- NotFound (checkAndNudgePoints, as in ZXing/PHP); an interior sample that
+-- strays just outside reads as white, which is what PHP's BitMatrix::get and
+-- Java's zero padding bits do (the port threw NotFound there until 2026-09).
 -- =====================================================================
+
+local sGSPow2, sGSPow2Ready      -- sGSPow2[b] = 2^b, b = 0..31; built once
+
+command gs_ensurePow2
+   local b, v
+   if sGSPow2Ready is true then exit gs_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sGSPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sGSPow2Ready
+end gs_ensurePow2
 
 -- clamp barely-off endpoints back onto the image; throw if truly outside.
 -- Mutates pPoints in place (command, @). Mirrors checkAndNudgePoints exactly:
@@ -3277,12 +3838,21 @@ end gs_checkAndNudgePoints
 
 function gs_sampleGrid pImage, pDimX, pDimY, pTransform
    local tBits, tPoints, y, c, x, tIValue, tImgW, tImgH, tPX, tPY
+   local tWords, tOutRowSize, tImgBits, tImgRowSize, tOff
    if (pDimX <= 0) or (pDimY <= 0) then
       throw "NotFound: grid dimensions <= 0"
    end if
    put bitMatrix_new(pDimX, pDimY) into tBits
    put bitMatrix_getWidth(pImage) into tImgW
    put bitMatrix_getHeight(pImage) into tImgH
+   -- HOT PATH (2026-09): one image read and one output write per module, on
+   -- the matrices' word arrays directly (the same bits bitMatrix_get/set
+   -- would read and set; proven bit-identical under the headless model)
+   gs_ensurePow2
+   put tBits["bits"] into tWords
+   put tBits["rowSize"] into tOutRowSize
+   put pImage["bits"] into tImgBits
+   put pImage["rowSize"] into tImgRowSize
    -- xTalk repeat has no "step"; iterate the column c and use x = 2*c as the
    -- flat (x,y) offset into the points array.
    repeat with y = 0 to (pDimY - 1)
@@ -3298,20 +3868,25 @@ function gs_sampleGrid pImage, pDimX, pDimY, pTransform
          put (c * 2) into x
          put trunc(tPoints[x]) into tPX
          put trunc(tPoints[x + 1]) into tPY
-         if (tPX < 0) or (tPX >= tImgW) or (tPY < 0) or (tPY >= tImgH) then
-            throw "NotFound: sample point (" & tPX & "," & tPY & ") outside image"
-         end if
-         if bitMatrix_get(pImage, tPX, tPY) then
-            bitMatrix_set tBits, c, y
+         -- a sample just outside the image reads WHITE: PHP's BitMatrix::get
+         -- answers false for any out-of-range coordinate and Java reads a zero
+         -- padding bit for x just past the width; only the row ENDPOINTS are
+         -- policed, by gs_checkAndNudgePoints above
+         if (tPX >= 0) and (tPY >= 0) and (tPX < tImgW) and (tPY < tImgH) then
+            if ((tImgBits[(tPY * tImgRowSize) + (tPX div 32)] div sGSPow2[tPX bitAnd 31]) bitAnd 1) = 1 then
+               put ((y * tOutRowSize) + (c div 32)) into tOff
+               put (tWords[tOff] bitOr sGSPow2[c bitAnd 31]) into tWords[tOff]
+            end if
          end if
       end repeat
    end repeat
+   put tWords into tBits["bits"]
    return tBits
 end gs_sampleGrid
 
 -- ===================== module: finderPatternFinder =====
 -- =====================================================================
--- finderPatternFinder.lc — locate the 3 corner finder patterns. Spec §8.4.
+-- finderPatternFinder.lc - locate the 3 corner finder patterns. Spec section 8.4.
 -- Port of ZXing Qrcode\Detector\FinderPatternFinder (the most intricate module).
 -- Requires: qrCompat.lc, bitMatrix.lc, mathUtils.lc, resultPoint.lc.
 --
@@ -3331,8 +3906,34 @@ end gs_sampleGrid
 --  * Out-of-range bitMatrix_get reads return false harmlessly, so the guarded
 --    `(i >= 0) and bitMatrix_get(...)` conditions are safe whether or not the
 --    engine short-circuits `and`.
---  * CENTER_QUORUM=2, MIN_SKIP=3, MAX_MODULES=57 are inlined as literals.
+--  * CENTER_QUORUM=2, MIN_SKIP=3, MAX_MODULES=97 and
+--    MAX_FINDER_PATTERN_CANDIDATES=25 are inlined as literals.
+--  * Since 2026-09 the candidate SELECTION follows current ZXing Java (the
+--    2020+ isosceles-right-triangle scoring; every candidate diagonal-checked;
+--    MAX_MODULES 97; row skip 2 after a confirmed centre) rather than the
+--    2013-era PHP port. Detection outcomes are compared against ZXing itself
+--    on a synthetic corpus (tools/run_synthetic.py).
 -- =====================================================================
+
+-- HOT PATH (2026-09): the row scan reads the matrix's 32-bit words directly
+-- (one word per 32 pixels, one table lookup per pixel) instead of calling
+-- bitMatrix_get per pixel, and skips whole words when nothing can change the
+-- run state: an all-white word while already counting a white run adds 32 to
+-- that run, an all-black word while counting a black run likewise. Every state
+-- transition still happens on the exact pixel it did before (proven
+-- bit-identical under the headless model: same candidates, same centres).
+local sFPPow2, sFPPow2Ready      -- sFPPow2[b] = 2^b, b = 0..31; built once
+
+command fpf_ensurePow2
+   local b, v
+   if sFPPow2Ready is true then exit fpf_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sFPPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sFPPow2Ready
+end fpf_ensurePow2
 
 -- is key pKey present in the hints array pHints? Uses only proven constructs:
 -- "the keys of" yields a CR-list of keys; "among the lines of" tests membership.
@@ -3341,7 +3942,7 @@ function fpf_hintPresent pHints, pKey
    return (pKey is among the lines of the keys of pHints)
 end fpf_hintPresent
 
--- 1:1:3:1:1 proportion test on a 5-element run count (spec §8.4)
+-- 1:1:3:1:1 proportion test on a 5-element run count (spec section 8.4)
 function fpf_foundPatternCross pSC, pMaxVariance
    local tTotal, i, tCount, tModuleSize, tMV
    put 0 into tTotal
@@ -3360,7 +3961,27 @@ function fpf_foundPatternCross pSC, pMaxVariance
            (abs(tModuleSize - pSC[4]) < tMV))
 end fpf_foundPatternCross
 
--- centre of a run given the end position (spec §8.4)
+-- the 1:1:3:1:1 test with the looser tolerance the diagonal check uses
+-- (ZXing foundPatternDiagonal: maxVariance = moduleSize / 1.333)
+function fpf_foundPatternDiagonal pSC
+   local tTotal, i, tCount, tModuleSize, tMV
+   put 0 into tTotal
+   repeat with i = 0 to 4
+      put pSC[i] into tCount
+      if tCount = 0 then return false
+      add tCount to tTotal
+   end repeat
+   if tTotal < 7 then return false
+   put (tTotal / 7) into tModuleSize
+   put (tModuleSize / 1.333) into tMV
+   return ((abs(tModuleSize - pSC[0]) < tMV) and \
+           (abs(tModuleSize - pSC[1]) < tMV) and \
+           (abs((3 * tModuleSize) - pSC[2]) < (3 * tMV)) and \
+           (abs(tModuleSize - pSC[3]) < tMV) and \
+           (abs(tModuleSize - pSC[4]) < tMV))
+end fpf_foundPatternDiagonal
+
+-- centre of a run given the end position (spec section 8.4)
 function fpf_centerFromEnd pSC, pEnd
    return ((pEnd - pSC[4] - pSC[3]) - (pSC[2] / 2))
 end fpf_centerFromEnd
@@ -3472,55 +4093,57 @@ function fpf_crossCheckHorizontal pImg, pStartJ, pCenterI, pMaxCount, pOrigTotal
    return empty
 end fpf_crossCheckHorizontal
 
--- diagonal cross-check; returns true/false (used only in PURE_BARCODE mode)
-function fpf_crossCheckDiagonal pImg, pStartI, pCenterJ, pMaxCount, pOrigTotal
-   local tSC, i, tMaxI, tMaxJ, tTotal
+-- diagonal cross-check (ZXing FinderPatternFinder.crossCheckDiagonal, 3.4+):
+-- walk up-left and down-right from the centre counting the 1:1:3:1:1 run, and
+-- test it with the looser diagonal tolerance. Run for EVERY candidate (the
+-- older code did it only in PURE_BARCODE mode); a read outside the matrix is
+-- false, so the coordinate guards below match Java's exactly.
+function fpf_crossCheckDiagonal pImg, pCenterI, pCenterJ
+   local tSC, i, tMaxI, tMaxJ
    put 0 into tSC[0]
    put 0 into tSC[1]
    put 0 into tSC[2]
    put 0 into tSC[3]
    put 0 into tSC[4]
    put 0 into i
-   repeat while ((pStartI >= i) and (pCenterJ >= i) and bitMatrix_get(pImg, (pCenterJ - i), (pStartI - i)))
+   repeat while (pCenterI >= i) and (pCenterJ >= i) and bitMatrix_get(pImg, (pCenterJ - i), (pCenterI - i))
       add 1 to tSC[2]
       add 1 to i
    end repeat
-   if (pStartI < i) or (pCenterJ < i) then return false
-   repeat while ((pStartI >= i) and (pCenterJ >= i) and (not bitMatrix_get(pImg, (pCenterJ - i), (pStartI - i))) and (tSC[1] <= pMaxCount))
+   if tSC[2] = 0 then return false
+   repeat while (pCenterI >= i) and (pCenterJ >= i) and (not bitMatrix_get(pImg, (pCenterJ - i), (pCenterI - i)))
       add 1 to tSC[1]
       add 1 to i
    end repeat
-   if (pStartI < i) or (pCenterJ < i) or (tSC[1] > pMaxCount) then return false
-   repeat while ((pStartI >= i) and (pCenterJ >= i) and bitMatrix_get(pImg, (pCenterJ - i), (pStartI - i)) and (tSC[0] <= pMaxCount))
+   if tSC[1] = 0 then return false
+   repeat while (pCenterI >= i) and (pCenterJ >= i) and bitMatrix_get(pImg, (pCenterJ - i), (pCenterI - i))
       add 1 to tSC[0]
       add 1 to i
    end repeat
-   if tSC[0] > pMaxCount then return false
+   if tSC[0] = 0 then return false
    put bitMatrix_getHeight(pImg) into tMaxI
    put bitMatrix_getWidth(pImg) into tMaxJ
    put 1 into i
-   repeat while (((pStartI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and bitMatrix_get(pImg, (pCenterJ + i), (pStartI + i)))
+   repeat while ((pCenterI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and bitMatrix_get(pImg, (pCenterJ + i), (pCenterI + i))
       add 1 to tSC[2]
       add 1 to i
    end repeat
-   if ((pStartI + i) >= tMaxI) or ((pCenterJ + i) >= tMaxJ) then return false
-   repeat while (((pStartI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and (not bitMatrix_get(pImg, (pCenterJ + i), (pStartI + i))) and (tSC[3] < pMaxCount))
+   repeat while ((pCenterI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and (not bitMatrix_get(pImg, (pCenterJ + i), (pCenterI + i)))
       add 1 to tSC[3]
       add 1 to i
    end repeat
-   if ((pStartI + i) >= tMaxI) or ((pCenterJ + i) >= tMaxJ) or (tSC[3] >= pMaxCount) then return false
-   repeat while (((pStartI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and bitMatrix_get(pImg, (pCenterJ + i), (pStartI + i)) and (tSC[4] < pMaxCount))
+   if tSC[3] = 0 then return false
+   repeat while ((pCenterI + i) < tMaxI) and ((pCenterJ + i) < tMaxJ) and bitMatrix_get(pImg, (pCenterJ + i), (pCenterI + i))
       add 1 to tSC[4]
       add 1 to i
    end repeat
-   if tSC[4] >= pMaxCount then return false
-   put (tSC[0] + tSC[1] + tSC[2] + tSC[3] + tSC[4]) into tTotal
-   return ((abs(tTotal - pOrigTotal) < (2 * pOrigTotal)) and fpf_foundPatternCross(tSC, 0.5))
+   if tSC[4] = 0 then return false
+   return fpf_foundPatternDiagonal(tSC)
 end fpf_crossCheckDiagonal
 
 -- a horizontal candidate: cross-check, then accumulate/merge into pF["pat"].
 -- rConfirmed (output) = true iff a finder candidate was confirmed this call.
-command fpf_handlePossibleCenter @pFinder, pSC, pRowI, pEndCol, pPure, @rConfirmed
+command fpf_handlePossibleCenter @pFinder, pSC, pRowI, pEndCol, @rConfirmed
    local tTotal, tCenterJ, tCenterI, tEst, tFound, tIdx
    local tOldX, tOldY, tOldMs, tOldCt, tMSDiff, tCC
    put false into rConfirmed
@@ -3530,10 +4153,9 @@ command fpf_handlePossibleCenter @pFinder, pSC, pRowI, pEndCol, pPure, @rConfirm
    if tCenterI is empty then exit fpf_handlePossibleCenter
    put fpf_crossCheckHorizontal(pFinder["bits"], trunc(tCenterJ), trunc(tCenterI), pSC[2], tTotal) into tCenterJ
    if tCenterJ is empty then exit fpf_handlePossibleCenter
-   if pPure then
-      if not fpf_crossCheckDiagonal(pFinder["bits"], trunc(tCenterI), trunc(tCenterJ), pSC[2], tTotal) then
-         exit fpf_handlePossibleCenter
-      end if
+   -- ZXing: re-cross-check along the diagonal for every candidate
+   if not fpf_crossCheckDiagonal(pFinder["bits"], trunc(tCenterI), trunc(tCenterJ)) then
+      exit fpf_handlePossibleCenter
    end if
    put (tTotal / 7) into tEst
    put false into tFound
@@ -3613,16 +4235,15 @@ end fpf_findRowSkip
 
 -- stable insertion sort by FurthestFromAverageComparator (largest |dev| first)
 -- PHP comparator: dA=|c2-avg|, dB=|c1-avg|; -1 if dA<dB. usort places a before b
--- when cmp(a,b)<0, i.e. when |a-avg| > |b-avg|. So this orders DESC by |dev|.
-command fpf_sortFurthest @pList, pCountN, pAvg
-   local i, j, tKey, tKeyDev, tCmpDev
+-- stable insertion sort of a 0-based list by estimated module size, ascending
+-- (ZXing EstimatedModuleComparator; Java's Collections.sort is stable too)
+command fpf_sortByModuleSize @pList, pCountN
+   local i, j, tKey
    repeat with i = 1 to (pCountN - 1)
       put pList[i] into tKey
-      put abs(tKey["ms"] - pAvg) into tKeyDev
       put (i - 1) into j
       repeat while j >= 0
-         put abs(pList[j]["ms"] - pAvg) into tCmpDev
-         if tCmpDev < tKeyDev then
+         if pList[j]["ms"] > tKey["ms"] then
             put pList[j] into pList[j + 1]
             subtract 1 from j
          else
@@ -3631,100 +4252,103 @@ command fpf_sortFurthest @pList, pCountN, pAvg
       end repeat
       put tKey into pList[j + 1]
    end repeat
-end fpf_sortFurthest
+end fpf_sortByModuleSize
 
--- stable insertion sort by CenterComparator (count DESC, then |dev| ASC)
-command fpf_sortCenter @pList, pCountN, pAvg
-   local i, j, tKey, tKeyDev, tKeyCt, tCmpDev, tCmpCt, tAfter
-   repeat with i = 1 to (pCountN - 1)
-      put pList[i] into tKey
-      put tKey["ct"] into tKeyCt
-      put abs(tKey["ms"] - pAvg) into tKeyDev
-      put (i - 1) into j
-      repeat while j >= 0
-         put pList[j]["ct"] into tCmpCt
-         put abs(pList[j]["ms"] - pAvg) into tCmpDev
-         -- does pList[j] sort AFTER tKey (so we shift it right)?
-         if tCmpCt = tKeyCt then
-            put (tCmpDev > tKeyDev) into tAfter
-         else
-            put (tCmpCt < tKeyCt) into tAfter
-         end if
-         if tAfter then
-            put pList[j] into pList[j + 1]
-            subtract 1 from j
-         else
-            exit repeat
-         end if
-      end repeat
-      put tKey into pList[j + 1]
-   end repeat
-end fpf_sortCenter
+function fpf_squaredDistance pA, pB
+   local dx, dy
+   put (pA["x"] - pB["x"]) into dx
+   put (pA["y"] - pB["y"]) into dy
+   return ((dx * dx) + (dy * dy))
+end fpf_squaredDistance
 
--- remove element pIdx from a 0-based list of pCountN elements, shifting down
-command fpf_removeAt @pList, pCountN, pIdx
-   local k
-   repeat with k = pIdx to (pCountN - 2)
-      put pList[k + 1] into pList[k]
-   end repeat
-end fpf_removeAt
-
--- pick the best 3 finder candidates; throws NotFound if fewer than 3 exist
+-- pick the best 3 finder candidates (ZXing FinderPatternFinder.selectBestPatterns,
+-- the 2020+ algorithm): once three centres are confirmed - or the list is
+-- large - drop the unconfirmed ones; sort by module size; then score every
+-- triple of similar module size (within 1.4x) by how far its squared side
+-- lengths a <= b <= c are from an isosceles right triangle, |c-2b| + |c-2a|,
+-- and keep the least distorted. Throws NotFound if no such triple exists.
+-- (The pre-2020 heuristic the PHP port carries - drop module-size outliers,
+-- then sort by confirmation count - discarded the three TRUE finders of a
+-- clean v30 symbol as outliers next to four accidental 1:1:3:1:1 runs in its
+-- data region; found by the synthetic corpus, decoded fine by current ZXing.)
 function fpf_selectBestPatterns pFinder
-   local tCountN, k, tList, tTotal, tSquare, tAvg, tStdDev, tLimit, i, tOut
+   local tCountN, k, tList, tN, tConfirmed, tKeepAll, i, j, tOut
+   local tMinMs, tMaxMs, a, b, c, tTemp, d, tBestD, tBestI, tBestJ, tBestK, tSq0
    put pFinder["np"] into tCountN
    if tCountN < 3 then
       throw "NotFound: could not find 3 finder patterns (" & tCountN & " found)"
    end if
+   put 0 into tConfirmed
    repeat with k = 0 to (tCountN - 1)
-      put pFinder["pat"][k] into tList[k]
+      if pFinder["pat"][k]["ct"] >= 2 then add 1 to tConfirmed
    end repeat
-   if tCountN > 3 then
-      put 0 into tTotal
-      put 0 into tSquare
-      repeat with k = 0 to (tCountN - 1)
-         add tList[k]["ms"] to tTotal
-         add (tList[k]["ms"] * tList[k]["ms"]) to tSquare
+   put ((tConfirmed < 3) and (tCountN <= 25)) into tKeepAll
+   put 0 into tN
+   repeat with k = 0 to (tCountN - 1)
+      if tKeepAll or (pFinder["pat"][k]["ct"] >= 2) then
+         put pFinder["pat"][k] into tList[tN]
+         add 1 to tN
+      end if
+   end repeat
+   fpf_sortByModuleSize tList, tN
+   put -1 into tBestI
+   put 0 into tBestD
+   repeat with i = 0 to (tN - 3)
+      put tList[i]["ms"] into tMinMs
+      repeat with j = (i + 1) to (tN - 2)
+         put fpf_squaredDistance(tList[i], tList[j]) into tSq0
+         repeat with k = (j + 1) to (tN - 1)
+            put tList[k]["ms"] into tMaxMs
+            if tMaxMs > (tMinMs * 1.4) then next repeat      -- module size not similar
+            put tSq0 into a
+            put fpf_squaredDistance(tList[j], tList[k]) into b
+            put fpf_squaredDistance(tList[i], tList[k]) into c
+            -- sort a <= b <= c
+            if a > b then
+               put a into tTemp
+               put b into a
+               put tTemp into b
+            end if
+            if b > c then
+               put b into tTemp
+               put c into b
+               put tTemp into c
+            end if
+            if a > b then
+               put a into tTemp
+               put b into a
+               put tTemp into b
+            end if
+            put (abs(c - (2 * b)) + abs(c - (2 * a))) into d
+            if (tBestI < 0) or (d < tBestD) then
+               put d into tBestD
+               put i into tBestI
+               put j into tBestJ
+               put k into tBestK
+            end if
+         end repeat
       end repeat
-      put (tTotal / tCountN) into tAvg
-      put sqrt((tSquare / tCountN) - (tAvg * tAvg)) into tStdDev
-      fpf_sortFurthest tList, tCountN, tAvg
-      put max((0.2 * tAvg), tStdDev) into tLimit
-      put 0 into i
-      repeat while (i < tCountN) and (tCountN > 3)
-         if abs(tList[i]["ms"] - tAvg) > tLimit then
-            fpf_removeAt tList, tCountN, i
-            subtract 1 from tCountN
-            subtract 1 from i
-         end if
-         add 1 to i
-      end repeat
+   end repeat
+   if tBestI < 0 then
+      throw "NotFound: no three finder patterns form a right isosceles triangle (" & tN & " candidates)"
    end if
-   if tCountN > 3 then
-      put 0 into tTotal
-      repeat with k = 0 to (tCountN - 1)
-         add tList[k]["ms"] to tTotal
-      end repeat
-      put (tTotal / tCountN) into tAvg
-      fpf_sortCenter tList, tCountN, tAvg
-   end if
-   put tList[0] into tOut[0]
-   put tList[1] into tOut[1]
-   put tList[2] into tOut[2]
+   put tList[tBestI] into tOut[0]
+   put tList[tBestJ] into tOut[1]
+   put tList[tBestK] into tOut[2]
    return tOut
 end fpf_selectBestPatterns
 
 -- main entry: scan the image, returns {["bl"],["tl"],["tr"]} (ordered points)
 function fpf_find pImg, pHints
-   local tTryHarder, tPure, tNrSkip, tAllowedDev, tMaxVar
+   local tTryHarder, tNrSkip, tAllowedDev, tMaxVar
    local tMaxI, tMaxJ, tISkip, tDone, i, j, tSC, tCurState, tEndRow
    local tConfirmed, tRowSkip, tInfo, tPats, tFinder
+   local tBits, tRowSize, tRowBase, tWi, tWord, tJ0, tB
    -- hints: read each key directly. A missing key (or a non-array pHints)
    -- yields empty in xTalk, so we just test the read value -- no need for
    -- "is an array" / "is among the keys of" (both unexercised on this engine).
    -- fpf_hintPresent() centralises the "present?" test using only proven constructs.
-   put (pHints["TRY_HARDER"] is true) into tTryHarder
-   put (pHints["PURE_BARCODE"] is true) into tPure
+   put qr_hintFlag(pHints, "TRY_HARDER") into tTryHarder
    if fpf_hintPresent(pHints, "NR_ALLOW_SKIP_ROWS") then
       put pHints["NR_ALLOW_SKIP_ROWS"] into tNrSkip
    else if tTryHarder then
@@ -3744,15 +4368,19 @@ function fpf_find pImg, pHints
    end if
    put bitMatrix_getHeight(pImg) into tMaxI
    put bitMatrix_getWidth(pImg) into tMaxJ
-   -- iSkip = (3*maxI) / (4*MAX_MODULES). MAX_MODULES=57, so 4*57=228 (inlined as
-   -- a literal: the engine dislikes a literal*literal product as a div operand).
-   put ((3 * tMaxI) div 228) into tISkip
+   -- iSkip = (3*maxI) / (4*MAX_MODULES). MAX_MODULES=97 (ZXing: "support up to
+   -- version 20"), so 4*97=388 (inlined as a literal: the engine dislikes a
+   -- literal*literal product as a div operand).
+   put ((3 * tMaxI) div 388) into tISkip
    if (tISkip < 3) or tTryHarder then put 3 into tISkip
    put false into tDone
 
    put pImg into tFinder["bits"]
    put 0 into tFinder["np"]
    put false into tFinder["skip"]
+   fpf_ensurePow2
+   put pImg["bits"] into tBits            -- read-only: the words of the matrix
+   put pImg["rowSize"] into tRowSize
 
    put (tISkip - 1) into i
    repeat while (i < tMaxI) and (not tDone)
@@ -3763,60 +4391,85 @@ function fpf_find pImg, pHints
       put 0 into tSC[4]
       put 0 into tCurState
       put false into tEndRow
-      repeat with j = 0 to (tMaxJ - 1)
-         if bitMatrix_get(pImg, j, i) then
-            -- black pixel
-            if (tCurState bitAnd 1) = 1 then add 1 to tCurState
-            add 1 to tSC[tCurState]
-         else
-            -- white pixel
-            if (tCurState bitAnd 1) = 0 then
-               if tCurState = 4 then
-                  if fpf_foundPatternCross(tSC, tMaxVar) then
-                     fpf_handlePossibleCenter tFinder, tSC, i, j, tPure, tConfirmed
-                     if tConfirmed then
-                        put 3 into tISkip
-                        if tFinder["skip"] then
-                           put fpf_haveMultiplyConfirmedCenters(tFinder, tAllowedDev) into tDone
-                        else
-                           if tNrSkip is empty then
-                              fpf_findRowSkip tFinder, tRowSkip
+      put (i * tRowSize) into tRowBase
+      repeat with tWi = 0 to (tRowSize - 1)
+         put tBits[tRowBase + tWi] into tWord
+         put (tWi * 32) into tJ0
+         -- black runs are the even states, white runs the odd ones: a word that
+         -- is all one colour, met while already counting that colour, cannot
+         -- change the state - it only lengthens the current run
+         if (tWord = 0) and ((tCurState bitAnd 1) = 1) then
+            add min(32, (tMaxJ - tJ0)) to tSC[tCurState]
+            next repeat
+         end if
+         if (tWord = 4294967295) and ((tCurState bitAnd 1) = 0) then
+            add 32 to tSC[tCurState]
+            next repeat
+         end if
+         repeat with tB = 0 to 31
+            put (tJ0 + tB) into j
+            if j >= tMaxJ then exit repeat
+            if (tWord bitAnd sFPPow2[tB]) <> 0 then
+               -- black pixel
+               if (tCurState bitAnd 1) = 1 then add 1 to tCurState
+               add 1 to tSC[tCurState]
+            else
+               -- white pixel
+               if (tCurState bitAnd 1) = 0 then
+                  if tCurState = 4 then
+                     if fpf_foundPatternCross(tSC, tMaxVar) then
+                        fpf_handlePossibleCenter tFinder, tSC, i, j, tConfirmed
+                        if tConfirmed then
+                           put 2 into tISkip                 -- ZXing: iSkip = 2
+                           if tFinder["skip"] then
+                              put fpf_haveMultiplyConfirmedCenters(tFinder, tAllowedDev) into tDone
                            else
-                              put tNrSkip into tRowSkip
+                              if tNrSkip is empty then
+                                 fpf_findRowSkip tFinder, tRowSkip
+                              else
+                                 put tNrSkip into tRowSkip
+                              end if
+                              if tRowSkip > tSC[2] then
+                                 add (tRowSkip - tSC[2] - tISkip) to i
+                                 put true into tEndRow
+                              end if
                            end if
-                           if tRowSkip > tSC[2] then
-                              add (tRowSkip - tSC[2] - tISkip) to i
-                              put true into tEndRow
+                           put 0 into tCurState
+                           put 0 into tSC[0]
+                           put 0 into tSC[1]
+                           put 0 into tSC[2]
+                           put 0 into tSC[3]
+                           put 0 into tSC[4]
+                           if tEndRow then
+                              exit repeat            -- leaves the bit loop; the word loop checks tEndRow
                            end if
-                        end if
-                        put 0 into tCurState
-                        put 0 into tSC[0]
-                        put 0 into tSC[1]
-                        put 0 into tSC[2]
-                        put 0 into tSC[3]
-                        put 0 into tSC[4]
-                        if tEndRow then
-                           exit repeat
+                        else
+                           fpf_shiftCounts2 tSC
+                           put 3 into tCurState
                         end if
                      else
                         fpf_shiftCounts2 tSC
                         put 3 into tCurState
                      end if
                   else
-                     fpf_shiftCounts2 tSC
-                     put 3 into tCurState
+                     add 1 to tCurState
+                     add 1 to tSC[tCurState]
                   end if
                else
-                  add 1 to tCurState
                   add 1 to tSC[tCurState]
                end if
-            else
-               add 1 to tSC[tCurState]
             end if
-         end if
+            end repeat
+         if tEndRow then exit repeat
       end repeat
+      if tEndRow then
+         -- the row was abandoned after a confirmed centre (row skip): the
+         -- end-of-row check did not run before 2026-09 either
+         add tISkip to i
+         next repeat
+      end if
       if fpf_foundPatternCross(tSC, tMaxVar) then
-         fpf_handlePossibleCenter tFinder, tSC, i, tMaxJ, tPure, tConfirmed
+         fpf_handlePossibleCenter tFinder, tSC, i, tMaxJ, tConfirmed
          if tConfirmed then
             put tSC[0] into tISkip
             if tFinder["skip"] then
@@ -3837,8 +4490,8 @@ end fpf_find
 
 -- ===================== module: alignmentPatternFinder ==
 -- =====================================================================
--- alignmentPatternFinder.lc — locate the bottom-right alignment pattern (v2+).
--- Port of ZXing Qrcode\Detector\AlignmentPatternFinder. Spec §8.4.
+-- alignmentPatternFinder.lc - locate the bottom-right alignment pattern (v2+).
+-- Port of ZXing Qrcode\Detector\AlignmentPatternFinder. Spec section 8.4.
 -- Requires: qrCompat.lc, bitMatrix.lc.
 --
 -- Stateless apart from a small accumulator: apf_find searches a sub-region for
@@ -3933,15 +4586,17 @@ end apf_handlePossibleCenter
 function apf_find pImg, pStartX, pStartY, pWidth, pHeight, pModuleSize
    local tMaxJ, tMiddleI, iGen, i, j, tSC, tCurState, tAcc, tResult
    put (pStartX + pWidth) into tMaxJ
-   put (pStartY + (pHeight / 2)) into tMiddleI
+   -- row schedule: middle row first, then alternately below/above it. ZXing
+   -- (Java) uses INTEGER division here; the PHP port's float middle skipped the
+   -- true middle row for odd heights and visited one row below the region.
+   put (pStartY + (pHeight div 2)) into tMiddleI
    put 0 into tAcc["np"]
    repeat with iGen = 0 to (pHeight - 1)
       if (iGen bitAnd 1) = 0 then
-         put (tMiddleI + ((iGen + 1) / 2)) into i
+         put (tMiddleI + ((iGen + 1) div 2)) into i
       else
-         put (tMiddleI - ((iGen + 1) / 2)) into i
+         put (tMiddleI - ((iGen + 1) div 2)) into i
       end if
-      put trunc(i) into i
       put 0 into tSC[0]
       put 0 into tSC[1]
       put 0 into tSC[2]
@@ -3990,8 +4645,8 @@ end apf_find
 
 -- ===================== module: detector ================
 -- =====================================================================
--- detector.lc — top-level detect: finders -> module size -> transform -> sample.
--- Port of ZXing Qrcode\Detector\Detector. Spec §8.4.
+-- detector.lc - top-level detect: finders -> module size -> transform -> sample.
+-- Port of ZXing Qrcode\Detector\Detector. Spec section 8.4.
 -- Requires: qrCompat.lc, bitMatrix.lc, mathUtils.lc, resultPoint.lc,
 --           perspectiveTransform.lc, gridSampler.lc, finderPatternFinder.lc,
 --           alignmentPatternFinder.lc, version.lc.
@@ -4022,7 +4677,7 @@ function dt_sizeOfBlackWhiteBlackRun pImg, pFromX, pFromY, pToX, pToY
    end if
    put abs(tToX - tFromX) into tDx
    put abs(tToY - tFromY) into tDy
-   put (0 - (tDx / 2)) into tErr
+   put (0 - (tDx div 2)) into tErr        -- ZXing: int error = -dx / 2 (integer)
    if tFromX < tToX then
       put 1 into tXstep
    else
@@ -4102,13 +4757,22 @@ function dt_calculateModuleSizeOneWay pImg, pPattern, pOther
    local tEst1, tEst2
    put dt_sizeOfBWBRunBothWays(pImg, trunc(pPattern["x"]), trunc(pPattern["y"]), trunc(pOther["x"]), trunc(pOther["y"])) into tEst1
    put dt_sizeOfBWBRunBothWays(pImg, trunc(pOther["x"]), trunc(pOther["y"]), trunc(pPattern["x"]), trunc(pPattern["y"])) into tEst2
+   -- NaN is empty in this port and must never reach arithmetic: both runs
+   -- empty -> empty (upstream: NaN propagates and ends in NotFound)
+   if (tEst1 is empty) and (tEst2 is empty) then return empty
    if tEst1 is empty then return (tEst2 / 7)
    if tEst2 is empty then return (tEst1 / 7)
    return ((tEst1 + tEst2) / 14)
 end dt_calculateModuleSizeOneWay
 
 function dt_calculateModuleSize pImg, pTL, pTR, pBL
-   return ((dt_calculateModuleSizeOneWay(pImg, pTL, pTR) + dt_calculateModuleSizeOneWay(pImg, pTL, pBL)) / 2)
+   local tA, tB
+   put dt_calculateModuleSizeOneWay(pImg, pTL, pTR) into tA
+   put dt_calculateModuleSizeOneWay(pImg, pTL, pBL) into tB
+   if (tA is empty) or (tB is empty) then
+      throw "NotFound: module size could not be measured (no black-white-black run)"
+   end if
+   return ((tA + tB) / 2)
 end dt_calculateModuleSize
 
 -- dimension (modules per side) from finder distances + module size; snap %4==1
@@ -4116,14 +4780,18 @@ function dt_computeDimension pTL, pTR, pBL, pModuleSize
    local tTltr, tTlbl, tDim, tMod
    put mu_round(rp_distance(pTL, pTR) / pModuleSize) into tTltr
    put mu_round(rp_distance(pTL, pBL) / pModuleSize) into tTlbl
-   put round((((tTltr + tTlbl) / 2) + 7)) into tDim
+   -- ZXing (Java) Detector.computeDimension: INTEGER division of the two
+   -- rounded module counts, then snap to 4k+1 - and since ZXing 3.4 a residue
+   -- of 3 is recovered with dimension -= 2 rather than thrown (the PHP port
+   -- rounds a float and throws on 3; this port follows current ZXing here).
+   put (((tTltr + tTlbl) div 2) + 7) into tDim
    put (tDim bitAnd 3) into tMod
    if tMod = 0 then
       add 1 to tDim
    else if tMod = 2 then
       subtract 1 from tDim
    else if tMod = 3 then
-      throw "NotFound: dimension " & tDim & " mod 4 == 3 unusable"
+      subtract 2 from tDim
    end if
    return tDim
 end dt_computeDimension
@@ -4169,7 +4837,7 @@ end dt_createTransform
 -- top-level detect; returns {["bits"],["points"],["dimension"]} or throws
 function dt_detect pImg, pHints
    local tInfo, tTL, tTR, tBL, tModuleSize, tDimension, tProvVer, tModulesBetween
-   local tAlignCenters, tAlign, tBRX, tBRY, tCorr, tEstAX, tEstAY, ii, e
+   local tAlignCenters, tAlign, tBRX, tBRY, tCorr, tEstAX, tEstAY, ii, e, tAlignErr
    local tTransform, tBits, tPoints, tResult
    put fpf_find(pImg, pHints) into tInfo
    put tInfo["tl"] into tTL
@@ -4188,16 +4856,25 @@ function dt_detect pImg, pHints
       put ((tTR["x"] - tTL["x"]) + tBL["x"]) into tBRX
       put ((tTR["y"] - tTL["y"]) + tBL["y"]) into tBRY
       put (1 - (3 / tModulesBetween)) into tCorr
-      put mu_round(tTL["x"] + (tCorr * (tBRX - tTL["x"]))) into tEstAX
-      put mu_round(tTL["y"] + (tCorr * (tBRY - tTL["y"]))) into tEstAY
+      -- ZXing truncates the estimate: int estAlignmentX = (int) (...)
+      put trunc(tTL["x"] + (tCorr * (tBRX - tTL["x"]))) into tEstAX
+      put trunc(tTL["y"] + (tCorr * (tBRY - tTL["y"]))) into tEstAY
       put 4 into ii
+      put empty into tAlignErr
       repeat while ii <= 16
          try
             put dt_findAlignmentInRegion(pImg, tModuleSize, tEstAX, tEstAY, ii) into tAlign
             exit repeat
          catch e
             put empty into tAlign
+            put e into tAlignErr
          end try
+         -- ZXing/PHP catch ONLY NotFound here; anything else is a real error and
+         -- must not be swallowed into "no alignment pattern" (re-thrown after
+         -- the try - a throw inside a catch is lost on OXT, engine notes 3.2)
+         if (tAlignErr is not empty) and (not (tAlignErr begins with "NotFound")) then
+            throw tAlignErr
+         end if
          put (ii * 2) into ii
       end repeat
    end if
@@ -4217,30 +4894,75 @@ end dt_detect
 
 -- ===================== module: qrCodeReader ============
 -- =====================================================================
--- qrCodeReader.lc — wire detector -> decoder; PURE_BARCODE fast path. Spec §9.
+-- qrCodeReader.lc - wire detector -> decoder; PURE_BARCODE fast path. Spec section 9.
 -- Port of ZXing Qrcode\QRCodeReader. Requires: bitMatrix.lc, binaryBitmap.lc,
 --   detector.lc, decoder.lc.
 --
 -- qcr_decode(binaryBitmap, hints) -> decoder result array (from dec_decode):
 --   ["text"], ["bytes"], ["error"], ["ecLevel"], ["version"], ["mask"],
---   plus ["points"] from the detector. On a NotFound the detector throws;
---   on Format/Checksum dec_decode returns ["error"] set.
+--   plus ["points"] from the detector (swapped for a mirrored symbol, as
+--   ZXing does) and ["inverted"] = true when the ALSO_INVERTED retry won.
+--   Never throws: NotFound / Format / Checksum all arrive in ["error"].
 -- =====================================================================
 
+-- Decode one binarized bitmap. Callers run `binaryBitmap_ensureMatrix` on
+-- THEIR bitmap variable first so the black matrix is binarized once and cached
+-- where it persists (a function receives the bitmap by value - the proven shape
+-- - so a cache filled here would live in a discarded copy; ensureMatrix below is
+-- then a no-op). With the ALSO_INVERTED hint a failed decode is retried on the
+-- inverted matrix (ZXing MultiFormatReader: image.getBlackMatrix().flip(), then
+-- decode again) - a white-on-black symbol; such a result carries
+-- ["inverted"] = true. Never throws: failures arrive in ["error"] (a detector
+-- NotFound included).
 function qcr_decode pBitmap, pHints
-   local tBits, tDetectorResult, tDecoderResult, tPure
-   -- a missing key (or non-array pHints) reads as empty, so "is true" is false.
-   put (pHints["PURE_BARCODE"] is true) into tPure
-   if tPure then
-      put qcr_extractPureBits(binaryBitmap_getBlackMatrix(pBitmap)) into tBits
+   local tResult, tInverted, tBits, e
+   binaryBitmap_ensureMatrix pBitmap
+   try
+      put qcr_decodeMatrix(pBitmap["matrix"], pHints) into tResult
+   catch e
+      put empty into tResult
+      put e into tResult["error"]
+   end try
+   if (tResult["error"] is not empty) and qr_hintFlag(pHints, "ALSO_INVERTED") then
+      put pBitmap["matrix"] into tBits
+      bitMatrix_flipAll tBits
+      put tBits into pBitmap["matrix"]
+      try
+         put qcr_decodeMatrix(pBitmap["matrix"], pHints) into tInverted
+      catch e
+         put empty into tInverted
+         put e into tInverted["error"]
+      end try
+      if tInverted["error"] is empty then
+         put true into tInverted["inverted"]
+         return tInverted
+      end if
+   end if
+   return tResult
+end qcr_decode
+
+-- detect + decode one black matrix (ZXing QRCodeReader.decode). Throws NotFound
+-- from the detector; Format/Checksum arrive in the result's ["error"].
+function qcr_decodeMatrix pImage, pHints
+   local tBits, tDetectorResult, tDecoderResult, tPoints, tSwap
+   if qr_hintFlag(pHints, "PURE_BARCODE") then
+      put qcr_extractPureBits(pImage) into tBits
       put dec_decode(tBits) into tDecoderResult
    else
-      put dt_detect(binaryBitmap_getBlackMatrix(pBitmap), pHints) into tDetectorResult
+      put dt_detect(pImage, pHints) into tDetectorResult
       put dec_decode(tDetectorResult["bits"]) into tDecoderResult
-      put tDetectorResult["points"] into tDecoderResult["points"]
+      put tDetectorResult["points"] into tPoints
+      if tDecoderResult["mirrored"] is true then
+         -- ZXing QRCodeDecoderMetaData.applyMirroredCorrection: a mirrored
+         -- symbol's bottom-left and top-right swap; top-left and alignment stay
+         put tPoints[0] into tSwap
+         put tPoints[2] into tPoints[0]
+         put tSwap into tPoints[2]
+      end if
+      put tPoints into tDecoderResult["points"]
    end if
    return tDecoderResult
-end qcr_decode
+end qcr_decodeMatrix
 
 -- estimate module size by counting transitions along the top-left diagonal
 function qcr_moduleSize pLeftTopBlack, pImage
@@ -4287,6 +5009,10 @@ function qcr_extractPureBits pImage
    if (tBottom - tTop) <> (tRight - tLeft) then
       -- bottom-right module wasn't black; assume square, use height as width
       put (tLeft + (tBottom - tTop)) into tRight
+      -- ZXing (Java) guards the assumption; the PHP port would sample off-image
+      if tRight >= bitMatrix_getWidth(pImage) then
+         throw "NotFound: pure barcode square assumption runs off the image"
+      end if
    end if
    put round(((tRight - tLeft) + 1) / tModuleSize) into tMatrixWidth
    put round(((tBottom - tTop) + 1) / tModuleSize) into tMatrixHeight
@@ -4327,8 +5053,8 @@ end qcr_extractPureBits
 
 -- ===================== module: qrReader ================
 -- =====================================================================
--- qrReader.lc — public API: image bytes -> luminance -> binarize -> detect ->
--- decode. Spec §9. Port of ZXing QrReader facade.
+-- qrReader.lc - public API: image bytes -> luminance -> binarize -> detect ->
+-- decode. Spec section 9. Port of ZXing QrReader facade.
 -- Requires: luminanceSource.lc, binaryBitmap.lc, qrCodeReader.lc (and the
 --   whole decode stack they pull in).
 --
@@ -4338,40 +5064,75 @@ end qcr_extractPureBits
 --   qrDecodeResult(imageBytes [,hints])   -> rich result array with keys
 --       text, bytes, points, ecLevel, version, mask, error
 --   qrDecodeResultRobust(imageBytes [,hints [,maxDim]]) -> rich result array;
---       multi-strategy (hybrid+global x two scales) -- best for real photos
+--       multi-strategy (hybrid+global x a resolution ladder) -- best for photos
+--   qrLibraryVersion()                    -> the library version string
 --
 -- hints may be an xTalk array, or a comma list of "KEY" / "KEY=VALUE"
--- (e.g. "TRY_HARDER" or "NR_ALLOW_SKIP_ROWS=0"). Failure contract: internal
--- NotFound/Format/Checksum never escape -- qrDecodeResult returns ["error"].
+-- (e.g. "TRY_HARDER" or "NR_ALLOW_SKIP_ROWS=0"). A flag hint counts as SET when
+-- present with any value other than false / 0 / empty / "no" / "off"
+-- (qr_hintFlag), so "PURE_BARCODE", "PURE_BARCODE=1" and an array key holding
+-- true all work. Failure contract: internal NotFound/Format/Checksum never
+-- escape -- qrDecodeResult returns ["error"].
+--
+-- HOST HYGIENE: the two delimiter switches here are wrapped save/set/restore, so
+-- the host app gets its itemDelimiter back whatever the engine's scoping of
+-- that property (the xTalk Suite records it as global mutable state on OXT).
 -- =====================================================================
+
+-- the library version: a literal constant (constants must be literals), declared
+-- here, above its only reader, in the module that ships the public API
+constant kQrLibVersion = "0.2.0"
 
 -- normalise hints to an array (pass-through if already one). We detect an
 -- already-array argument via "the keys of" (empty for a non-array / empty
 -- string), avoiding the "is an array" operator which is unexercised here.
 function qr_parseHints pHints
-   local tArr, i, tItem, tKey, tVal, tCount
+   local tArr, i, tItem, tKey, tVal, tCount, tSavedDelim, tKeyLen
    if (the keys of pHints) is not empty then
       return pHints
    end if
    if pHints is empty then
       return tArr
    end if
+   put the itemDelimiter into tSavedDelim
    set the itemDelimiter to comma
    put the number of items of pHints into tCount
    repeat with i = 1 to tCount
       set the itemDelimiter to comma
       put (item i of pHints) into tItem
+      if tItem is empty then next repeat
       if "=" is in tItem then
+         -- split at the FIRST "=" only: "KEY=a=b" keeps the value "a=b"
          set the itemDelimiter to "="
          put (item 1 of tItem) into tKey
-         put (item 2 of tItem) into tVal
+         put the number of chars of tKey into tKeyLen
+         put char (tKeyLen + 2) to (the number of chars of tItem) of tItem into tVal
          put tVal into tArr[tKey]
       else
          put true into tArr[tItem]
       end if
    end repeat
+   set the itemDelimiter to tSavedDelim
    return tArr
 end qr_parseHints
+
+-- is the flag hint pKey SET? Present, and not one of the "off" spellings.
+-- (ZXing tests mere presence; PHP truthiness; the string form of a hint list
+-- makes "KEY=0" / "KEY=no" natural, so those count as off.)
+function qr_hintFlag pHints, pKey
+   local v
+   if not (pKey is among the lines of the keys of pHints) then return false
+   put pHints[pKey] into v
+   if v is empty then return false
+   if v is false then return false
+   if (v is "0") or (v is "no") or (v is "off") then return false
+   return true
+end qr_hintFlag
+
+-- the library version (the literal kQrLibVersion in qrCompat.lc)
+function qrLibraryVersion
+   return kQrLibVersion
+end qrLibraryVersion
 
 -- rich result; never throws (NotFound/Format/Checksum surface via ["error"])
 function qrDecodeResult pImageData, pHints
@@ -4380,6 +5141,7 @@ function qrDecodeResult pImageData, pHints
    try
       put luminanceSource_newFromData(pImageData) into tSource
       put binaryBitmap_new(tSource) into tBitmap
+      binaryBitmap_ensureMatrix tBitmap          -- binarize once, cached in OUR variable
       put qcr_decode(tBitmap, tHintsArr) into tResult
       return tResult
    catch e
@@ -4390,8 +5152,8 @@ end qrDecodeResult
 
 -- ROBUST multi-strategy decode for real-world phone photos (glare, blur, slight
 -- tilt, dense codes). The image is decoded to a raw pixel plane exactly ONCE
--- (the costly step), then several (binarizer, max-dimension) strategies are
--- tried in cheapest-first order; the first that decodes wins. This is the path
+-- (the costly step), then a resolution LADDER of (downsample step, binarizer)
+-- rungs is tried cheapest-first; the first that decodes wins. This is the path
 -- the interactive scanner uses.
 --
 -- Why it helps where a single pass fails:
@@ -4401,16 +5163,27 @@ end qrDecodeResult
 --   * A higher-resolution retry recovers dense (v4+) codes whose thin modules
 --     collapse under the aggressive nearest-neighbour downsample of the fast pass.
 --
--- The result array carries ["strategy"] ("hybrid"/"global"), ["procW"],
--- ["procH"] describing the attempt that produced it (the successful one, or the
--- last tried on failure) -- useful diagnostics when the engine isn't visible.
+-- The ladder: the base cap pMaxDim (default 1200 px on the longer side) gives an
+-- integer step; the finer rung is the ~1.33x cap's step when that is smaller,
+-- else one step finer than the base (when the base step is above 1). Two caps
+-- often map to the SAME step (any photo up to 1200 px is step 1 under both), so
+-- the old fixed four-rung list repeated identical work on every failure; a rung
+-- now runs only when it adds resolution, and the greyscale plane for a step is
+-- built ONCE and shared by both binarizers (they only read it).
+--
+-- The result array carries ["strategy"] ("hybrid"/"global"), ["step"], ["procW"],
+-- ["procH"] describing the attempt that produced it, and ["attempts"], a 0-based
+-- list of every rung tried ({strategy, step, procW, procH, error}). On total
+-- failure ["error"] is the FIRST rung's error (the most specific one: the hybrid
+-- pass at the base scale) and ["attempts"] tells the rest.
 -- NotFound/Format/Checksum never escape; failure surfaces via ["error"].
 --
 -- pMaxDim is the base (fast-pass) cap; omit for 1200. Hints pass straight
--- through (TRY_HARDER, BINARY_MODE, NR_ALLOW_SKIP_ROWS, ...).
+-- through (TRY_HARDER, ALSO_INVERTED, BINARY_MODE, NR_ALLOW_SKIP_ROWS, ...).
 function qrDecodeResultRobust pImageData, pHints, pMaxDim
-   local tHintsArr, tPlane, tStrats, tN, k, tBin, tDim, tBaseDim, tHiDim
-   local tSource, tBitmap, tResult, tLast, e, tErr
+   local tHintsArr, tPlane, tBaseDim, tHiDim, tW, tH, tStepBase, tStepHi
+   local tSteps, tNSteps, k, tStep, tSource, b, tBin, tBitmap, tResult
+   local tFirst, tAttempts, tN, e, tErr
    put qr_parseHints(pHints) into tHintsArr
 
    if (pMaxDim is empty) or (pMaxDim <= 0) then
@@ -4418,61 +5191,77 @@ function qrDecodeResultRobust pImageData, pHints, pMaxDim
    else
       put pMaxDim into tBaseDim
    end if
-   put trunc((tBaseDim * 4) / 3) into tHiDim     -- ~1.33x for the hi-res retry
+   put trunc((tBaseDim * 4) / 3) into tHiDim     -- ~1.33x for the finer rung
 
-   -- decode the image once; the per-strategy downsample (fromRawPlane) derives
-   -- the working scales from this plane. A decode failure here is terminal.
+   -- decode the image once; a decode failure here is terminal
    try
       put luminanceSource_decodeRawPlane(pImageData) into tPlane
    catch e
       put e into tErr["error"]
       return tErr
    end try
+   put tPlane["width"] into tW
+   put tPlane["height"] into tH
 
-   -- strategy order: default+fast first (zero change for easy images), then a
-   -- different binarizer, then more resolution. Each entry is "binarizer,maxdim".
-   put ("hybrid," & tBaseDim) into tStrats[0]
-   put ("global," & tBaseDim) into tStrats[1]
-   put ("hybrid," & tHiDim) into tStrats[2]
-   put ("global," & tHiDim) into tStrats[3]
-   put 4 into tN
+   -- plan the ladder in integer downsample steps (1 = full resolution)
+   put luminanceSource_stepForDims(tW, tH, tBaseDim) into tStepBase
+   put luminanceSource_stepForDims(tW, tH, tHiDim) into tStepHi
+   put tStepBase into tSteps[0]
+   put 1 into tNSteps
+   if tStepHi < tStepBase then
+      put tStepHi into tSteps[1]
+      put 2 into tNSteps
+   else if tStepBase > 1 then
+      put (tStepBase - 1) into tSteps[1]
+      put 2 into tNSteps
+   end if
 
-   put empty into tLast
-   repeat with k = 0 to (tN - 1)
-      set the itemDelimiter to comma
-      put (item 1 of tStrats[k]) into tBin
-      put (item 2 of tStrats[k]) into tDim
-      put empty into tSource
-      try
-         put luminanceSource_fromRawPlane(tPlane, tDim) into tSource
+   put 0 into tN
+   put empty into tFirst
+   repeat with k = 0 to (tNSteps - 1)
+      put tSteps[k] into tStep
+      put luminanceSource_fromRawPlaneStep(tPlane, tStep) into tSource
+      repeat with b = 0 to 1
+         if b = 0 then
+            put "hybrid" into tBin
+         else
+            put "global" into tBin
+         end if
          put binaryBitmap_new(tSource, tBin) into tBitmap
-         put qcr_decode(tBitmap, tHintsArr) into tResult
-      catch e
-         put empty into tResult
-         put e into tResult["error"]
-      end try
-      put tBin into tResult["strategy"]
-      put tSource["width"] into tResult["procW"]
-      put tSource["height"] into tResult["procH"]
-      if tResult["error"] is empty then
-         return tResult
-      end if
-      put tResult into tLast
+         binaryBitmap_ensureMatrix tBitmap
+         put qcr_decode(tBitmap, tHintsArr) into tResult      -- never throws
+         put tBin into tResult["strategy"]
+         put tStep into tResult["step"]
+         put tSource["width"] into tResult["procW"]
+         put tSource["height"] into tResult["procH"]
+         put tBin into tAttempts[tN]["strategy"]
+         put tStep into tAttempts[tN]["step"]
+         put tSource["width"] into tAttempts[tN]["procW"]
+         put tSource["height"] into tAttempts[tN]["procH"]
+         put tResult["error"] into tAttempts[tN]["error"]
+         add 1 to tN
+         if tResult["error"] is empty then
+            put tAttempts into tResult["attempts"]
+            return tResult
+         end if
+         if tFirst is empty then put tResult into tFirst
+      end repeat
    end repeat
-   return tLast
+   put tAttempts into tFirst["attempts"]
+   return tFirst
 end qrDecodeResultRobust
 
 -- one-shot: decoded text on success, empty on any failure. With BINARY_MODE set
 -- (hint), returns the raw decoded byte string verbatim (no charset decode) --
--- needed for binary payloads like the 256-byte ramp fixture (spec §9).
+-- needed for binary payloads like the 256-byte ramp fixture (spec section 9).
 function qrDecodeFromData pImageData, pHints
    local tRes, tHintsArr
-   put qrDecodeResult(pImageData, pHints) into tRes
+   put qr_parseHints(pHints) into tHintsArr
+   put qrDecodeResult(pImageData, tHintsArr) into tRes
    if tRes["error"] is not empty then
       return empty
    end if
-   put qr_parseHints(pHints) into tHintsArr
-   if tHintsArr["BINARY_MODE"] is true then
+   if qr_hintFlag(tHintsArr, "BINARY_MODE") then
       return tRes["bytes"]
    end if
    return tRes["text"]

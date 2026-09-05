@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_mathUtils.lc — MathUtils tests (spec §8.4). Defines: command suite_mathUtils.
+-- suite_mathUtils.lc - MathUtils tests (spec section 8.4). Defines: command suite_mathUtils.
 -- Requires loaded: mathUtils.lc.
 -- =====================================================================
 

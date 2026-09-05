@@ -4,15 +4,15 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- bitArray.lc — packed bit vector. Port of ZXing Common\BitArray. Spec §8.2.
+-- bitArray.lc - packed bit vector. Port of ZXing Common\BitArray. Spec section 8.2.
 -- Requires: qrCompat.lc.
 --
 -- Instance (Pattern A) is an array:
---   pObj["size"]     — number of valid bits
---   pObj["bits"][w]  — dense 0-based unsigned-32-bit words (w = 0 .. wordCount-1)
+--   pObj["size"]     - number of valid bits
+--   pObj["bits"][w]  - dense 0-based unsigned-32-bit words (w = 0 .. wordCount-1)
 -- Words are kept dense so "the number of elements of pObj['bits']" == wordCount,
 -- matching Java's bits.length (which getNextSet/Unset iterate against).
--- All packed words stay in [0, 2^32) (spec §6.1); shifts go through qrCompat.
+-- All packed words stay in [0, 2^32) (spec section 6.1); shifts go through qrCompat.
 -- =====================================================================
 
 function bitArray_new pSize
@@ -48,23 +48,23 @@ command bitArray_ensureCapacity @pObj, pBitsNeeded
 end bitArray_ensureCapacity
 
 function bitArray_get pObj, i
-   return ((pObj["bits"][(i div 32)] bitAnd shl(1, (i bitAnd 31))) <> 0)
+   return ((pObj["bits"][(i div 32)] bitAnd qr_shl(1, (i bitAnd 31))) <> 0)
 end bitArray_get
 
 command bitArray_set @pObj, i
    local w
    put (i div 32) into w
-   put u32(pObj["bits"][w] bitOr shl(1, (i bitAnd 31))) into pObj["bits"][w]
+   put qr_u32(pObj["bits"][w] bitOr qr_shl(1, (i bitAnd 31))) into pObj["bits"][w]
 end bitArray_set
 
 command bitArray_flip @pObj, i
    local w
    put (i div 32) into w
-   put u32(pObj["bits"][w] bitXor shl(1, (i bitAnd 31))) into pObj["bits"][w]
+   put qr_u32(pObj["bits"][w] bitXor qr_shl(1, (i bitAnd 31))) into pObj["bits"][w]
 end bitArray_flip
 
 command bitArray_setBulk @pObj, i, pNewBits
-   put u32(pNewBits) into pObj["bits"][(i div 32)]
+   put qr_u32(pNewBits) into pObj["bits"][(i div 32)]
 end bitArray_setBulk
 
 command bitArray_clear @pObj
@@ -83,13 +83,13 @@ function bitArray_getNextSet pObj, pFrom
    put the number of elements of pObj["bits"] into tWordCount
    put (pFrom div 32) into tBitsOffset
    put pObj["bits"][tBitsOffset] into tCurrent
-   put (tCurrent bitAnd u32(bitNot(shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
+   put (tCurrent bitAnd qr_u32(bitNot(qr_shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
    repeat while tCurrent = 0
       add 1 to tBitsOffset
       if tBitsOffset = tWordCount then return tSize
       put pObj["bits"][tBitsOffset] into tCurrent
    end repeat
-   put ((tBitsOffset * 32) + numberOfTrailingZeros(tCurrent)) into tResult
+   put ((tBitsOffset * 32) + qr_numberOfTrailingZeros(tCurrent)) into tResult
    return min(tResult, tSize)
 end bitArray_getNextSet
 
@@ -100,14 +100,14 @@ function bitArray_getNextUnset pObj, pFrom
    if pFrom >= tSize then return tSize
    put the number of elements of pObj["bits"] into tWordCount
    put (pFrom div 32) into tBitsOffset
-   put u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
-   put (tCurrent bitAnd u32(bitNot(shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
+   put qr_u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
+   put (tCurrent bitAnd qr_u32(bitNot(qr_shl(1, (pFrom bitAnd 31)) - 1))) into tCurrent
    repeat while tCurrent = 0
       add 1 to tBitsOffset
       if tBitsOffset = tWordCount then return tSize
-      put u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
+      put qr_u32(bitNot(pObj["bits"][tBitsOffset])) into tCurrent
    end repeat
-   put ((tBitsOffset * 32) + numberOfTrailingZeros(tCurrent)) into tResult
+   put ((tBitsOffset * 32) + qr_numberOfTrailingZeros(tCurrent)) into tResult
    return min(tResult, tSize)
 end bitArray_getNextUnset
 
@@ -132,8 +132,8 @@ command bitArray_setRange @pObj, pStart, pEnd
       else
          put (e bitAnd 31) into tLastBit
       end if
-      put u32(shl(2, tLastBit) - shl(1, tFirstBit)) into tMask   -- ones firstBit..lastBit
-      put u32(pObj["bits"][i] bitOr tMask) into pObj["bits"][i]
+      put qr_u32(qr_shl(2, tLastBit) - qr_shl(1, tFirstBit)) into tMask   -- ones firstBit..lastBit
+      put qr_u32(pObj["bits"][i] bitOr tMask) into pObj["bits"][i]
    end repeat
 end bitArray_setRange
 
@@ -156,7 +156,7 @@ function bitArray_isRange pObj, pStart, pEnd, pValue
       else
          put (e bitAnd 31) into tLastBit
       end if
-      put u32(shl(2, tLastBit) - shl(1, tFirstBit)) into tMask
+      put qr_u32(qr_shl(2, tLastBit) - qr_shl(1, tFirstBit)) into tMask
       if pValue then
          put tMask into tWanted
       else
@@ -172,7 +172,7 @@ command bitArray_appendBit @pObj, pBit
    bitArray_ensureCapacity pObj, (pObj["size"] + 1)
    if pBit then
       put (pObj["size"] div 32) into w
-      put u32(pObj["bits"][w] bitOr shl(1, (pObj["size"] bitAnd 31))) into pObj["bits"][w]
+      put qr_u32(pObj["bits"][w] bitOr qr_shl(1, (pObj["size"] bitAnd 31))) into pObj["bits"][w]
    end if
    add 1 to pObj["size"]
 end bitArray_appendBit
@@ -183,7 +183,7 @@ command bitArray_appendBits @pObj, pValue, pNumBits
    if (pNumBits < 0) or (pNumBits > 32) then throw "BitArray: numBits must be 0..32"
    bitArray_ensureCapacity pObj, (pObj["size"] + pNumBits)
    repeat with nbl = pNumBits down to 1
-      bitArray_appendBit pObj, ((uShr(pValue, (nbl - 1)) bitAnd 1) = 1)
+      bitArray_appendBit pObj, ((qr_uShr(pValue, (nbl - 1)) bitAnd 1) = 1)
    end repeat
 end bitArray_appendBits
 
@@ -192,7 +192,7 @@ command bitArray_xor @pObj, pOther
    if pObj["size"] <> pOther["size"] then throw "BitArray: sizes don't match"
    put the number of elements of pObj["bits"] into n
    repeat with i = 0 to (n - 1)
-      put u32(pObj["bits"][i] bitXor pOther["bits"][i]) into pObj["bits"][i]
+      put qr_u32(pObj["bits"][i] bitXor pOther["bits"][i]) into pObj["bits"][i]
    end repeat
 end bitArray_xor
 
@@ -203,7 +203,7 @@ function bitArray_toBytes pObj, pBitOffset, pNumBytes
    repeat with i = 0 to (pNumBytes - 1)
       put 0 into theByte
       repeat with j = 0 to 7
-         if bitArray_get(pObj, bo) then put u32(theByte bitOr shl(1, (7 - j))) into theByte
+         if bitArray_get(pObj, bo) then put qr_u32(theByte bitOr qr_shl(1, (7 - j))) into theByte
          add 1 to bo
       end repeat
       put theByte into tOut[i]
@@ -211,7 +211,7 @@ function bitArray_toBytes pObj, pBitOffset, pNumBytes
    return tOut
 end bitArray_toBytes
 
--- reverse the bit order within [0, size)  (classic bit-reversal; spec §6.2)
+-- reverse the bit order within [0, size)  (classic bit-reversal; spec section 6.2)
 command bitArray_reverse @pObj
    local tSize, tLen, tOldLen, tOrigCount, i, x, newBits
    local leftOffset, currentInt, nextInt
@@ -223,22 +223,22 @@ command bitArray_reverse @pObj
       put 0 into newBits[i]
    end repeat
    repeat with i = 0 to (tOldLen - 1)
-      put u32(pObj["bits"][i]) into x
-      put ((uShr(x, 1) bitAnd 1431655765) bitOr u32(shl((x bitAnd 1431655765), 1))) into x   -- 0x55555555
-      put ((uShr(x, 2) bitAnd 858993459) bitOr u32(shl((x bitAnd 858993459), 2))) into x     -- 0x33333333
-      put ((uShr(x, 4) bitAnd 252645135) bitOr u32(shl((x bitAnd 252645135), 4))) into x     -- 0x0f0f0f0f
-      put ((uShr(x, 8) bitAnd 16711935) bitOr u32(shl((x bitAnd 16711935), 8))) into x       -- 0x00ff00ff
-      put ((uShr(x, 16) bitAnd 65535) bitOr u32(shl((x bitAnd 65535), 16))) into x           -- 0x0000ffff
+      put qr_u32(pObj["bits"][i]) into x
+      put ((qr_uShr(x, 1) bitAnd 1431655765) bitOr qr_u32(qr_shl((x bitAnd 1431655765), 1))) into x   -- 0x55555555
+      put ((qr_uShr(x, 2) bitAnd 858993459) bitOr qr_u32(qr_shl((x bitAnd 858993459), 2))) into x     -- 0x33333333
+      put ((qr_uShr(x, 4) bitAnd 252645135) bitOr qr_u32(qr_shl((x bitAnd 252645135), 4))) into x     -- 0x0f0f0f0f
+      put ((qr_uShr(x, 8) bitAnd 16711935) bitOr qr_u32(qr_shl((x bitAnd 16711935), 8))) into x       -- 0x00ff00ff
+      put ((qr_uShr(x, 16) bitAnd 65535) bitOr qr_u32(qr_shl((x bitAnd 65535), 16))) into x           -- 0x0000ffff
       put x into newBits[(tLen - i)]
    end repeat
    if tSize <> (tOldLen * 32) then
       put ((tOldLen * 32) - tSize) into leftOffset
-      put uShr(newBits[0], leftOffset) into currentInt
+      put qr_uShr(newBits[0], leftOffset) into currentInt
       repeat with i = 1 to (tOldLen - 1)
          put newBits[i] into nextInt
-         put u32(currentInt bitOr shl(nextInt, (32 - leftOffset))) into currentInt
+         put qr_u32(currentInt bitOr qr_shl(nextInt, (32 - leftOffset))) into currentInt
          put currentInt into newBits[(i - 1)]
-         put uShr(nextInt, leftOffset) into currentInt
+         put qr_uShr(nextInt, leftOffset) into currentInt
       end repeat
       put currentInt into newBits[(tOldLen - 1)]
    end if

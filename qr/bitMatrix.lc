@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- bitMatrix.lc — packed 2-D bit grid. Port of ZXing Common\BitMatrix. Spec §8.1.
+-- bitMatrix.lc - packed 2-D bit grid. Port of ZXing Common\BitMatrix. Spec section 8.1.
 -- Requires: qrCompat.lc, bitArray.lc (for getRow/setRow/rotate180).
 --
 -- Instance (Pattern A) is an array:
@@ -12,17 +12,40 @@
 --   pObj["rowSize"]  = (width + 31) div 32   (words per row)
 --   pObj["bits"][w]  = dense 0-based unsigned-32-bit words, length rowSize*height
 --
--- get/getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
--- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.shl
--- is precision-safe: shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
--- matching Java's overflow-discard semantics bit-for-bit (spec §6.2).
+-- getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
+-- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.qr_shl
+-- is precision-safe: qr_shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
+-- matching Java's overflow-discard semantics bit-for-bit (spec section 6.2).
+--
+-- HOT PATH: get/set/unset/flip run once per pixel in the binarizers, the finder
+-- and the sampler. They use a power-of-two table (sBMPow2[b] = 2^b, built once
+-- by bitMatrix_new) instead of the qr_shl/qr_uShr/qr_u32 helper calls: for a word in
+-- [0, 2^32) and a bit index in 0..31, `word div 2^b` IS qr_uShr(word, b) and
+-- `word bitOr 2^b` IS qr_u32(word bitOr qr_shl(1, b)) - bit-identical, proven under
+-- the headless model on every fixture, with no `^` operator on the hot path
+-- (some OXT parsers are reported to reject `^` inside a compound expression).
+-- Every matrix comes from bitMatrix_new, so the table always exists.
 --
 -- NOTE: the giant hard-coded debug array literal in PHP BitMatrix::set() is
--- dead cruft and is intentionally NOT ported (spec §8.1 warning).
+-- dead cruft and is intentionally NOT ported (spec section 8.1 warning).
 -- =====================================================================
+
+local sBMPow2, sBMPow2Ready      -- sBMPow2[b] = 2^b, b = 0..31; built once
+
+command bm_ensurePow2
+   local b, v
+   if sBMPow2Ready is true then exit bm_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sBMPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sBMPow2Ready
+end bm_ensurePow2
 
 function bitMatrix_new pWidth, pHeight
    local tObj, tRowSize, tCount, k, tBits
+   bm_ensurePow2
    if pWidth < 1 then throw "BitMatrix: dimensions must be > 0"
    if pHeight is empty then put pWidth into pHeight
    if pHeight < 1 then throw "BitMatrix: dimensions must be > 0"
@@ -49,28 +72,36 @@ function bitMatrix_getHeight pObj
    return pObj["height"]
 end bitMatrix_getHeight
 
+-- A read outside the matrix answers false (white). ZXing/PHP behave that way
+-- for the reads the detector actually makes (padding bits are zero; PHP's get
+-- auto-vivifies a missing word to 0), and the finder's cross-check loops walk
+-- one pixel past every edge, so the guard makes those reads independent of
+-- whether the engine short-circuits `and` or errors on arithmetic over empty.
 function bitMatrix_get pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   return ((uShr(pObj["bits"][tOffset], (x bitAnd 31)) bitAnd 1) <> 0)
+   if (x < 0) or (y < 0) or (x >= pObj["width"]) or (y >= pObj["height"]) then
+      return false
+   end if
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   return (((pObj["bits"][tOffset] div sBMPow2[x bitAnd 31]) bitAnd 1) = 1)
 end bitMatrix_get
 
 command bitMatrix_set @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitOr shl(1, (x bitAnd 31))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitOr sBMPow2[x bitAnd 31]) into pObj["bits"][tOffset]
 end bitMatrix_set
 
 command bitMatrix_unset @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitAnd u32(bitNot(shl(1, (x bitAnd 31))))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitAnd (4294967295 - sBMPow2[x bitAnd 31])) into pObj["bits"][tOffset]
 end bitMatrix_unset
 
 command bitMatrix_flip @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitXor shl(1, (x bitAnd 31))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitXor sBMPow2[x bitAnd 31]) into pObj["bits"][tOffset]
 end bitMatrix_flip
 
 command bitMatrix_clear @pObj
@@ -93,7 +124,7 @@ command bitMatrix_setRegion @pObj, pLeft, pTop, pWidth, pHeight
       put (y * tRowSize) into tOffset
       repeat with x = pLeft to (tRight - 1)
          put (tOffset + (x div 32)) into tIdx
-         put u32(pObj["bits"][tIdx] bitOr shl(1, (x bitAnd 31))) into pObj["bits"][tIdx]
+         put qr_u32(pObj["bits"][tIdx] bitOr qr_shl(1, (x bitAnd 31))) into pObj["bits"][tIdx]
       end repeat
    end repeat
 end bitMatrix_setRegion
@@ -115,7 +146,7 @@ command bitMatrix_setRow @pObj, y, pRow
    put pObj["rowSize"] into tRowSize
    put (y * tRowSize) into tOffset
    repeat with x = 0 to (tRowSize - 1)
-      put u32(pRow["bits"][x]) into pObj["bits"][tOffset + x]
+      put qr_u32(pRow["bits"][x]) into pObj["bits"][tOffset + x]
    end repeat
 end bitMatrix_setRow
 
@@ -140,7 +171,7 @@ command bitMatrix_xor @pObj, pMask
    end if
    put the number of elements of pObj["bits"] into n
    repeat with i = 0 to (n - 1)
-      put u32(pObj["bits"][i] bitXor pMask["bits"][i]) into pObj["bits"][i]
+      put qr_u32(pObj["bits"][i] bitXor pMask["bits"][i]) into pObj["bits"][i]
    end repeat
 end bitMatrix_xor
 
@@ -163,14 +194,14 @@ function bitMatrix_getEnclosingRectangle pObj
             if y > tBottom then put y into tBottom
             if (x32 * 32) < tLeft then
                put 0 into tBitN
-               repeat while shl(theBits, (31 - tBitN)) = 0
+               repeat while qr_shl(theBits, (31 - tBitN)) = 0
                   add 1 to tBitN
                end repeat
                if ((x32 * 32) + tBitN) < tLeft then put ((x32 * 32) + tBitN) into tLeft
             end if
             if ((x32 * 32) + 31) > tRight then
                put 31 into tBitN
-               repeat while uShr(theBits, tBitN) = 0
+               repeat while qr_uShr(theBits, tBitN) = 0
                   subtract 1 from tBitN
                end repeat
                if ((x32 * 32) + tBitN) > tRight then put ((x32 * 32) + tBitN) into tRight
@@ -200,7 +231,7 @@ function bitMatrix_getTopLeftOnBit pObj
    put ((bitsOffset mod rs) * 32) into x
    put pObj["bits"][bitsOffset] into theBits
    put 0 into tBitN
-   repeat while shl(theBits, (31 - tBitN)) = 0
+   repeat while qr_shl(theBits, (31 - tBitN)) = 0
       add 1 to tBitN
    end repeat
    add tBitN to x
@@ -223,7 +254,7 @@ function bitMatrix_getBottomRightOnBit pObj
    put ((bitsOffset mod rs) * 32) into x
    put pObj["bits"][bitsOffset] into theBits
    put 31 into tBitN
-   repeat while uShr(theBits, tBitN) = 0
+   repeat while qr_uShr(theBits, tBitN) = 0
       subtract 1 from tBitN
    end repeat
    add tBitN to x
@@ -235,4 +266,44 @@ end bitMatrix_getBottomRightOnBit
 function bitMatrix_clone pObj
    return pObj          -- xTalk deep-copies arrays on return
 end bitMatrix_clone
+
+-- the transpose of a SQUARE matrix, as a new matrix: (x,y) -> (y,x). This is
+-- ZXing BitMatrixParser.mirror() (which flips the bits across the diagonal in
+-- place); the decoder uses it for the mirrored-symbol retry.
+function bitMatrix_transposed pObj
+   local tW, tH, tOut, x, y
+   put pObj["width"] into tW
+   put pObj["height"] into tH
+   if tW <> tH then throw "BitMatrix: transpose needs a square matrix"
+   put bitMatrix_new(tW, tH) into tOut
+   repeat with y = 0 to (tH - 1)
+      repeat with x = 0 to (tW - 1)
+         if bitMatrix_get(pObj, x, y) then bitMatrix_set tOut, y, x
+      end repeat
+   end repeat
+   return tOut
+end bitMatrix_transposed
+
+-- invert every module in place: ZXing BitMatrix.flip() with no arguments -
+-- complement every word, then clear the padding bits beyond the logical width
+-- in the last word of each row so they stay zero. Used for the ALSO_INVERTED
+-- retry (a white-on-black symbol).
+command bitMatrix_flipAll @pObj
+   local tBits, tCount, k, tRem, tMask, y, tOff, rs
+   put pObj["bits"] into tBits
+   put the number of elements of tBits into tCount
+   repeat with k = 0 to (tCount - 1)
+      put (4294967295 - tBits[k]) into tBits[k]    -- 0xFFFFFFFF - w == bitNot w within [0, 2^32)
+   end repeat
+   put (pObj["width"] mod 32) into tRem
+   if tRem <> 0 then
+      put pObj["rowSize"] into rs
+      put (qr_shl(1, tRem) - 1) into tMask
+      repeat with y = 0 to (pObj["height"] - 1)
+         put ((y * rs) + rs - 1) into tOff
+         put (tBits[tOff] bitAnd tMask) into tBits[tOff]
+      end repeat
+   end if
+   put tBits into pObj["bits"]
+end bitMatrix_flipAll
 ?>

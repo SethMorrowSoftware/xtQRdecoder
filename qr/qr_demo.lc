@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- qr_demo.lc — interactive demo: upload a photo of a QR code, get the text.
+-- qr_demo.lc - interactive demo: upload a photo of a QR code, get the text.
 --
 -- A friendly, modern front-end over the finished library. GET serves the
 -- single-page scanner; the browser then decodes by POSTing the chosen image
@@ -37,6 +37,16 @@ local sHTML
 
 -- the asset version: bump to bust the browser cache after editing css / js
 constant kAssetVer = "4"
+
+-- OPERATOR SWITCHES (literal constants; see README "Deploying the demo").
+-- kDemoAllowUrlFetch: "on" shows the Image URL tab and lets this page fetch
+--   a user-supplied http(s) URL from the server - a server-side request
+--   forgery surface (demoUrlAllowed screens private ranges, but redirects
+--   and DNS rebinding cannot be vetted in pure xTalk). Default "off".
+-- kDemoMaxUploadBytes: uploads, pasted data: URIs and fetched images above
+--   this size are refused BEFORE any decoding work (12 MB).
+constant kDemoAllowUrlFetch = "off"
+constant kDemoMaxUploadBytes = 12000000
 
 -- ---- directory resolution (same as qr_tester.lc) ----
 function qrDirOf pPath
@@ -199,14 +209,16 @@ command renderForm pTryHarder, pBinary, pUrl
    out "<div class='tabs' role='tablist' aria-label='Choose how to provide the image'>"
    out "<button type='button' class='tab is-active' role='tab' id='tab-upload' data-tab='upload' aria-selected='true'>Upload</button>"
    out "<button type='button' class='tab' role='tab' id='tab-camera' data-tab='camera' aria-selected='false'>Camera</button>"
-   out "<button type='button' class='tab' role='tab' id='tab-url' data-tab='url' aria-selected='false'>Image URL</button>"
+   if kDemoAllowUrlFetch is "on" then
+      out "<button type='button' class='tab' role='tab' id='tab-url' data-tab='url' aria-selected='false'>Image URL</button>"
+   end if
    out "</div>"
 
    out "<section class='panel is-active' id='panel-upload' role='tabpanel' aria-labelledby='tab-upload'>"
    out "<label class='dropzone' id='dropzone' for='fileInput'>"
    out "<svg class='dz-icon' viewBox='0 0 24 24' aria-hidden='true'><path d='M12 15V4m0 0L8.5 7.5M12 4l3.5 3.5' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/><path d='M4 14v3a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-3' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>"
    out "<span class='dz-title'>Drop an image here, click to browse, or paste</span>"
-   out "<span class='dz-hint'>PNG, JPEG, GIF or BMP &middot; up to a few megapixels</span>"
+   out "<span class='dz-hint'>PNG, JPEG, GIF or BMP &middot; up to a few megapixels (" & (kDemoMaxUploadBytes div 1000000) & " MB max)</span>"
    out "<input type='file' id='fileInput' name='qrimage' accept='image/*' class='vh'>"
    out "</label>"
    out "</section>"
@@ -226,11 +238,15 @@ command renderForm pTryHarder, pBinary, pUrl
    out "</label>"
    out "</section>"
 
-   out "<section class='panel' id='panel-url' role='tabpanel' aria-labelledby='tab-url'>"
-   out "<label class='flbl' for='urlInput'>Paste a public image URL</label>"
-   out "<input type='url' id='urlInput' name='imageurl' inputmode='url' autocomplete='off' placeholder='https://example.com/qr.png' value='" & attrEsc(pUrl) & "'>"
-   out "<p class='hint'>A direct link to a PNG / JPEG image of the code.</p>"
-   out "</section>"
+   -- the URL panel is emitted only when the operator has switched fetching
+   -- on; qr_demo.js copes with the missing panel (its tab map is null-safe)
+   if kDemoAllowUrlFetch is "on" then
+      out "<section class='panel' id='panel-url' role='tabpanel' aria-labelledby='tab-url'>"
+      out "<label class='flbl' for='urlInput'>Paste a public image URL</label>"
+      out "<input type='url' id='urlInput' name='imageurl' inputmode='url' autocomplete='off' placeholder='https://example.com/qr.png' value='" & attrEsc(pUrl) & "'>"
+      out "<p class='hint'>A direct link to a PNG / JPEG image of the code.</p>"
+      out "</section>"
+   end if
 
    out "<div class='options'>"
    out "<label class='switch'><input type='checkbox' id='tryharder' name='tryharder' value='1'" & tTh & "><span class='track'></span><span class='swtext'>Try harder<em>thorough scan &mdash; best for photos</em></span></label>"
@@ -389,10 +405,14 @@ command demoGetInput @rBytes, @rName, @rType, @rSize, @rErr
       put tFile["filename"] into tTmp
    end if
    if (tTmp is not empty) and (there is a file tTmp) then
+      put tFile["size"] into rSize
+      if rSize > kDemoMaxUploadBytes then
+         put "Image too large (" & rSize & " bytes; the limit is " & kDemoMaxUploadBytes & ")" into rErr
+         exit demoGetInput
+      end if
       put url ("binfile:" & tTmp) into rBytes
       put tFile["name"] into rName
       put tFile["type"] into rType
-      put tFile["size"] into rSize
       exit demoGetInput
    end if
 
@@ -413,6 +433,11 @@ command demoGetInput @rBytes, @rName, @rType, @rSize, @rErr
          put "Only base64 data: URIs are supported" into rErr
          exit demoGetInput
       end if
+      -- 4 base64 chars per 3 bytes: refuse before decoding a huge payload
+      if (the number of chars of tPayload) > (((kDemoMaxUploadBytes div 3) + 1) * 4) then
+         put "Image too large (the limit is " & kDemoMaxUploadBytes & " bytes)" into rErr
+         exit demoGetInput
+      end if
       put base64Decode(tPayload) into rBytes
       put tMeta into tType2
       replace "data:" with empty in tType2
@@ -421,6 +446,10 @@ command demoGetInput @rBytes, @rName, @rType, @rSize, @rErr
       if rType is empty then put "image/data" into rType
       put "(pasted data URI)" into rName
       put the number of bytes of rBytes into rSize
+      exit demoGetInput
+   end if
+   if kDemoAllowUrlFetch is not "on" then
+      put "Fetching images by URL is switched off on this server (kDemoAllowUrlFetch)" into rErr
       exit demoGetInput
    end if
    if not demoUrlAllowed(tUrl) then
@@ -435,6 +464,11 @@ command demoGetInput @rBytes, @rName, @rType, @rSize, @rErr
    end try
    if rBytes is empty then
       put "Fetched 0 bytes -- the URL may not be a direct image link" into rErr
+      exit demoGetInput
+   end if
+   if (the number of bytes of rBytes) > kDemoMaxUploadBytes then
+      put empty into rBytes
+      put "Fetched image too large (the limit is " & kDemoMaxUploadBytes & " bytes)" into rErr
       exit demoGetInput
    end if
    put tUrl into rName

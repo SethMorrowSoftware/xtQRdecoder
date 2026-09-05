@@ -1,0 +1,322 @@
+<?lc
+-- SPDX-License-Identifier: Apache-2.0
+-- Copyright 2026 Seth Morrow
+-- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
+-- ZXing is Apache-2.0; see the NOTICE file for full attribution.
+-- =====================================================================
+-- suite_reader.lc - the reader-level contract: hint parsing and flag
+-- semantics, the library version, the version-table rows that were wrong
+-- until 0.2.0 (v39/v40), the mirrored and inverted retries, the tagged
+-- error prefixes, and the bitstream features added in 0.2.0 (charset
+-- guessing, UTF-16, FNC1 group separators, structured append, ECI errors).
+-- Defines: command suite_reader (+ helper rd_bitsToBytes).
+-- Requires loaded: the full stack (qrCompat..qrReader) plus suite_decoder.lc
+-- (dec_fixtureHI) and suite_detector.lc (det_upscale).
+--
+-- EVERY EXPECTED VALUE below was derived outside the port: the bit streams
+-- are hand-assembled from ISO/IEC 18004 mode indicators, the Reed-Solomon
+-- codewords from an independent Python GF(256) encoder, the version-40
+-- table rows from ZXing's Version.java, the alphanumeric/FNC1 rules from
+-- ZXing DecodedBitStreamParser, and the charset choices from ZXing
+-- StringUtils.guessCharset. The 2026-09 fixes they pin down were each
+-- confirmed against the ZXing reference decoder on synthetic symbols.
+-- =====================================================================
+
+-- a string of "0"/"1" chars -> a 0-based dense array of byte values, MSB
+-- first, zero-padded to a whole byte: the codeword stream dbsp_decode reads
+function rd_bitsToBytes pBits
+   local tOut, i, n, tByte, tCount, tIdx, c
+   put the number of chars of pBits into n
+   put 0 into tByte
+   put 0 into tCount
+   put 0 into tIdx
+   repeat with i = 1 to n
+      put char i of pBits into c
+      put (tByte * 2) into tByte
+      if c is "1" then add 1 to tByte
+      add 1 to tCount
+      if tCount = 8 then
+         put tByte into tOut[tIdx]
+         add 1 to tIdx
+         put 0 into tByte
+         put 0 into tCount
+      end if
+   end repeat
+   if tCount > 0 then
+      repeat while tCount < 8
+         put (tByte * 2) into tByte
+         add 1 to tCount
+      end repeat
+      put tByte into tOut[tIdx]
+   end if
+   return tOut
+end rd_bitsToBytes
+
+command suite_reader
+   local tH, tD, tErr, e, tDim, tBlocks, tM, tT, tF, tW40, tF40
+   local tHI, tHIT, tRes, tRes0, tBig, tInv, tBitmap, tR1, tR2, tR3, tHints
+   local tC, tBits, tCw, tRef, tDec, tGS
+
+   -- qr_parseHints / qr_hintFlag ------------------------------------------
+   put qr_parseHints("TRY_HARDER,NR_ALLOW_SKIP_ROWS=0,KEY=a=b,PURE_BARCODE=no") into tH
+   t_eq "parseHints: bare key -> true", tH["TRY_HARDER"], true
+   t_eq "parseHints: KEY=0 keeps the value", tH["NR_ALLOW_SKIP_ROWS"], "0"
+   t_eq "parseHints: splits at the FIRST = only", tH["KEY"], "a=b"
+   t_eq "parseHints: an array passes through", the number of elements of qr_parseHints(tH), 4
+   t_eq "parseHints: empty -> no keys", the number of elements of qr_parseHints(empty), 0
+   t_eq "hintFlag: bare key is on", qr_hintFlag(tH, "TRY_HARDER"), true
+   t_eq "hintFlag: KEY=0 is off", qr_hintFlag(tH, "NR_ALLOW_SKIP_ROWS"), false
+   t_eq "hintFlag: KEY=no is off", qr_hintFlag(tH, "PURE_BARCODE"), false
+   t_eq "hintFlag: KEY=a=b is on", qr_hintFlag(tH, "KEY"), true
+   t_eq "hintFlag: absent key is off", qr_hintFlag(tH, "MISSING"), false
+   t_eq "hintFlag: empty hints is off", qr_hintFlag(empty, "TRY_HARDER"), false
+   put "off" into tH["A"]
+   put "false" into tH["B"]
+   put "1" into tH["C"]
+   put "yes" into tH["D"]
+   t_eq "hintFlag: off spelling", qr_hintFlag(tH, "A"), false
+   t_eq "hintFlag: false spelling", qr_hintFlag(tH, "B"), false
+   t_eq "hintFlag: 1 is on", qr_hintFlag(tH, "C"), true
+   t_eq "hintFlag: yes is on", qr_hintFlag(tH, "D"), true
+   -- the public boundary restores the caller's itemDelimiter whatever the
+   -- engine's scoping rule for that property (xtalk-suite notes 2.3)
+   set the itemDelimiter to "|"
+   put qr_parseHints("A,B=1") into tH
+   put the itemDelimiter into tD
+   t_eq "parseHints restores the caller's itemDelimiter", tD, "|"
+   set the itemDelimiter to comma
+
+   -- library version ---------------------------------------------------------
+   t_eq "qrLibraryVersion", qrLibraryVersion(), "0.2.0"
+
+   -- version table: the v39/v40 rows (alignment centres transposed until
+   -- 0.2.0), range checks, ISO total-codeword counts -------------------------
+   t_eq "v39 alignment centres", ver_getAlignmentCenters(39), "6,26,54,82,110,138,166"
+   t_eq "v40 alignment centres", ver_getAlignmentCenters(40), "6,30,58,86,114,142,170"
+   t_eq "v40 dimension 177", ver_getDimensionForVersion(40), 177
+   t_eq "v40 provisional from 177", ver_getProvisionalVersionForDimension(177), 40
+   t_eq "v40-H ec blocks 20x15 + 61x16", ver_getEcBlocks(40, 3), ("20,15" & lf & "61,16" & lf)
+   t_eq "v40-H ec codewords per block 30", ver_getEcCodewordsPerBlock(40, 3), 30
+   t_eq "v39-L ec blocks 20x117 + 4x118", ver_getEcBlocks(39, 0), ("20,117" & lf & "4,118" & lf)
+   t_eq "v1 total codewords 26", ver_getTotalCodewords(1), 26
+   t_eq "v40 total codewords 3706", ver_getTotalCodewords(40), 3706
+   put empty into tErr
+   try
+      put ver_getDimensionForVersion(41) into tDim
+   catch e
+      put e into tErr
+   end try
+   t_eq "version 41 -> Format error", tErr, "Format: version 41 out of range 1..40"
+   put empty into tErr
+   try
+      ver_checkNumber 0
+   catch e
+      put e into tErr
+   end try
+   t_eq "version 0 -> Format error", tErr, "Format: version 0 out of range 1..40"
+
+   -- shift counts are masked to 5 bits, as Java masks them ------------------
+   t_eq "qr_shl(1,-1) = 1<<31", qr_shl(1, -1), 2147483648
+   t_eq "qr_shl(1,32) = 1<<0", qr_shl(1, 32), 1
+   t_eq "qr_uShr(256,-1) = 256>>>31", qr_uShr(256, -1), 0
+
+   -- bitMatrix_transposed / bitMatrix_flipAll --------------------------------
+   put bitMatrix_new(3, 3) into tM
+   bitMatrix_set tM, 2, 0
+   bitMatrix_set tM, 0, 1
+   put bitMatrix_transposed(tM) into tT
+   t_eq "transposed: (2,0) -> (0,2)", bitMatrix_get(tT, 0, 2), true
+   t_eq "transposed: (0,1) -> (1,0)", bitMatrix_get(tT, 1, 0), true
+   t_eq "transposed: (0,0) stays clear", bitMatrix_get(tT, 0, 0), false
+   put empty into tErr
+   try
+      put bitMatrix_transposed(bitMatrix_new(3, 2)) into tT
+   catch e
+      put e into tErr
+   end try
+   t_eq "transposed: non-square throws", tErr, "BitMatrix: transpose needs a square matrix"
+   put tM into tF
+   bitMatrix_flipAll tF
+   t_eq "flipAll: set bit clears", bitMatrix_get(tF, 2, 0), false
+   t_eq "flipAll: clear bit sets", bitMatrix_get(tF, 1, 1), true
+   t_eq "flipAll: (0,1) clears", bitMatrix_get(tF, 0, 1), false
+   t_eq "flipAll: padding bits stay zero (row word 0)", tF["bits"][0], 3
+   t_eq "flipAll: row 1 word", tF["bits"][1], 6
+   t_eq "flipAll: out-of-range reads white", bitMatrix_get(tF, 3, 0), false
+   put bitMatrix_new(40, 1) into tW40
+   bitMatrix_set tW40, 39, 0
+   put tW40 into tF40
+   bitMatrix_flipAll tF40
+   t_eq "flipAll 40-wide: first word all ones", tF40["bits"][0], 4294967295
+   t_eq "flipAll 40-wide: second word = 7 bits", tF40["bits"][1], 127
+   t_eq "flipAll 40-wide: bit 39 cleared", bitMatrix_get(tF40, 39, 0), false
+   t_eq "flipAll 40-wide: bit 38 set", bitMatrix_get(tF40, 38, 0), true
+
+   -- mirrored symbol: the transposed HI matrix decodes via the mirror retry --
+   put dec_fixtureHI() into tHI
+   put dec_decode(tHI) into tRes0
+   t_eq "plain decode: mirrored flag unset", tRes0["mirrored"], empty
+   put bitMatrix_transposed(tHI) into tHIT
+   put dec_decode(tHIT) into tRes
+   t_eq "mirrored: decodes", tRes["error"], empty
+   t_eq "mirrored: text HI", tRes["text"], "HI"
+   t_eq "mirrored: flag set", tRes["mirrored"], true
+   t_eq "mirrored: ecLevel L", tRes["ecLevel"], "L"
+   t_eq "mirrored: mask 0", tRes["mask"], 0
+
+   -- inverted symbol: white-on-black only decodes under ALSO_INVERTED --------
+   put det_upscale(tHI, 4, 4) into tBig
+   put tBig into tInv
+   bitMatrix_flipAll tInv
+   put tInv into tBitmap["matrix"]
+   put true into tBitmap["hasMatrix"]
+   put "hybrid" into tBitmap["binarizer"]
+   put 116 into tBitmap["src"]["width"]
+   put 116 into tBitmap["src"]["height"]
+   put qcr_decode(tBitmap, empty) into tR1
+   t_eq "inverted, no hint: NotFound", (tR1["error"] begins with "NotFound:"), true
+   put qr_parseHints("ALSO_INVERTED") into tHints
+   put qcr_decode(tBitmap, tHints) into tR2
+   t_eq "inverted + ALSO_INVERTED: decodes", tR2["error"], empty
+   t_eq "inverted + ALSO_INVERTED: text HI", tR2["text"], "HI"
+   t_eq "inverted + ALSO_INVERTED: flag set", tR2["inverted"], true
+   put tBig into tBitmap["matrix"]
+   put qcr_decode(tBitmap, tHints) into tR3
+   t_eq "upright + ALSO_INVERTED: text HI", tR3["text"], "HI"
+   t_eq "upright + ALSO_INVERTED: flag unset", tR3["inverted"], empty
+   t_eq "upright: points[1] is the top-left finder x", tR3["points"][1]["x"], 30
+   t_eq "upright: points[1] is the top-left finder y", tR3["points"][1]["y"], 30
+
+   -- too many corrupt modules: the tagged Checksum error ---------------------
+   put dec_fixtureHI() into tC
+   bitMatrix_flip tC, 12, 12
+   bitMatrix_flip tC, 14, 12
+   bitMatrix_flip tC, 16, 12
+   bitMatrix_flip tC, 18, 12
+   put dec_decode(tC) into tRes
+   t_eq "4 corrupt codewords: Checksum: prefix", (tRes["error"] begins with "Checksum: RS:"), true
+   t_eq "4 corrupt codewords: no text", tRes["text"], empty
+
+   -- bitstream: alphanumeric ----------------------------------------------------
+   -- v1 alphanumeric count is 9 bits; "AB" = 10*45+11 = 461 in 11 bits
+   put rd_bitsToBytes("0010" & "000000010" & "00111001101") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "alnum AB", tRes["text"], "AB"
+   t_eq "alnum: symbology modifier 1", tRes["symbologyModifier"], 1
+   t_eq "alnum: no fnc1 key", tRes["fnc1"], empty
+   -- pair value 2047 -> first index 45, past the 45-char table
+   put rd_bitsToBytes("0010" & "000000010" & "11111111111") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "alnum index 45 -> Format", tRes["error"], "Format: alphanumeric index 45 out of range"
+   -- FNC1 first position: "%" alone becomes the GS separator, "%%" one "%"
+   put numToCodepoint(29) into tGS
+   put rd_bitsToBytes("0101" & "0010" & "000000010" & "00111101000") into tBits   -- "A%" = 488
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "fnc1 first: A% -> A GS", tRes["text"], ("A" & tGS)
+   t_eq "fnc1 first: kind", tRes["fnc1"], "first"
+   t_eq "fnc1 first: symbology modifier 3", tRes["symbologyModifier"], 3
+   put rd_bitsToBytes("0101" & "0010" & "000000010" & "11011010100") into tBits   -- "%%" = 1748
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "fnc1 first: %% -> %", tRes["text"], "%"
+   put rd_bitsToBytes("1001" & "0010" & "000000010" & "11011010100") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "fnc1 second: kind", tRes["fnc1"], "second"
+   t_eq "fnc1 second: symbology modifier 5", tRes["symbologyModifier"], 5
+   put rd_bitsToBytes("0010" & "000000010" & "00111101000") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "no fnc1: A% stays literal", tRes["text"], "A%"
+
+   -- bitstream: numeric 0123 = 012 (10 bits) + 3 (4 bits), count 4 in 10 bits
+   put rd_bitsToBytes("0001" & "0000000100" & "0000001100" & "0011") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "numeric 0123 keeps the leading zero", tRes["text"], "0123"
+
+   -- bitstream: byte segments and charset guessing --------------------------
+   -- "caf" + C3 A9 (UTF-8 e-acute), no ECI: guessed UTF-8 because it is
+   -- structurally valid and multi-byte
+   put rd_bitsToBytes("0100" & "00000101" & "01100011" & "01100001" & "01100110" & "11000011" & "10101001") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "utf-8 bytes: guessed charset", tRes["charset"], "UTF-8"
+   t_eq "utf-8 bytes: text caf+e-acute", tRes["text"], ("caf" & numToCodepoint(233))
+   t_eq "utf-8 bytes: raw bytes kept", tRes["bytes"], ("caf" & numToByte(195) & numToByte(169))
+   -- "caf" + E9 (Latin-1 e-acute): not valid UTF-8 -> ISO-8859-1
+   put rd_bitsToBytes("0100" & "00000100" & "01100011" & "01100001" & "01100110" & "11101001") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "latin-1 bytes: guessed charset", tRes["charset"], "ISO-8859-1"
+   t_eq "latin-1 bytes: text caf+e-acute", tRes["text"], ("caf" & numToCodepoint(233))
+   -- plain ASCII stays ISO-8859-1 (ZXing: UTF-8 needs a BOM or a multibyte char)
+   put rd_bitsToBytes("0100" & "00000010" & "01001000" & "01001001") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "ascii bytes: charset ISO-8859-1", tRes["charset"], "ISO-8859-1"
+   t_eq "ascii bytes: text HI", tRes["text"], "HI"
+   -- UTF-16 byte-order marks, big- and little-endian
+   put rd_bitsToBytes("0100" & "00000110" & "11111110" & "11111111" & "00000000" & "01001000" & "00000000" & "01001001") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "utf-16 BE BOM: charset", tRes["charset"], "UTF-16"
+   t_eq "utf-16 BE BOM: text HI", tRes["text"], "HI"
+   put rd_bitsToBytes("0100" & "00000110" & "11111111" & "11111110" & "01001000" & "00000000" & "01001001" & "00000000") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "utf-16 LE BOM: text HI", tRes["text"], "HI"
+   -- a byte count beyond the data is a Format error, not a silent truncation
+   put rd_bitsToBytes("0100" & "11001000" & "01000001") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "byte overrun -> Format", tRes["error"], "Format: byte segment of 200 bytes exceeds the data"
+
+   -- bitstream: ECI ---------------------------------------------------------
+   -- ECI 26 (UTF-8) then the same 5 bytes: charset comes from the ECI
+   put rd_bitsToBytes("0111" & "00011010" & "0100" & "00000101" & "01100011" & "01100001" & "01100110" & "11000011" & "10101001") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "eci 26: charset UTF-8", tRes["charset"], "UTF-8"
+   t_eq "eci 26: text", tRes["text"], ("caf" & numToCodepoint(233))
+   t_eq "eci 26: symbology modifier 2", tRes["symbologyModifier"], 2
+   -- the two-byte designator form (10xxxxxx yyyyyyyy) of the same value
+   put rd_bitsToBytes("0111" & "10000000" & "00011010" & "0100" & "00000010" & "01001000" & "01001001") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "eci two-byte designator 26", tRes["charset"], "UTF-8"
+   -- an ECI value with no charset is a Format error (ZXing FormatException)
+   put rd_bitsToBytes("0111" & "01100100" & "0100" & "00000010" & "01001000" & "01001001") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "unknown eci 100 -> Format", tRes["error"], "Format: unknown ECI value 100"
+
+   -- bitstream: structured append, Kanji ------------------------------------
+   put rd_bitsToBytes("0011" & "00010010" & "00110100" & "0001" & "0000000010" & "0001100") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "structured append: text 12", tRes["text"], "12"
+   t_eq "structured append: sequence 0x12", tRes["structuredAppendSeq"], 18
+   t_eq "structured append: parity 0x34", tRes["structuredAppendParity"], 52
+   put rd_bitsToBytes("0011" & "00000001") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "structured append truncated -> Format", tRes["error"], "Format: structured append header truncated"
+   put rd_bitsToBytes("1000" & "00000001" & "0000000000000") into tBits
+   put dbsp_decode(tBits, 1, 0) into tRes
+   t_eq "kanji -> Format (documented limit)", (tRes["error"] begins with "Format: Kanji"), true
+
+   -- Reed-Solomon with an ODD number of EC codewords (t = 1 for 3) -----------
+   -- codeword from an independent GF(256) encoder: data 72,73,33,7,200 + 3 EC
+   put rs_listToArray("72,73,33,7,200,56,55,224") into tRef
+   put tRef into tDec
+   rs_decode tDec, 3
+   t_eq "rs twoS=3: clean codeword unchanged", rs_arraysEqual(tDec, tRef), true
+   put tRef into tDec
+   put (tDec[2] bitXor 85) into tDec[2]
+   rs_decode tDec, 3
+   t_eq "rs twoS=3: one error corrected", rs_arraysEqual(tDec, tRef), true
+   put tRef into tDec
+   put (tDec[0] bitXor 1) into tDec[0]
+   put (tDec[4] bitXor 2) into tDec[4]
+   put empty into tErr
+   try
+      rs_decode tDec, 3
+   catch e
+      put e into tErr
+   end try
+   t_eq "rs twoS=3: two errors throw RS:", (tErr begins with "RS:"), true
+   -- and 5 EC codewords (t = 2) corrects two
+   put rs_listToArray("72,73,33,7,200,151,210,190,24,12") into tRef
+   put tRef into tDec
+   put (tDec[1] bitXor 255) into tDec[1]
+   put (tDec[6] bitXor 15) into tDec[6]
+   rs_decode tDec, 5
+   t_eq "rs twoS=5: two errors corrected", rs_arraysEqual(tDec, tRef), true
+end suite_reader
+?>

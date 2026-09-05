@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- suite_bitMatrix.lc — BitMatrix tests (spec §10.3). Defines: command suite_bitMatrix.
+-- suite_bitMatrix.lc - BitMatrix tests (spec section 10.3). Defines: command suite_bitMatrix.
 -- Requires loaded: qrCompat.lc, bitArray.lc, bitMatrix.lc.
 -- =====================================================================
 

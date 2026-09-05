@@ -4,9 +4,9 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- genericGF.lc — Galois field GF(256) for QR Reed–Solomon.
+-- genericGF.lc - Galois field GF(256) for QR Reed-Solomon.
 -- Port of ZXing Common\Reedsolomon\GenericGF (only QR_CODE_FIELD_256).
--- Spec §8.5 "ReedSolomon group". Requires: qrCompat.lc, genericGFPoly.lc.
+-- Spec section 8.5 "ReedSolomon group". Requires: qrCompat.lc, genericGFPoly.lc.
 --
 -- QR field parameters: primitive 0x011D (285), size 256, generatorBase 0.
 -- The exp/log tables are built once (lazily) and kept script-local; all

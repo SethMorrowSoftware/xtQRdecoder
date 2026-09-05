@@ -4,15 +4,28 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- globalHistogramBinarizer.lc — global black-point via 32-bucket histogram.
--- Port of ZXing GlobalHistogramBinarizer. Spec §8 / module inventory.
+-- globalHistogramBinarizer.lc - global black-point via 32-bucket histogram.
+-- Port of ZXing GlobalHistogramBinarizer. Spec section 8 / module inventory.
 -- Requires: qrCompat.lc, bitMatrix.lc, luminanceSource.lc.
 --
 -- ghb_getBlackMatrix(pSrc) -> BitMatrix (true = black). Samples 4 rows to
 -- build a 32-bucket luminance histogram, estimates a black point, then
 -- thresholds the whole image. Throws "NotFound: ..." when contrast is too low
--- (mirrors ZXing throwing NotFoundException; spec §6.6).
+-- (mirrors ZXing throwing NotFoundException; spec section 6.6).
 -- =====================================================================
+
+local sGHPow2, sGHPow2Ready      -- sGHPow2[b] = 2^b, b = 0..31; built once
+
+command ghb_ensurePow2
+   local b, v
+   if sGHPow2Ready is true then exit ghb_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sGHPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sGHPow2Ready
+end ghb_ensurePow2
 
 constant kLumBits    = 5
 constant kLumShift   = 3      -- 8 - kLumBits
@@ -72,12 +85,12 @@ function ghb_estimateBlackPoint pBuckets
       end if
    end repeat
 
-   return shl(bestValley, kLumShift)
+   return qr_shl(bestValley, kLumShift)
 end ghb_estimateBlackPoint
 
 function ghb_getBlackMatrix pSrc
    local tW, tH, tLum, tMatrix, x, y, tRow, tRight, tLeft, tPixel
-   local tBuckets, b, blackPoint, tOffset, tRowBase
+   local tBuckets, b, blackPoint, tOffset, tRowBase, tBits, tRowSize, tWordOff, tAcc, tBit
    put pSrc["width"] into tW
    put pSrc["height"] into tH
    put pSrc["lum"] into tLum
@@ -96,19 +109,37 @@ function ghb_getBlackMatrix pSrc
       put (tRow * tW) into tRowBase
       repeat with x = tLeft to (tRight - 1)
          put tLum[tRowBase + x] into tPixel
-         add 1 to tBuckets[uShr(tPixel, kLumShift)]
+         add 1 to tBuckets[qr_uShr(tPixel, kLumShift)]
       end repeat
    end repeat
 
    put ghb_estimateBlackPoint(tBuckets) into blackPoint
 
-   -- threshold the whole image: pixel < blackPoint => black
+   -- threshold the whole image: pixel < blackPoint => black. HOT PATH (2026-09):
+   -- the matrix is fresh (all zero), so each 32-pixel word is accumulated in a
+   -- local and stored once - exactly the bits bitMatrix_set would have set one
+   -- command call at a time (proven bit-identical under the headless model).
+   ghb_ensurePow2
+   put tMatrix["bits"] into tBits
+   put tMatrix["rowSize"] into tRowSize
    repeat with y = 0 to (tH - 1)
       put (y * tW) into tOffset
+      put (y * tRowSize) into tWordOff
+      put 0 into tAcc
+      put 0 into tBit
       repeat with x = 0 to (tW - 1)
-         if tLum[tOffset + x] < blackPoint then bitMatrix_set tMatrix, x, y
+         if tLum[tOffset + x] < blackPoint then add sGHPow2[tBit] to tAcc
+         add 1 to tBit
+         if tBit = 32 then
+            if tAcc <> 0 then put tAcc into tBits[tWordOff]
+            add 1 to tWordOff
+            put 0 into tAcc
+            put 0 into tBit
+         end if
       end repeat
+      if tAcc <> 0 then put tAcc into tBits[tWordOff]
    end repeat
+   put tBits into tMatrix["bits"]
 
    return tMatrix
 end ghb_getBlackMatrix

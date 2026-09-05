@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- dataBlock.lc — de-interleave codewords into Reed–Solomon blocks. Spec §8.5.
+-- dataBlock.lc - de-interleave codewords into Reed-Solomon blocks. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\DataBlock. Requires: qrCompat.lc, version.lc,
 -- errorCorrectionLevel.lc.
 --
@@ -15,10 +15,10 @@
 -- laid out by the version table, all instances expanded).
 --
 -- ZXing's two-pass fill (spec: "critical and easy to get wrong"):
---   pass 1 — distribute DATA codewords round-robin across all blocks, filling
+--   pass 1 - distribute DATA codewords round-robin across all blocks, filling
 --            the common (shorter) length first, then the one extra data
 --            codeword that the longer blocks each carry.
---   pass 2 — distribute EC codewords round-robin across all blocks, where the
+--   pass 2 - distribute EC codewords round-robin across all blocks, where the
 --            longer blocks' EC region starts one slot later.
 -- =====================================================================
 
@@ -26,7 +26,7 @@
 function db_getDataBlocks pRaw, pVersion, pEcOrdinal
    local tEcwPerBlock, tBlockSpec, tLn, cnt, dat
    local tBlocks, tNum, b, i, j
-   local tMaxData, tShorterNumData, tLongerStart, tRawIndex, tMaxLen, tIdx
+   local tMaxData, tShorterNumData, tLongerStart, tRawIndex, tMaxLen, tIdx, tTotalLen
 
    put ver_getEcCodewordsPerBlock(pVersion, pEcOrdinal) into tEcwPerBlock
    put ver_getEcBlocks(pVersion, pEcOrdinal) into tBlockSpec   -- lines "count,data"
@@ -46,6 +46,17 @@ function db_getDataBlocks pRaw, pVersion, pEcOrdinal
          add 1 to tNum
       end repeat
    end repeat
+
+   -- ZXing/PHP refuse a raw stream whose length is not the version's total:
+   -- without this, a short read would feed empty values into Reed-Solomon and
+   -- fail far from the cause.
+   put 0 into tTotalLen
+   repeat with b = 0 to (tNum - 1)
+      add tBlocks[b]["len"] to tTotalLen
+   end repeat
+   if (the number of elements of pRaw) <> tTotalLen then
+      throw "Format: codeword count " & (the number of elements of pRaw) & " <> " & tTotalLen
+   end if
 
    -- largest data length; "shorter" blocks have tMaxData-1 ... but per ZXing the
    -- shorter length is the FIRST block's numData; longer blocks carry +1.

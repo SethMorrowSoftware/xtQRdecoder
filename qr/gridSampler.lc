@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- gridSampler.lc — sample a module grid through a transform. Spec §8.4.
+-- gridSampler.lc - sample a module grid through a transform. Spec section 8.4.
 -- Port of ZXing Common\GridSampler + DefaultGridSampler.
 -- Requires: qrCompat.lc, bitMatrix.lc, perspectiveTransform.lc.
 --
@@ -13,9 +13,24 @@
 --   column, run them through the transform, clamp endpoints to the image edge
 --   (checkAndNudgePoints), then read image.get at each sampled pixel.
 --
--- A sample point landing outside the image throws NotFound -- this mirrors the
--- PHP ArrayIndexOutOfBounds -> NotFoundException wrapper (a "twisted" transform).
+-- A row whose END points land more than one pixel outside the image throws
+-- NotFound (checkAndNudgePoints, as in ZXing/PHP); an interior sample that
+-- strays just outside reads as white, which is what PHP's BitMatrix::get and
+-- Java's zero padding bits do (the port threw NotFound there until 2026-09).
 -- =====================================================================
+
+local sGSPow2, sGSPow2Ready      -- sGSPow2[b] = 2^b, b = 0..31; built once
+
+command gs_ensurePow2
+   local b, v
+   if sGSPow2Ready is true then exit gs_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sGSPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sGSPow2Ready
+end gs_ensurePow2
 
 -- clamp barely-off endpoints back onto the image; throw if truly outside.
 -- Mutates pPoints in place (command, @). Mirrors checkAndNudgePoints exactly:
@@ -79,12 +94,21 @@ end gs_checkAndNudgePoints
 
 function gs_sampleGrid pImage, pDimX, pDimY, pTransform
    local tBits, tPoints, y, c, x, tIValue, tImgW, tImgH, tPX, tPY
+   local tWords, tOutRowSize, tImgBits, tImgRowSize, tOff
    if (pDimX <= 0) or (pDimY <= 0) then
       throw "NotFound: grid dimensions <= 0"
    end if
    put bitMatrix_new(pDimX, pDimY) into tBits
    put bitMatrix_getWidth(pImage) into tImgW
    put bitMatrix_getHeight(pImage) into tImgH
+   -- HOT PATH (2026-09): one image read and one output write per module, on
+   -- the matrices' word arrays directly (the same bits bitMatrix_get/set
+   -- would read and set; proven bit-identical under the headless model)
+   gs_ensurePow2
+   put tBits["bits"] into tWords
+   put tBits["rowSize"] into tOutRowSize
+   put pImage["bits"] into tImgBits
+   put pImage["rowSize"] into tImgRowSize
    -- xTalk repeat has no "step"; iterate the column c and use x = 2*c as the
    -- flat (x,y) offset into the points array.
    repeat with y = 0 to (pDimY - 1)
@@ -100,14 +124,19 @@ function gs_sampleGrid pImage, pDimX, pDimY, pTransform
          put (c * 2) into x
          put trunc(tPoints[x]) into tPX
          put trunc(tPoints[x + 1]) into tPY
-         if (tPX < 0) or (tPX >= tImgW) or (tPY < 0) or (tPY >= tImgH) then
-            throw "NotFound: sample point (" & tPX & "," & tPY & ") outside image"
-         end if
-         if bitMatrix_get(pImage, tPX, tPY) then
-            bitMatrix_set tBits, c, y
+         -- a sample just outside the image reads WHITE: PHP's BitMatrix::get
+         -- answers false for any out-of-range coordinate and Java reads a zero
+         -- padding bit for x just past the width; only the row ENDPOINTS are
+         -- policed, by gs_checkAndNudgePoints above
+         if (tPX >= 0) and (tPY >= 0) and (tPX < tImgW) and (tPY < tImgH) then
+            if ((tImgBits[(tPY * tImgRowSize) + (tPX div 32)] div sGSPow2[tPX bitAnd 31]) bitAnd 1) = 1 then
+               put ((y * tOutRowSize) + (c div 32)) into tOff
+               put (tWords[tOff] bitOr sGSPow2[c bitAnd 31]) into tWords[tOff]
+            end if
          end if
       end repeat
    end repeat
+   put tWords into tBits["bits"]
    return tBits
 end gs_sampleGrid
 ?>

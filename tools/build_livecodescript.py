@@ -3,7 +3,7 @@
 # Copyright 2026 Seth Morrow
 # Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 """
-build_livecodescript.py — combine the qr/*.lc library modules into a single
+build_livecodescript.py - combine the qr/*.lc library modules into a single
 portable **script-only stack** (lib/xtQRdecoder.livecodescript) usable on
 xTalk desktop, mobile, AND server via `start using`.
 
@@ -22,7 +22,7 @@ What it does, per module, in dependency order:
 
 Because the xTalk server's `include` already inlines these same modules into one
 shared script scope (which the 399-test suite validates), the combined stack
-uses the identical namespace — no renaming, no behavioural change.
+uses the identical namespace - no renaming, no behavioural change.
 """
 import pathlib
 import re
@@ -30,7 +30,7 @@ import sys
 
 STACK_NAME = "xtQRdecoder"
 
-# Dependency order — identical to the include list in qr/qr_demo.lc. The library
+# Dependency order - identical to the include list in qr/qr_demo.lc. The library
 # subset only (no UI/test pages, no loose "main" block).
 MODULES = [
     "qrCompat", "genericGF", "genericGFPoly", "reedSolomonDecoder",
@@ -44,7 +44,7 @@ MODULES = [
 ]
 
 # Lines (after stripping) that belong to the per-module SPDX block we inject in
-# qr/*.lc — removed here so the combined file carries exactly one header.
+# qr/*.lc - removed here so the combined file carries exactly one header.
 SPDX_PREFIXES = (
     "-- SPDX-License-Identifier:",
     "-- Copyright 2026 Seth Morrow",
@@ -60,21 +60,28 @@ HEADER = f"""script "{STACK_NAME}"
 -- SPDX-License-Identifier: Apache-2.0
 -- Copyright 2026 Seth Morrow
 --
--- xtQRdecoder — a pure xTalk QR Code decoder, combined into a single
+-- xtQRdecoder - a pure xTalk QR Code decoder, combined into a single
 -- script-only stack for use on desktop, mobile, and server.
 --
 -- This file is GENERATED from the qr/*.lc modules by
--- tools/build_livecodescript.py — do not edit it by hand; edit the modules and
+-- tools/build_livecodescript.py - do not edit it by hand; edit the modules and
 -- rebuild. The modules are the single source of truth.
 --
 -- A line-for-line port of khanamiryan/php-qrcode-detector-decoder, itself a
 -- hand-port of ZXing (Apache-2.0). See the repository NOTICE file for full
 -- attribution.
 --
--- USAGE (desktop / mobile / server):
---   start using stack (the folder of me & "/{STACK_NAME}.livecodescript")
+-- USAGE (desktop / mobile / server) - load it once, e.g. in preOpenStack,
+-- from the folder that holds your own stack file:
+--   local tDir
+--   put the effective filename of this stack into tDir
+--   set the itemDelimiter to "/"
+--   delete the last item of tDir          -- the folder of the host stack
+--   start using stack (tDir & "/{STACK_NAME}.livecodescript")
 --   put qrDecodeResultRobust(url ("binfile:" & tImagePath), "TRY_HARDER") into tRes
 --   if tRes["error"] is empty then answer tRes["text"]
+-- (There is no `folder` property of a stack; `the effective filename of this
+-- stack` is the engine-proven way to locate a sibling file.)
 --
 -- PUBLIC API (see the README for the full reference):
 --   qrDecodeFromData(imageBytes [,hints])        -> text  (empty on failure)
@@ -139,7 +146,10 @@ def validate_combined(text: str) -> list:
     """Return a list of structural problems in the combined stack (empty == OK):
       * the same handler name defined by two modules (xTalk compile error),
       * the same file-level local/constant declared by two modules,
-      * handler open/close imbalance.
+      * handler open/close imbalance,
+      * a script-level local/constant referenced above its declaration
+        (OpenXTalk resolves those by lexical position),
+      * any non-ASCII character (the suite's pure-ASCII source rule).
     """
     problems = []
 
@@ -159,20 +169,73 @@ def validate_combined(text: str) -> list:
     # correctly scoped per handler and may repeat freely.
     decl_names = []
     for kind, rest in _FILELEVEL_DECL_RE.findall(text):
-        if kind == "constant":            # "NAME = value"
-            head = rest.split("=", 1)[0].strip()
-            if head:
-                decl_names.append(head.split()[0].lower())
-        else:                             # "local a, b, c   -- comment"
-            for piece in rest.split(","):
-                nm = piece.split("--", 1)[0].strip()
-                if nm:
-                    decl_names.append(nm.split()[0].lower())
+        rest = rest.split("--", 1)[0]
+        for piece in _split_decl(rest):   # "constant kA = 1, kB = 2" / "local a, b   -- note"
+            nm = piece.split("=", 1)[0].strip() if kind == "constant" else piece.strip()
+            if nm:
+                decl_names.append(nm.split()[0].lower())
     dup_decls = _dups(decl_names)
     if dup_decls:
         problems.append("duplicate file-level local/constant: " + ", ".join(dup_decls))
 
+    # OpenXTalk resolves a script-level `constant`/`local` by LEXICAL POSITION: a
+    # handler that sits ABOVE the declaration it reads sees an undeclared name,
+    # which silently evaluates to its own spelling (xtalk-suite engine notes 1.2,
+    # 1.3, 2.1). Concatenating modules can create exactly that shape, so refuse
+    # any column-0 name whose first reference precedes its declaration.
+    problems += _check_lexical_order(text)
+
+    # The suite's ASCII rule: curly quotes fail compilation anywhere, and the
+    # house rule is zero non-ASCII bytes so the fatal class can never slip in.
+    bad = sorted(set(c for c in text if ord(c) > 127))
+    if bad:
+        problems.append("non-ASCII characters in the combined stack: "
+                        + " ".join("U+%04X" % ord(c) for c in bad))
+
     return problems
+
+
+_LINE_STRIP_RE = re.compile(r'"[^"]*"')
+
+
+def _check_lexical_order(text):
+    lines = text.split("\n")
+    decls = []  # (name_lower, lineno)
+    for i, ln in enumerate(lines, 1):
+        m = _FILELEVEL_DECL_RE.match(ln)
+        if not m:
+            continue
+        kind, rest = m.groups()
+        rest = rest.split("--", 1)[0]
+        for piece in _split_decl(rest):
+            nm = piece.split("=", 1)[0].strip() if kind == "constant" else piece.strip()
+            if nm:
+                decls.append((nm.split()[0].lower(), i))
+    out = []
+    for nm, decl_line in decls:
+        pat = re.compile(r"\b" + re.escape(nm) + r"\b", re.I)
+        for i, ln in enumerate(lines[:decl_line - 1], 1):
+            code = _LINE_STRIP_RE.sub('""', ln.split("--", 1)[0])
+            if pat.search(code):
+                out.append("script-level name '%s' is referenced at line %d but declared at line %d "
+                           "(OpenXTalk resolves by lexical position)" % (nm, i, decl_line))
+                break
+    return out
+
+
+def _split_decl(rest):
+    """Split a declaration list on commas OUTSIDE quotes (`constant kA = "a,b", kB = 2`)."""
+    parts, cur, inq = [], "", False
+    for ch in rest:
+        if ch == '"':
+            inq = not inq
+        if ch == "," and not inq:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return parts
 
 
 def main() -> int:
@@ -182,6 +245,18 @@ def main() -> int:
         return 2
 
     text = render()
+
+    # the five server pages hand-copy the include list; hold them to MODULES
+    for page in ("qr_tester.lc", "qr_golden.lc", "qr_synthetic.lc", "qr_demo.lc", "qr_decodeprobe.lc"):
+        ppath = QR / page
+        if not ppath.is_file():
+            continue
+        found = re.findall(r'include \(tBase & "/([A-Za-z0-9_]+)\.lc"\)', ppath.read_text(encoding="utf-8"))
+        libs = [n for n in found if n in MODULES]
+        if libs != MODULES:
+            print(f"ERROR: qr/{page} includes the library modules in a different order/set "
+                  f"than MODULES in this script; fix one of them", file=sys.stderr)
+            return 1
 
     # refuse to emit (or pass --check on) a stack that won't compile in xTalk
     problems = validate_combined(text)
@@ -200,7 +275,7 @@ def main() -> int:
                   "run: python3 tools/build_livecodescript.py", file=sys.stderr)
             return 1
         if OUT.read_text(encoding="utf-8") != text:
-            print(f"ERROR: {OUT.relative_to(ROOT)} is STALE — a library module "
+            print(f"ERROR: {OUT.relative_to(ROOT)} is STALE - a library module "
                   "changed without rebuilding.\n"
                   "  Run: python3 tools/build_livecodescript.py", file=sys.stderr)
             return 1

@@ -4,7 +4,7 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- mode.lc — QR encoding-mode table. Spec §8.5.
+-- mode.lc - QR encoding-mode table. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\Mode. Requires: nothing.
 --
 -- A "mode" is identified by its canonical NAME string (e.g. "NUMERIC").
@@ -12,7 +12,7 @@
 -- mode_charCountBits(name, version) returns the character-count bit width for
 -- the version range: offset 0 if v<=9, 1 if v<=26, else 2.
 --
--- Table (verbatim, spec §8.5):
+-- Table (verbatim, spec section 8.5):
 --   mode                 ccBits [v1-9,v10-26,v27-40]   4-bit value
 --   TERMINATOR           0,0,0                          0x00
 --   NUMERIC              10,12,14                       0x01

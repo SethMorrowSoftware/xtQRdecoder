@@ -4,70 +4,101 @@
 -- Part of xtQRdecoder, an xTalk port of the ZXing QR decoder.
 -- ZXing is Apache-2.0; see the NOTICE file for full attribution.
 -- =====================================================================
--- decoder.lc — orchestrate matrix parse -> RS -> bitstream. Spec §8.5.
+-- decoder.lc - orchestrate matrix parse -> RS -> bitstream. Spec section 8.5.
 -- Port of ZXing Qrcode\Decoder\Decoder. Requires: qrCompat.lc, bitMatrix.lc,
 --   bitMatrixParser.lc, version.lc, formatInformation.lc, dataMask.lc,
 --   dataBlock.lc, reedSolomonDecoder.lc, decodedBitStreamParser.lc,
 --   errorCorrectionLevel.lc.
 --
 -- dec_decode(bits) -> result array from decodedBitStreamParser:
---   ["text"], ["bytes"], ["error"], plus ["ecLevel"], ["version"], ["mask"].
+--   ["text"], ["bytes"], ["error"], plus ["ecLevel"], ["version"], ["mask"],
+--   and ["mirrored"] = true when the symbol only decoded transposed.
 -- On any NotFound/Format/Checksum the result has ["error"] set and empty text.
 --
--- Flow (dec_decodeParser):
+-- Flow (dec_tryParser):
 --   1. read format info -> ecLevel, dataMask
 --   2. read version
---   3. un-mask the matrix with the chosen data mask
+--   3. un-mask a COPY of the matrix with the chosen data mask
 --   4. read raw codewords (zig-zag, skipping function modules)
 --   5. de-interleave into RS blocks; correct each block; concatenate data
 --   6. DecodedBitStreamParser.decode
--- A mirrored-symbol retry wraps this: on failure, transpose and try once more.
+-- The mirrored-symbol retry wraps this (ZXing Decoder.decode): on failure the
+-- format information and version are re-read TRANSPOSED; the matrix is then
+-- physically transposed (bitMatrix_transposed) before un-masking and reading
+-- the codewords, because the data mask is defined in the symbol's own frame.
+-- (Until 2026-09 the port un-masked the untransposed copy and then read it
+-- transposed, so every mirrored symbol failed Reed-Solomon; found by the
+-- synthetic-fixture corpus and confirmed against ZXing.)
+--
+-- ERROR TAGS: the public contract is "NotFound: / Format: / Checksum:". A
+-- Reed-Solomon failure ("RS: ...") becomes "Checksum: RS: ..." here (ZXing maps
+-- ReedSolomonException to ChecksumException); any untagged internal error is
+-- reported as "Format: ...".
 -- =====================================================================
 
 function dec_decode pBits
-   local parser, tRes, e
+   local parser, tRes, tFirst
    put bmp_new(pBits) into parser
    -- first attempt
    put dec_tryParser(parser) into tRes
    if tRes["error"] is empty then
       return tRes
    end if
+   put tRes into tFirst
    -- mirror retry: re-read everything transposed
    bmp_setMirror parser, true
    put dec_tryParser(parser) into tRes
    if tRes["error"] is empty then
       put true into tRes["mirrored"]
+      return tRes
    end if
-   return tRes
+   return tFirst          -- ZXing reports the ORIGINAL reading's error
 end dec_decode
 
 -- one decode attempt; returns the bitstream result (with error set on failure).
 function dec_tryParser pParser
-   local tFmt, tEcLevel, tMask, tVersion, tBits, tCodewords
-   local tBlocks, tNum, b, tCorrected, i, tData, tDataIdx, tSaved
-   local tResult, tErr, e
+   local tFmt, tEcLevel, tMask, tVersion, tBits, tCodewords, tCwErr
+   local tBlocks, tNum, b, tCorrected, i, tData, tDataIdx, tSaved, tSavedMirror
+   local tResult, tErr, e, e2, tEcw
 
+   put empty into tErr
    try
+      -- format information and version are read through bmp_get, which honours
+      -- the parser's mirror flag (ZXing reads both "preemptively" when mirrored)
       put bmp_readFormatInformation(pParser) into tFmt
       put tFmt["ecLevel"] into tEcLevel
       put tFmt["dataMask"] into tMask
       put bmp_readVersion(pParser) into tVersion
 
-      -- un-mask the data modules, then read codewords from the matrix.
-      -- Work on a copy so the parser's matrix stays intact for a mirror retry.
+      -- Work on a COPY of the matrix so the parser's own matrix stays intact for
+      -- the retry. A mirrored reading transposes the copy FIRST (ZXing
+      -- BitMatrixParser.mirror), then un-masks and reads codewords in that frame.
       put pParser["bits"] into tBits
-      dataMask_unmask tBits, ver_getDimensionForVersion(tVersion), tMask
+      if pParser["mirror"] is true then
+         put bitMatrix_transposed(tBits) into tBits
+      end if
+      dataMask_unmask tBits, pParser["dimension"], tMask
       put pParser["bits"] into tSaved
+      put pParser["mirror"] into tSavedMirror
       put tBits into pParser["bits"]
-      put bmp_readCodewords(pParser, tVersion) into tCodewords
-      put tSaved into pParser["bits"]
+      put false into pParser["mirror"]           -- the copy is already in the right frame
+      put empty into tCwErr
+      try
+         put bmp_readCodewords(pParser, tVersion) into tCodewords
+      catch e2
+         put e2 into tCwErr
+      end try
+      put tSaved into pParser["bits"]            -- restore on every path
+      put tSavedMirror into pParser["mirror"]
+      if tCwErr is not empty then throw tCwErr
 
-      -- de-interleave + per-block Reed–Solomon correction
+      -- de-interleave + per-block Reed-Solomon correction
       put db_getDataBlocks(tCodewords, tVersion, tEcLevel) into tBlocks
       put tBlocks["n"] into tNum
+      put ver_getEcCodewordsPerBlock(tVersion, tEcLevel) into tEcw
       put 0 into tDataIdx             -- concatenated corrected data codewords
       repeat with b = 0 to (tNum - 1)
-         put dec_correctBlock(tBlocks[b], ver_getEcCodewordsPerBlock(tVersion, tEcLevel)) into tCorrected
+         put dec_correctBlock(tBlocks[b], tEcw) into tCorrected
          repeat with i = 0 to (tBlocks[b]["numData"] - 1)
             put tCorrected[i] into tData[tDataIdx]
             add 1 to tDataIdx
@@ -84,22 +115,35 @@ function dec_tryParser pParser
       put tMask into tResult["mask"]
       return tResult
    catch e
-      put empty into tErr
-      put e into tErr["error"]
-      return tErr
+      put e into tErr
    end try
+   -- the tagged contract: an internal invariant ("BitMatrix: ...") surfacing
+   -- here is a Format error in ZXing's terms
+   if not ((tErr begins with "NotFound") or (tErr begins with "Format") or (tErr begins with "Checksum")) then
+      put "Format: " & tErr into tErr
+   end if
+   put empty into tResult
+   put tErr into tResult["error"]
+   return tResult
 end dec_tryParser
 
--- correct one block's codewords with Reed–Solomon; returns the corrected
--- data codewords (0-based, length numData).
+-- correct one block's codewords with Reed-Solomon; returns the corrected
+-- data codewords (0-based, length numData). An uncorrectable block is a
+-- Checksum error (ZXing Decoder.correctErrors wraps ReedSolomonException).
 function dec_correctBlock pBlock, pEcwPerBlock
-   local tLen, tCw, i, tOut
+   local tLen, tCw, i, tOut, e, tErr
    put pBlock["len"] into tLen
    -- build a dense 0-based array of all codewords (data + ec) for rs_decode
    repeat with i = 0 to (tLen - 1)
       put pBlock["cw"][i] into tCw[i]
    end repeat
-   rs_decode tCw, pEcwPerBlock          -- corrects in place; throws on failure
+   put empty into tErr
+   try
+      rs_decode tCw, pEcwPerBlock          -- corrects in place; throws "RS: ..." on failure
+   catch e
+      put e into tErr
+   end try
+   if tErr is not empty then throw "Checksum: " & tErr    -- after the try (engine notes 3.2)
    repeat with i = 0 to (pBlock["numData"] - 1)
       put tCw[i] into tOut[i]
    end repeat
