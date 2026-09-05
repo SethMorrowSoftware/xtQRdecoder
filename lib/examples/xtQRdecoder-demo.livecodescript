@@ -5337,7 +5337,10 @@ end qrDecodeFromFile
 -- ---- demo state ----------------------------------------------------------
 
 -- Bump when the generated UI changes so a saved stack rebuilds its controls.
-constant kQdUiVersion = "qr-kit2-3"
+constant kQdUiVersion = "qr-kit2-4"
+-- The demo's own version, printed on the status line and in the self-check
+-- so a pasted copy can be told from the one before it.
+constant kQdDemoVersion = "4"
 constant kQdWinW = 900
 constant kQdWinH = 640
 -- The sample keys, in the order the Samples tab shows them.
@@ -6006,6 +6009,11 @@ on preOpenStack
    qdBuildUI
    qdSyncToggles
    qdShowTab "decode"
+   -- open with a code on screen: the first sample is loaded into the
+   -- preview, so the window never opens to an empty box
+   qdLoadSample "v1num"
+   uiStatus "Ready - xtQRdecoder " & qdLibVersion() & ", demo " & kQdDemoVersion \
+         & ". The first sample is loaded: click Decode (robust), or Next sample.", "ok"
 end preOpenStack
 
 on openStack
@@ -6097,16 +6105,30 @@ command qdCheckbox pName, pRect, pLabel, pOn
 end qdCheckbox
 
 -- An image control at a fixed rect: the kit builds none, and this demo shows
--- the loaded picture in one (the same create-then-name idiom as the kit).
--- lockLoc is what makes a later `set the rect` SCALE the picture.
+-- the loaded picture in one. This is the suite's ONE engine-run image idiom
+-- (coinxt's wallet draws its QR this way): create-then-name, a rect, and
+-- lockLocation TRUE for the control's whole life - a locked image is scaled
+-- to whatever rect it is given, and the picture goes in through `the text`.
 command qdImage pName, pRect
    if there is no image pName then
       create image
       set the name of the last image to pName
    end if
-   set the lockLoc of image pName to true
    set the rect of image pName to pRect
+   set the lockLocation of image pName to true
 end qdImage
+
+-- The library version, or empty when the embed did not answer.
+function qdLibVersion
+   local tVer, tErr
+   put empty into tVer
+   try
+      put qrLibraryVersion() into tVer
+   catch tErr
+      put empty into tVer
+   end try
+   return tVer
+end qdLibVersion
 
 -- A tab's own status line, coloured by kind ("ok", "bad", "warn", else muted).
 command qdSetStatus pName, pText, pKind
@@ -6144,16 +6166,11 @@ command qdBuildUI
    uiChrome "xtQRdecoder - a pure xTalk QR decoder", kQdWinW, kQdWinH
    -- probe the embedded library through the ONE status line, so a stack
    -- whose embed is damaged says so in red, at the top, immediately
-   put empty into tVer
-   try
-      put qrLibraryVersion() into tVer
-   catch tErr
-      put empty into tVer
-   end try
+   put qdLibVersion() into tVer
    if tVer is empty then
       uiStatus "The embedded xtQRdecoder library did not answer: re-run tools/sync_demo_embeds.py and paste again.", "bad"
    else
-      uiStatus "Ready - xtQRdecoder " & tVer & ". Load an image, or pick a sample.", "ok"
+      uiStatus "Ready - xtQRdecoder " & tVer & ", demo " & kQdDemoVersion & ".", "ok"
    end if
 
    -- the tab bar (the demo's own mechanism; qdRestyleTabs repaints it)
@@ -6468,20 +6485,28 @@ command qdSetImage pData, pName
    put empty into field "decode:details"
    put qdShowPreview(pData) into tShown
    put "Loaded " & pName & " (" & (the number of bytes of pData) & " bytes)" into tInfo
-   if tShown then
-      put tInfo & ", " & (the formattedWidth of image "decode:preview") & " x " \
-            & (the formattedHeight of image "decode:preview") & " px. Now click Decode (robust), or open the Pipeline tab." into tInfo
+   if tShown is empty then
+      put tInfo & ". No preview: this engine build would not take the picture (JPEG support varies); the decoder may still read it. Click Decode (robust)." into tInfo
    else
-      put tInfo & ". No preview: this engine build could not render the picture (JPEG support varies); the decoder may still read it. Click Decode (robust)." into tInfo
+      put tInfo & ", " & tShown & ". Now click Decode (robust), or open the Pipeline tab." into tInfo
    end if
    uiCap "decode:imgInfo", tInfo, "238,170,430,350"
    uiStatus "Loaded " & pName & ".", "ok"
    qdSetStatus "decode:status", "Ready to decode " & pName & ".", empty
 end qdSetImage
 
--- Scale the loaded picture into the preview box, aspect kept and centred.
--- Returns false when the engine could not render the bytes (the box is left
--- blank); the decoder does not depend on this control at all.
+-- Show the loaded picture in the preview box. Returns what was shown ("195 x
+-- 195 px", or "shown" when the engine would not report a size) or EMPTY when
+-- the engine refused the bytes; the decoder does not depend on this control.
+--
+-- THE IDIOM IS THE WALLET'S, UNCHANGED: the control stays lockLocation-locked,
+-- the picture goes in through `the text`, and a rect is set afterwards - a
+-- locked image is scaled to it. The first version of this handler unlocked
+-- the control, `put` the bytes, measured, then re-locked; on this stack's
+-- second engine run (2026-09-05) the box stayed blank. Whether the unlock, the
+-- `put` spelling or the measurement was the fault is not known - the
+-- engine said nothing - so the sequence that has run on an engine replaces
+-- the one that has not, and the boot self-check now measures the box.
 function qdShowPreview pData
    local tErr, tW, tH, tOldDelim, tBoxL, tBoxT, tBoxR, tBoxB, tBoxW, tBoxH
    local tScale, tFitW, tFitH, tL, tT
@@ -6494,23 +6519,30 @@ function qdShowPreview pData
    set the itemDelimiter to tOldDelim
    put (tBoxR - tBoxL) into tBoxW
    put (tBoxB - tBoxT) into tBoxH
+   set the lockLocation of image "decode:preview" to true
+   try
+      set the text of image "decode:preview" to pData
+   catch tErr
+      set the rect of image "decode:preview" to kQdPreviewBox
+      return empty
+   end try
+   set the rect of image "decode:preview" to kQdPreviewBox
+   -- the picture's own size, for an aspect-true fit; if the engine will not
+   -- say, the full box stands (every sample is square anyway)
    put 0 into tW
    put 0 into tH
    try
-      -- unlocked, the put resizes the control to the picture's own size,
-      -- which is the size the fit below is computed from
-      set the lockLoc of image "decode:preview" to false
-      put pData into image "decode:preview"
       put the formattedWidth of image "decode:preview" into tW
       put the formattedHeight of image "decode:preview" into tH
    catch tErr
       put 0 into tW
       put 0 into tH
    end try
-   set the lockLoc of image "decode:preview" to true
+   if tW is not a number or tH is not a number then
+      return "shown"
+   end if
    if tW <= 0 or tH <= 0 then
-      set the rect of image "decode:preview" to kQdPreviewBox
-      return false
+      return "shown"
    end if
    put min(tBoxW / tW, tBoxH / tH) into tScale
    put max(1, round(tW * tScale)) into tFitW
@@ -6518,7 +6550,7 @@ function qdShowPreview pData
    put (tBoxL + ((tBoxW - tFitW) div 2)) into tL
    put (tBoxT + ((tBoxH - tFitH) div 2)) into tT
    set the rect of image "decode:preview" to (tL & comma & tT & comma & (tL + tFitW) & comma & (tT + tFitH))
-   return true
+   return tW & " x " & tH & " px"
 end qdShowPreview
 
 -- The hint string the toggles spell, in the library's own comma form.
@@ -7163,8 +7195,9 @@ end qdHandleAbout
 -- ==========================================================================
 
 command qdScRun
-   local tMissing, tVer, tErr, tOldDelim, tCount
+   local tMissing, tVer, tErr, tOldDelim, tCount, tPW
    scBegin "about:log"
+   scLine "      demo " & kQdDemoVersion & " (kQdUiVersion " & kQdUiVersion & ")"
    put empty into tVer
    try
       put qrLibraryVersion() into tVer
@@ -7182,6 +7215,18 @@ command qdScRun
    else
       scAssert "all " & tCount & " controls this script names exist (missing: " & tMissing & ")", false
    end if
+   -- the preview box holds the first sample since preOpenStack; a locked
+   -- image with a picture in it reports that picture's own width
+   put 0 into tPW
+   try
+      put the formattedWidth of image "decode:preview" into tPW
+   catch tErr
+      put 0 into tPW
+   end try
+   if tPW is not a number then
+      put 0 into tPW
+   end if
+   scAssert "the preview image control shows the loaded sample (formattedWidth " & scShow(tPW) & ")", (tPW > 0)
    scLine "      four embedded samples through qrDecodeResultRobust (pure computation):"
    qdScSample "v1num", "TRY_HARDER"
    qdScSample "mirror", "TRY_HARDER"
