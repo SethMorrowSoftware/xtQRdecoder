@@ -19,6 +19,19 @@
 -- Java's zero padding bits do (the port threw NotFound there until 2026-09).
 -- =====================================================================
 
+local sGSPow2, sGSPow2Ready      -- sGSPow2[b] = 2^b, b = 0..31; built once
+
+command gs_ensurePow2
+   local b, v
+   if sGSPow2Ready is true then exit gs_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sGSPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sGSPow2Ready
+end gs_ensurePow2
+
 -- clamp barely-off endpoints back onto the image; throw if truly outside.
 -- Mutates pPoints in place (command, @). Mirrors checkAndNudgePoints exactly:
 -- nudge from the start until a point is OK, then nudge from the end likewise.
@@ -81,12 +94,21 @@ end gs_checkAndNudgePoints
 
 function gs_sampleGrid pImage, pDimX, pDimY, pTransform
    local tBits, tPoints, y, c, x, tIValue, tImgW, tImgH, tPX, tPY
+   local tWords, tOutRowSize, tImgBits, tImgRowSize, tOff
    if (pDimX <= 0) or (pDimY <= 0) then
       throw "NotFound: grid dimensions <= 0"
    end if
    put bitMatrix_new(pDimX, pDimY) into tBits
    put bitMatrix_getWidth(pImage) into tImgW
    put bitMatrix_getHeight(pImage) into tImgH
+   -- HOT PATH (2026-09): one image read and one output write per module, on
+   -- the matrices' word arrays directly (the same bits bitMatrix_get/set
+   -- would read and set; proven bit-identical under the headless model)
+   gs_ensurePow2
+   put tBits["bits"] into tWords
+   put tBits["rowSize"] into tOutRowSize
+   put pImage["bits"] into tImgBits
+   put pImage["rowSize"] into tImgRowSize
    -- xTalk repeat has no "step"; iterate the column c and use x = 2*c as the
    -- flat (x,y) offset into the points array.
    repeat with y = 0 to (pDimY - 1)
@@ -104,13 +126,17 @@ function gs_sampleGrid pImage, pDimX, pDimY, pTransform
          put trunc(tPoints[x + 1]) into tPY
          -- a sample just outside the image reads WHITE: PHP's BitMatrix::get
          -- answers false for any out-of-range coordinate and Java reads a zero
-         -- padding bit for x just past the width (bitMatrix_get guards this);
-         -- only the row ENDPOINTS are policed, by gs_checkAndNudgePoints above
-         if bitMatrix_get(pImage, tPX, tPY) then
-            bitMatrix_set tBits, c, y
+         -- padding bit for x just past the width; only the row ENDPOINTS are
+         -- policed, by gs_checkAndNudgePoints above
+         if (tPX >= 0) and (tPY >= 0) and (tPX < tImgW) and (tPY < tImgH) then
+            if ((tImgBits[(tPY * tImgRowSize) + (tPX div 32)] div sGSPow2[tPX bitAnd 31]) bitAnd 1) = 1 then
+               put ((y * tOutRowSize) + (c div 32)) into tOff
+               put (tWords[tOff] bitOr sGSPow2[c bitAnd 31]) into tWords[tOff]
+            end if
          end if
       end repeat
    end repeat
+   put tWords into tBits["bits"]
    return tBits
 end gs_sampleGrid
 ?>

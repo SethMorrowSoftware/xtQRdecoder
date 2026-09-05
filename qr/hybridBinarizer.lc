@@ -24,6 +24,26 @@
 -- branch is skipped either way), only the per-block cost differs. (spec section 11)
 -- =====================================================================
 
+-- HOT PATH (2026-09): the threshold step writes the black matrix's 32-bit
+-- words directly. A block row is 8 pixels; when those 8 bits fall inside ONE
+-- word (the common, aligned case) they are accumulated in a local and OR-ed
+-- into the word once; the clamped last block of a row may straddle two words
+-- and takes the per-pixel path. The bits set are exactly those bitMatrix_set
+-- would have set one command call at a time (proven bit-identical under the
+-- headless model on every fixture).
+local sHBPow2, sHBPow2Ready      -- sHBPow2[b] = 2^b, b = 0..31; built once
+
+command hb_ensurePow2
+   local b, v
+   if sHBPow2Ready is true then exit hb_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sHBPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sHBPow2Ready
+end hb_ensurePow2
+
 constant kBlockSizePower = 3      -- 8x8 blocks
 constant kBlockSize      = 8      -- 1 << kBlockSizePower
 constant kBlockMask      = 7      -- kBlockSize - 1
@@ -86,13 +106,13 @@ function hb_calculateBlackPoints pSrc, pSubW, pSubH, pW, pH
 end hb_calculateBlackPoints
 
 -- threshold the 8x8 block at (tBx,tBy) against the 5x5-smoothed local average.
--- pLum (the whole luminance plane) and pBP (the black points) are taken BY
--- REFERENCE -- this command only reads them, but @ guarantees the large arrays
+-- pBits (the matrix's flat word array), pLum (the whole luminance plane) and
+-- pBP (the black points) are taken BY REFERENCE: @ guarantees the large arrays
 -- are never copied per block (this runs once per 8x8 block, i.e. tens of
 -- thousands of times on a big image). Same big-array-by-ref idiom as arraycopy.
-command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
-   local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx, tPixel
-   local tNbBase, tRowY, tRowBase
+command hb_thresholdBlock @pBits, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH, pRowSize
+   local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx
+   local tNbBase, tRowY, tRowBase, tBit0, tOneWord, tAcc, tOff, x
    put (tBx * kBlockSize) into tXoff
    if (tXoff + kBlockSize) > pW then put (pW - kBlockSize) into tXoff
    put (tBy * kBlockSize) into tYoff
@@ -109,21 +129,37 @@ command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
    end repeat
    put (tSum div 25) into tAvg
 
-   -- hoist the pixel-row base (and the row's y, reused as the set() y-arg) out of
-   -- the inner loop: per-pixel index arithmetic drops to a single add (tRowBase +
-   -- xx). The flat index and the (x,y) passed to bitMatrix_set are unchanged.
+   -- the 8 pixels of a block row share one 32-bit word when the block's first
+   -- bit index within its word is <= 24 (every 8-aligned block; only a clamped
+   -- last block can straddle two words)
+   put (tXoff bitAnd 31) into tBit0
+   put (tBit0 <= 24) into tOneWord
    repeat with yy = 0 to (kBlockSize - 1)
       put (tYoff + yy) into tRowY
       put ((tRowY * pW) + tXoff) into tRowBase
-      repeat with xx = 0 to (kBlockSize - 1)
-         put pLum[tRowBase + xx] into tPixel
-         if tPixel <= tAvg then bitMatrix_set pMatrix, (tXoff + xx), tRowY
-      end repeat
+      if tOneWord then
+         put 0 into tAcc
+         repeat with xx = 0 to (kBlockSize - 1)
+            if pLum[tRowBase + xx] <= tAvg then add sHBPow2[tBit0 + xx] to tAcc
+         end repeat
+         if tAcc <> 0 then
+            put ((tRowY * pRowSize) + (tXoff div 32)) into tOff
+            put (pBits[tOff] bitOr tAcc) into pBits[tOff]
+         end if
+      else
+         repeat with xx = 0 to (kBlockSize - 1)
+            if pLum[tRowBase + xx] <= tAvg then
+               put (tXoff + xx) into x
+               put ((tRowY * pRowSize) + (x div 32)) into tOff
+               put (pBits[tOff] bitOr sHBPow2[x bitAnd 31]) into pBits[tOff]
+            end if
+         end repeat
+      end if
    end repeat
 end hb_thresholdBlock
 
 function hb_getBlackMatrix pSrc
-   local tW, tH, tSubW, tSubH, tBP, tMatrix, tBx, tBy, tLum
+   local tW, tH, tSubW, tSubH, tBP, tMatrix, tBx, tBy, tLum, tBits, tRowSize
    put pSrc["width"] into tW
    put pSrc["height"] into tH
 
@@ -139,15 +175,20 @@ function hb_getBlackMatrix pSrc
 
    put hb_calculateBlackPoints(pSrc, tSubW, tSubH, tW, tH) into tBP
    put bitMatrix_new(tW, tH) into tMatrix
-   -- Hoist the luminance plane into a local ONCE, then pass it (and the black
-   -- points) by reference per block, instead of re-evaluating pSrc["lum"] -- a
-   -- subarray extraction -- on every one of the tSubW*tSubH iterations.
+   -- Hoist the luminance plane and the matrix's word array into locals ONCE,
+   -- then pass them (and the black points) by reference per block, instead of
+   -- re-evaluating a subarray extraction on every one of the tSubW*tSubH
+   -- iterations; the words go back into the matrix once at the end.
+   hb_ensurePow2
    put pSrc["lum"] into tLum
+   put tMatrix["bits"] into tBits
+   put tMatrix["rowSize"] into tRowSize
    repeat with tBy = 0 to (tSubH - 1)
       repeat with tBx = 0 to (tSubW - 1)
-         hb_thresholdBlock tMatrix, tLum, tBP, tBx, tBy, tSubW, tSubH, tW, tH
+         hb_thresholdBlock tBits, tLum, tBP, tBx, tBy, tSubW, tSubH, tW, tH, tRowSize
       end repeat
    end repeat
+   put tBits into tMatrix["bits"]
    return tMatrix
 end hb_getBlackMatrix
 ?>

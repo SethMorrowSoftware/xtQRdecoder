@@ -877,17 +877,40 @@ end bitArray_clone
 --   pObj["rowSize"]  = (width + 31) div 32   (words per row)
 --   pObj["bits"][w]  = dense 0-based unsigned-32-bit words, length rowSize*height
 --
--- get/getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
+-- getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
 -- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.shl
 -- is precision-safe: shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
 -- matching Java's overflow-discard semantics bit-for-bit (spec section 6.2).
+--
+-- HOT PATH: get/set/unset/flip run once per pixel in the binarizers, the finder
+-- and the sampler. They use a power-of-two table (sBMPow2[b] = 2^b, built once
+-- by bitMatrix_new) instead of the shl/uShr/u32 helper calls: for a word in
+-- [0, 2^32) and a bit index in 0..31, `word div 2^b` IS uShr(word, b) and
+-- `word bitOr 2^b` IS u32(word bitOr shl(1, b)) - bit-identical, proven under
+-- the headless model on every fixture, with no `^` operator on the hot path
+-- (some OXT parsers are reported to reject `^` inside a compound expression).
+-- Every matrix comes from bitMatrix_new, so the table always exists.
 --
 -- NOTE: the giant hard-coded debug array literal in PHP BitMatrix::set() is
 -- dead cruft and is intentionally NOT ported (spec section 8.1 warning).
 -- =====================================================================
 
+local sBMPow2, sBMPow2Ready      -- sBMPow2[b] = 2^b, b = 0..31; built once
+
+command bm_ensurePow2
+   local b, v
+   if sBMPow2Ready is true then exit bm_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sBMPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sBMPow2Ready
+end bm_ensurePow2
+
 function bitMatrix_new pWidth, pHeight
    local tObj, tRowSize, tCount, k, tBits
+   bm_ensurePow2
    if pWidth < 1 then throw "BitMatrix: dimensions must be > 0"
    if pHeight is empty then put pWidth into pHeight
    if pHeight < 1 then throw "BitMatrix: dimensions must be > 0"
@@ -924,26 +947,26 @@ function bitMatrix_get pObj, x, y
    if (x < 0) or (y < 0) or (x >= pObj["width"]) or (y >= pObj["height"]) then
       return false
    end if
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   return ((uShr(pObj["bits"][tOffset], (x bitAnd 31)) bitAnd 1) <> 0)
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   return (((pObj["bits"][tOffset] div sBMPow2[x bitAnd 31]) bitAnd 1) = 1)
 end bitMatrix_get
 
 command bitMatrix_set @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitOr shl(1, (x bitAnd 31))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitOr sBMPow2[x bitAnd 31]) into pObj["bits"][tOffset]
 end bitMatrix_set
 
 command bitMatrix_unset @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitAnd u32(bitNot(shl(1, (x bitAnd 31))))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitAnd (4294967295 - sBMPow2[x bitAnd 31])) into pObj["bits"][tOffset]
 end bitMatrix_unset
 
 command bitMatrix_flip @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitXor shl(1, (x bitAnd 31))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitXor sBMPow2[x bitAnd 31]) into pObj["bits"][tOffset]
 end bitMatrix_flip
 
 command bitMatrix_clear @pObj
@@ -1252,29 +1275,23 @@ end bitSource_readBits
 -- section 7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
 -- raw layout per section 7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
 function luminanceSource_newFromImageData pW, pH, pRaw
-   local tObj, p, o, r, g, b, n, tLum
+   local tObj, p, o, n, tLum
    put pW into tObj["width"]
    put pH into tObj["height"]
    put (pW * pH) into n
-   -- Hot loop (one iteration per pixel). Three behaviour-preserving speedups vs
-   -- the naive form (spec section 11 -- this is the documented cost centre):
-   --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE
-   --     at the end, so each iteration does one array-key write instead of a
-   --     nested tObj["lum"][idx] lookup-then-write;
-   --   * use the loop counter p directly as the 0-based pixel index (idx == p);
-   --   * carry the byte offset o with `add 4` instead of recomputing p*4.
-   -- Result is bit-identical: pixel p reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
-   -- byte1=alpha,2=R,3=G,4=B layout of section 7.2) and writes lum[p].
+   -- Hot loop (one iteration per pixel; spec section 11 - the documented cost
+   -- centre). TWO statements per pixel:
+   --   * accumulate into a FLAT local (tLum) stored into tObj["lum"] ONCE;
+   --   * the loop counter p is the 0-based pixel index; the byte offset o is
+   --     carried with `add 4` (pixel p reads bytes 4p+2/4p+3/4p+4 = R/G/B);
+   --   * the greyscale rule "r if r=g=b, else (r+2g+b)/4 truncated" is written
+   --     branch-free as (r + 2g + b) div 4: when r=g=b that is (4r) div 4 = r,
+   --     and for non-negative integers div IS the truncated quotient. Bit-
+   --     identical to the branching form (proven under the headless model).
    put 0 into o
    repeat with p = 0 to (n - 1)
-      put byteToNum(byte (o + 2) of pRaw) into r
-      put byteToNum(byte (o + 3) of pRaw) into g
-      put byteToNum(byte (o + 4) of pRaw) into b
-      if (r = g) and (g = b) then
-         put r into tLum[p]
-      else
-         put trunc((r + (2 * g) + b) / 4) into tLum[p]
-      end if
+      put ((byteToNum(byte (o + 2) of pRaw) + (2 * byteToNum(byte (o + 3) of pRaw)) \
+            + byteToNum(byte (o + 4) of pRaw)) div 4) into tLum[p]
       add 4 to o
    end repeat
    put tLum into tObj["lum"]
@@ -1416,27 +1433,32 @@ function luminanceSource_newFromData pImageData, pMaxDim
 end luminanceSource_newFromData
 
 -- Build a luminance source from a 4-byte/pixel raw plane, sampling every
--- pStep-th pixel in x and y (nearest-neighbour downsample). Reuses the verified
--- section 7.3 greyscale by reassembling a reduced 4-bpp raw and calling newFromImageData.
+-- pStep-th pixel in x and y (nearest-neighbour downsample), in ONE pass: the
+-- kept pixel's R/G/B bytes (o+2, o+3, o+4) go straight through the section 7.3
+-- greyscale rule of newFromImageData above. (Until 2026-09 this rebuilt a
+-- reduced raw string first and then converted it - two passes over every kept
+-- pixel; the bytes read and the values written are identical.)
 function luminanceSource_downsampleRaw pW, pH, pRaw, pStep
-   local tOutW, tOutH, sx, sy, tOStep, o, tReduced
+   local tOutW, tOutH, sx, sy, tOStep, o, p, tLum, tObj
    put (((pW - 1) div pStep) + 1) into tOutW
    put (((pH - 1) div pStep) + 1) into tOutH
-   put empty into tReduced
-   -- Carry the source byte offset incrementally. Within a row each kept pixel is
-   -- pStep source pixels (= pStep*4 bytes) past the previous one, so advance o by
-   -- a constant add instead of recomputing ((sy*pStep)*pW + sx*pStep)*4 for every
-   -- output pixel. The byte ranges copied are identical (same idiom as the
-   -- per-pixel `add 4` in luminanceSource_newFromImageData).
+   -- Within a row each kept pixel is pStep source pixels (= pStep*4 bytes) past
+   -- the previous one, so o advances by a constant add per kept pixel.
    put (pStep * 4) into tOStep
+   put 0 into p
    repeat with sy = 0 to (tOutH - 1)
       put (((sy * pStep) * pW) * 4) into o
       repeat with sx = 0 to (tOutW - 1)
-         put (byte (o + 1) to (o + 4) of pRaw) after tReduced
+         put ((byteToNum(byte (o + 2) of pRaw) + (2 * byteToNum(byte (o + 3) of pRaw)) \
+               + byteToNum(byte (o + 4) of pRaw)) div 4) into tLum[p]
          add tOStep to o
+         add 1 to p
       end repeat
    end repeat
-   return luminanceSource_newFromImageData(tOutW, tOutH, tReduced)
+   put tOutW into tObj["width"]
+   put tOutH into tObj["height"]
+   put tLum into tObj["lum"]
+   return tObj
 end luminanceSource_downsampleRaw
 
 function luminanceSource_getWidth pObj
@@ -1491,6 +1513,19 @@ end luminanceSource_crop
 -- thresholds the whole image. Throws "NotFound: ..." when contrast is too low
 -- (mirrors ZXing throwing NotFoundException; spec section 6.6).
 -- =====================================================================
+
+local sGHPow2, sGHPow2Ready      -- sGHPow2[b] = 2^b, b = 0..31; built once
+
+command ghb_ensurePow2
+   local b, v
+   if sGHPow2Ready is true then exit ghb_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sGHPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sGHPow2Ready
+end ghb_ensurePow2
 
 constant kLumBits    = 5
 constant kLumShift   = 3      -- 8 - kLumBits
@@ -1555,7 +1590,7 @@ end ghb_estimateBlackPoint
 
 function ghb_getBlackMatrix pSrc
    local tW, tH, tLum, tMatrix, x, y, tRow, tRight, tLeft, tPixel
-   local tBuckets, b, blackPoint, tOffset, tRowBase
+   local tBuckets, b, blackPoint, tOffset, tRowBase, tBits, tRowSize, tWordOff, tAcc, tBit
    put pSrc["width"] into tW
    put pSrc["height"] into tH
    put pSrc["lum"] into tLum
@@ -1580,13 +1615,31 @@ function ghb_getBlackMatrix pSrc
 
    put ghb_estimateBlackPoint(tBuckets) into blackPoint
 
-   -- threshold the whole image: pixel < blackPoint => black
+   -- threshold the whole image: pixel < blackPoint => black. HOT PATH (2026-09):
+   -- the matrix is fresh (all zero), so each 32-pixel word is accumulated in a
+   -- local and stored once - exactly the bits bitMatrix_set would have set one
+   -- command call at a time (proven bit-identical under the headless model).
+   ghb_ensurePow2
+   put tMatrix["bits"] into tBits
+   put tMatrix["rowSize"] into tRowSize
    repeat with y = 0 to (tH - 1)
       put (y * tW) into tOffset
+      put (y * tRowSize) into tWordOff
+      put 0 into tAcc
+      put 0 into tBit
       repeat with x = 0 to (tW - 1)
-         if tLum[tOffset + x] < blackPoint then bitMatrix_set tMatrix, x, y
+         if tLum[tOffset + x] < blackPoint then add sGHPow2[tBit] to tAcc
+         add 1 to tBit
+         if tBit = 32 then
+            if tAcc <> 0 then put tAcc into tBits[tWordOff]
+            add 1 to tWordOff
+            put 0 into tAcc
+            put 0 into tBit
+         end if
       end repeat
+      if tAcc <> 0 then put tAcc into tBits[tWordOff]
    end repeat
+   put tBits into tMatrix["bits"]
 
    return tMatrix
 end ghb_getBlackMatrix
@@ -1612,6 +1665,26 @@ end ghb_getBlackMatrix
 -- RESULT is identical (the sum is the same; once range>24 the final low-range
 -- branch is skipped either way), only the per-block cost differs. (spec section 11)
 -- =====================================================================
+
+-- HOT PATH (2026-09): the threshold step writes the black matrix's 32-bit
+-- words directly. A block row is 8 pixels; when those 8 bits fall inside ONE
+-- word (the common, aligned case) they are accumulated in a local and OR-ed
+-- into the word once; the clamped last block of a row may straddle two words
+-- and takes the per-pixel path. The bits set are exactly those bitMatrix_set
+-- would have set one command call at a time (proven bit-identical under the
+-- headless model on every fixture).
+local sHBPow2, sHBPow2Ready      -- sHBPow2[b] = 2^b, b = 0..31; built once
+
+command hb_ensurePow2
+   local b, v
+   if sHBPow2Ready is true then exit hb_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sHBPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sHBPow2Ready
+end hb_ensurePow2
 
 constant kBlockSizePower = 3      -- 8x8 blocks
 constant kBlockSize      = 8      -- 1 << kBlockSizePower
@@ -1675,13 +1748,13 @@ function hb_calculateBlackPoints pSrc, pSubW, pSubH, pW, pH
 end hb_calculateBlackPoints
 
 -- threshold the 8x8 block at (tBx,tBy) against the 5x5-smoothed local average.
--- pLum (the whole luminance plane) and pBP (the black points) are taken BY
--- REFERENCE -- this command only reads them, but @ guarantees the large arrays
+-- pBits (the matrix's flat word array), pLum (the whole luminance plane) and
+-- pBP (the black points) are taken BY REFERENCE: @ guarantees the large arrays
 -- are never copied per block (this runs once per 8x8 block, i.e. tens of
 -- thousands of times on a big image). Same big-array-by-ref idiom as arraycopy.
-command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
-   local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx, tPixel
-   local tNbBase, tRowY, tRowBase
+command hb_thresholdBlock @pBits, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH, pRowSize
+   local tXoff, tYoff, tTop, leftBlk, tSum, dy, dx, tAvg, yy, xx
+   local tNbBase, tRowY, tRowBase, tBit0, tOneWord, tAcc, tOff, x
    put (tBx * kBlockSize) into tXoff
    if (tXoff + kBlockSize) > pW then put (pW - kBlockSize) into tXoff
    put (tBy * kBlockSize) into tYoff
@@ -1698,21 +1771,37 @@ command hb_thresholdBlock @pMatrix, @pLum, @pBP, tBx, tBy, pSubW, pSubH, pW, pH
    end repeat
    put (tSum div 25) into tAvg
 
-   -- hoist the pixel-row base (and the row's y, reused as the set() y-arg) out of
-   -- the inner loop: per-pixel index arithmetic drops to a single add (tRowBase +
-   -- xx). The flat index and the (x,y) passed to bitMatrix_set are unchanged.
+   -- the 8 pixels of a block row share one 32-bit word when the block's first
+   -- bit index within its word is <= 24 (every 8-aligned block; only a clamped
+   -- last block can straddle two words)
+   put (tXoff bitAnd 31) into tBit0
+   put (tBit0 <= 24) into tOneWord
    repeat with yy = 0 to (kBlockSize - 1)
       put (tYoff + yy) into tRowY
       put ((tRowY * pW) + tXoff) into tRowBase
-      repeat with xx = 0 to (kBlockSize - 1)
-         put pLum[tRowBase + xx] into tPixel
-         if tPixel <= tAvg then bitMatrix_set pMatrix, (tXoff + xx), tRowY
-      end repeat
+      if tOneWord then
+         put 0 into tAcc
+         repeat with xx = 0 to (kBlockSize - 1)
+            if pLum[tRowBase + xx] <= tAvg then add sHBPow2[tBit0 + xx] to tAcc
+         end repeat
+         if tAcc <> 0 then
+            put ((tRowY * pRowSize) + (tXoff div 32)) into tOff
+            put (pBits[tOff] bitOr tAcc) into pBits[tOff]
+         end if
+      else
+         repeat with xx = 0 to (kBlockSize - 1)
+            if pLum[tRowBase + xx] <= tAvg then
+               put (tXoff + xx) into x
+               put ((tRowY * pRowSize) + (x div 32)) into tOff
+               put (pBits[tOff] bitOr sHBPow2[x bitAnd 31]) into pBits[tOff]
+            end if
+         end repeat
+      end if
    end repeat
 end hb_thresholdBlock
 
 function hb_getBlackMatrix pSrc
-   local tW, tH, tSubW, tSubH, tBP, tMatrix, tBx, tBy, tLum
+   local tW, tH, tSubW, tSubH, tBP, tMatrix, tBx, tBy, tLum, tBits, tRowSize
    put pSrc["width"] into tW
    put pSrc["height"] into tH
 
@@ -1728,15 +1817,20 @@ function hb_getBlackMatrix pSrc
 
    put hb_calculateBlackPoints(pSrc, tSubW, tSubH, tW, tH) into tBP
    put bitMatrix_new(tW, tH) into tMatrix
-   -- Hoist the luminance plane into a local ONCE, then pass it (and the black
-   -- points) by reference per block, instead of re-evaluating pSrc["lum"] -- a
-   -- subarray extraction -- on every one of the tSubW*tSubH iterations.
+   -- Hoist the luminance plane and the matrix's word array into locals ONCE,
+   -- then pass them (and the black points) by reference per block, instead of
+   -- re-evaluating a subarray extraction on every one of the tSubW*tSubH
+   -- iterations; the words go back into the matrix once at the end.
+   hb_ensurePow2
    put pSrc["lum"] into tLum
+   put tMatrix["bits"] into tBits
+   put tMatrix["rowSize"] into tRowSize
    repeat with tBy = 0 to (tSubH - 1)
       repeat with tBx = 0 to (tSubW - 1)
-         hb_thresholdBlock tMatrix, tLum, tBP, tBx, tBy, tSubW, tSubH, tW, tH
+         hb_thresholdBlock tBits, tLum, tBP, tBx, tBy, tSubW, tSubH, tW, tH, tRowSize
       end repeat
    end repeat
+   put tBits into tMatrix["bits"]
    return tMatrix
 end hb_getBlackMatrix
 
@@ -2016,16 +2110,37 @@ function dataMask_isMasked pRef, i, j
    throw "Format: bad data mask reference " & pRef
 end dataMask_isMasked
 
--- flip the masked cells of the dimension x dimension matrix, in place
+local sDMPow2, sDMPow2Ready      -- sDMPow2[b] = 2^b, b = 0..31; built once
+
+command dm_ensurePow2
+   local b, v
+   if sDMPow2Ready is true then exit dm_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sDMPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sDMPow2Ready
+end dm_ensurePow2
+
+-- flip the masked cells of the dimension x dimension matrix, in place. The
+-- flips go to the matrix's word array directly (x = j, y = i) - the same bits
+-- bitMatrix_flip toggles one command call at a time.
 command dataMask_unmask @pBits, pDimension, pRef
-   local i, j
+   local i, j, tWords, tRowSize, tRowBase, tOff
+   dm_ensurePow2
+   put pBits["bits"] into tWords
+   put pBits["rowSize"] into tRowSize
    repeat with i = 0 to (pDimension - 1)
+      put (i * tRowSize) into tRowBase
       repeat with j = 0 to (pDimension - 1)
          if dataMask_isMasked(pRef, i, j) then
-            bitMatrix_flip pBits, j, i        -- (x=j, y=i)
+            put (tRowBase + (j div 32)) into tOff
+            put (tWords[tOff] bitXor sDMPow2[j bitAnd 31]) into tWords[tOff]
          end if
       end repeat
    end repeat
+   put tWords into pBits["bits"]
 end dataMask_unmask
 
 -- ===================== module: formatInformation =======
@@ -3648,6 +3763,19 @@ end pt_transformPoints
 -- Java's zero padding bits do (the port threw NotFound there until 2026-09).
 -- =====================================================================
 
+local sGSPow2, sGSPow2Ready      -- sGSPow2[b] = 2^b, b = 0..31; built once
+
+command gs_ensurePow2
+   local b, v
+   if sGSPow2Ready is true then exit gs_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sGSPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sGSPow2Ready
+end gs_ensurePow2
+
 -- clamp barely-off endpoints back onto the image; throw if truly outside.
 -- Mutates pPoints in place (command, @). Mirrors checkAndNudgePoints exactly:
 -- nudge from the start until a point is OK, then nudge from the end likewise.
@@ -3710,12 +3838,21 @@ end gs_checkAndNudgePoints
 
 function gs_sampleGrid pImage, pDimX, pDimY, pTransform
    local tBits, tPoints, y, c, x, tIValue, tImgW, tImgH, tPX, tPY
+   local tWords, tOutRowSize, tImgBits, tImgRowSize, tOff
    if (pDimX <= 0) or (pDimY <= 0) then
       throw "NotFound: grid dimensions <= 0"
    end if
    put bitMatrix_new(pDimX, pDimY) into tBits
    put bitMatrix_getWidth(pImage) into tImgW
    put bitMatrix_getHeight(pImage) into tImgH
+   -- HOT PATH (2026-09): one image read and one output write per module, on
+   -- the matrices' word arrays directly (the same bits bitMatrix_get/set
+   -- would read and set; proven bit-identical under the headless model)
+   gs_ensurePow2
+   put tBits["bits"] into tWords
+   put tBits["rowSize"] into tOutRowSize
+   put pImage["bits"] into tImgBits
+   put pImage["rowSize"] into tImgRowSize
    -- xTalk repeat has no "step"; iterate the column c and use x = 2*c as the
    -- flat (x,y) offset into the points array.
    repeat with y = 0 to (pDimY - 1)
@@ -3733,13 +3870,17 @@ function gs_sampleGrid pImage, pDimX, pDimY, pTransform
          put trunc(tPoints[x + 1]) into tPY
          -- a sample just outside the image reads WHITE: PHP's BitMatrix::get
          -- answers false for any out-of-range coordinate and Java reads a zero
-         -- padding bit for x just past the width (bitMatrix_get guards this);
-         -- only the row ENDPOINTS are policed, by gs_checkAndNudgePoints above
-         if bitMatrix_get(pImage, tPX, tPY) then
-            bitMatrix_set tBits, c, y
+         -- padding bit for x just past the width; only the row ENDPOINTS are
+         -- policed, by gs_checkAndNudgePoints above
+         if (tPX >= 0) and (tPY >= 0) and (tPX < tImgW) and (tPY < tImgH) then
+            if ((tImgBits[(tPY * tImgRowSize) + (tPX div 32)] div sGSPow2[tPX bitAnd 31]) bitAnd 1) = 1 then
+               put ((y * tOutRowSize) + (c div 32)) into tOff
+               put (tWords[tOff] bitOr sGSPow2[c bitAnd 31]) into tWords[tOff]
+            end if
          end if
       end repeat
    end repeat
+   put tWords into tBits["bits"]
    return tBits
 end gs_sampleGrid
 
@@ -3773,6 +3914,26 @@ end gs_sampleGrid
 --    2013-era PHP port. Detection outcomes are compared against ZXing itself
 --    on a synthetic corpus (tools/run_synthetic.py).
 -- =====================================================================
+
+-- HOT PATH (2026-09): the row scan reads the matrix's 32-bit words directly
+-- (one word per 32 pixels, one table lookup per pixel) instead of calling
+-- bitMatrix_get per pixel, and skips whole words when nothing can change the
+-- run state: an all-white word while already counting a white run adds 32 to
+-- that run, an all-black word while counting a black run likewise. Every state
+-- transition still happens on the exact pixel it did before (proven
+-- bit-identical under the headless model: same candidates, same centres).
+local sFPPow2, sFPPow2Ready      -- sFPPow2[b] = 2^b, b = 0..31; built once
+
+command fpf_ensurePow2
+   local b, v
+   if sFPPow2Ready is true then exit fpf_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sFPPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sFPPow2Ready
+end fpf_ensurePow2
 
 -- is key pKey present in the hints array pHints? Uses only proven constructs:
 -- "the keys of" yields a CR-list of keys; "among the lines of" tests membership.
@@ -4182,6 +4343,7 @@ function fpf_find pImg, pHints
    local tTryHarder, tNrSkip, tAllowedDev, tMaxVar
    local tMaxI, tMaxJ, tISkip, tDone, i, j, tSC, tCurState, tEndRow
    local tConfirmed, tRowSkip, tInfo, tPats, tFinder
+   local tBits, tRowSize, tRowBase, tWi, tWord, tJ0, tB
    -- hints: read each key directly. A missing key (or a non-array pHints)
    -- yields empty in xTalk, so we just test the read value -- no need for
    -- "is an array" / "is among the keys of" (both unexercised on this engine).
@@ -4216,6 +4378,9 @@ function fpf_find pImg, pHints
    put pImg into tFinder["bits"]
    put 0 into tFinder["np"]
    put false into tFinder["skip"]
+   fpf_ensurePow2
+   put pImg["bits"] into tBits            -- read-only: the words of the matrix
+   put pImg["rowSize"] into tRowSize
 
    put (tISkip - 1) into i
    repeat while (i < tMaxI) and (not tDone)
@@ -4226,58 +4391,83 @@ function fpf_find pImg, pHints
       put 0 into tSC[4]
       put 0 into tCurState
       put false into tEndRow
-      repeat with j = 0 to (tMaxJ - 1)
-         if bitMatrix_get(pImg, j, i) then
-            -- black pixel
-            if (tCurState bitAnd 1) = 1 then add 1 to tCurState
-            add 1 to tSC[tCurState]
-         else
-            -- white pixel
-            if (tCurState bitAnd 1) = 0 then
-               if tCurState = 4 then
-                  if fpf_foundPatternCross(tSC, tMaxVar) then
-                     fpf_handlePossibleCenter tFinder, tSC, i, j, tConfirmed
-                     if tConfirmed then
-                        put 2 into tISkip                 -- ZXing: iSkip = 2
-                        if tFinder["skip"] then
-                           put fpf_haveMultiplyConfirmedCenters(tFinder, tAllowedDev) into tDone
-                        else
-                           if tNrSkip is empty then
-                              fpf_findRowSkip tFinder, tRowSkip
+      put (i * tRowSize) into tRowBase
+      repeat with tWi = 0 to (tRowSize - 1)
+         put tBits[tRowBase + tWi] into tWord
+         put (tWi * 32) into tJ0
+         -- black runs are the even states, white runs the odd ones: a word that
+         -- is all one colour, met while already counting that colour, cannot
+         -- change the state - it only lengthens the current run
+         if (tWord = 0) and ((tCurState bitAnd 1) = 1) then
+            add min(32, (tMaxJ - tJ0)) to tSC[tCurState]
+            next repeat
+         end if
+         if (tWord = 4294967295) and ((tCurState bitAnd 1) = 0) then
+            add 32 to tSC[tCurState]
+            next repeat
+         end if
+         repeat with tB = 0 to 31
+            put (tJ0 + tB) into j
+            if j >= tMaxJ then exit repeat
+            if (tWord bitAnd sFPPow2[tB]) <> 0 then
+               -- black pixel
+               if (tCurState bitAnd 1) = 1 then add 1 to tCurState
+               add 1 to tSC[tCurState]
+            else
+               -- white pixel
+               if (tCurState bitAnd 1) = 0 then
+                  if tCurState = 4 then
+                     if fpf_foundPatternCross(tSC, tMaxVar) then
+                        fpf_handlePossibleCenter tFinder, tSC, i, j, tConfirmed
+                        if tConfirmed then
+                           put 2 into tISkip                 -- ZXing: iSkip = 2
+                           if tFinder["skip"] then
+                              put fpf_haveMultiplyConfirmedCenters(tFinder, tAllowedDev) into tDone
                            else
-                              put tNrSkip into tRowSkip
+                              if tNrSkip is empty then
+                                 fpf_findRowSkip tFinder, tRowSkip
+                              else
+                                 put tNrSkip into tRowSkip
+                              end if
+                              if tRowSkip > tSC[2] then
+                                 add (tRowSkip - tSC[2] - tISkip) to i
+                                 put true into tEndRow
+                              end if
                            end if
-                           if tRowSkip > tSC[2] then
-                              add (tRowSkip - tSC[2] - tISkip) to i
-                              put true into tEndRow
+                           put 0 into tCurState
+                           put 0 into tSC[0]
+                           put 0 into tSC[1]
+                           put 0 into tSC[2]
+                           put 0 into tSC[3]
+                           put 0 into tSC[4]
+                           if tEndRow then
+                              exit repeat            -- leaves the bit loop; the word loop checks tEndRow
                            end if
-                        end if
-                        put 0 into tCurState
-                        put 0 into tSC[0]
-                        put 0 into tSC[1]
-                        put 0 into tSC[2]
-                        put 0 into tSC[3]
-                        put 0 into tSC[4]
-                        if tEndRow then
-                           exit repeat
+                        else
+                           fpf_shiftCounts2 tSC
+                           put 3 into tCurState
                         end if
                      else
                         fpf_shiftCounts2 tSC
                         put 3 into tCurState
                      end if
                   else
-                     fpf_shiftCounts2 tSC
-                     put 3 into tCurState
+                     add 1 to tCurState
+                     add 1 to tSC[tCurState]
                   end if
                else
-                  add 1 to tCurState
                   add 1 to tSC[tCurState]
                end if
-            else
-               add 1 to tSC[tCurState]
             end if
-         end if
+            end repeat
+         if tEndRow then exit repeat
       end repeat
+      if tEndRow then
+         -- the row was abandoned after a confirmed centre (row skip): the
+         -- end-of-row check did not run before 2026-09 either
+         add tISkip to i
+         next repeat
+      end if
       if fpf_foundPatternCross(tSC, tMaxVar) then
          fpf_handlePossibleCenter tFinder, tSC, i, tMaxJ, tConfirmed
          if tConfirmed then

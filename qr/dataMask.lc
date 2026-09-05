@@ -48,15 +48,36 @@ function dataMask_isMasked pRef, i, j
    throw "Format: bad data mask reference " & pRef
 end dataMask_isMasked
 
--- flip the masked cells of the dimension x dimension matrix, in place
+local sDMPow2, sDMPow2Ready      -- sDMPow2[b] = 2^b, b = 0..31; built once
+
+command dm_ensurePow2
+   local b, v
+   if sDMPow2Ready is true then exit dm_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sDMPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sDMPow2Ready
+end dm_ensurePow2
+
+-- flip the masked cells of the dimension x dimension matrix, in place. The
+-- flips go to the matrix's word array directly (x = j, y = i) - the same bits
+-- bitMatrix_flip toggles one command call at a time.
 command dataMask_unmask @pBits, pDimension, pRef
-   local i, j
+   local i, j, tWords, tRowSize, tRowBase, tOff
+   dm_ensurePow2
+   put pBits["bits"] into tWords
+   put pBits["rowSize"] into tRowSize
    repeat with i = 0 to (pDimension - 1)
+      put (i * tRowSize) into tRowBase
       repeat with j = 0 to (pDimension - 1)
          if dataMask_isMasked(pRef, i, j) then
-            bitMatrix_flip pBits, j, i        -- (x=j, y=i)
+            put (tRowBase + (j div 32)) into tOff
+            put (tWords[tOff] bitXor sDMPow2[j bitAnd 31]) into tWords[tOff]
          end if
       end repeat
    end repeat
+   put tWords into pBits["bits"]
 end dataMask_unmask
 ?>

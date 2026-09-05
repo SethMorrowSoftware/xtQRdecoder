@@ -24,29 +24,23 @@
 -- section 7.3 greyscale: per pixel, if r==g==b luminance=r, else (r+2g+b)/4 (trunc).
 -- raw layout per section 7.2: 4 bytes/pixel, byte1=0/alpha, byte2=R, byte3=G, byte4=B.
 function luminanceSource_newFromImageData pW, pH, pRaw
-   local tObj, p, o, r, g, b, n, tLum
+   local tObj, p, o, n, tLum
    put pW into tObj["width"]
    put pH into tObj["height"]
    put (pW * pH) into n
-   -- Hot loop (one iteration per pixel). Three behaviour-preserving speedups vs
-   -- the naive form (spec section 11 -- this is the documented cost centre):
-   --   * accumulate into a FLAT local (tLum) and store it into tObj["lum"] ONCE
-   --     at the end, so each iteration does one array-key write instead of a
-   --     nested tObj["lum"][idx] lookup-then-write;
-   --   * use the loop counter p directly as the 0-based pixel index (idx == p);
-   --   * carry the byte offset o with `add 4` instead of recomputing p*4.
-   -- Result is bit-identical: pixel p reads bytes 4p+2/4p+3/4p+4 (R/G/B, the
-   -- byte1=alpha,2=R,3=G,4=B layout of section 7.2) and writes lum[p].
+   -- Hot loop (one iteration per pixel; spec section 11 - the documented cost
+   -- centre). TWO statements per pixel:
+   --   * accumulate into a FLAT local (tLum) stored into tObj["lum"] ONCE;
+   --   * the loop counter p is the 0-based pixel index; the byte offset o is
+   --     carried with `add 4` (pixel p reads bytes 4p+2/4p+3/4p+4 = R/G/B);
+   --   * the greyscale rule "r if r=g=b, else (r+2g+b)/4 truncated" is written
+   --     branch-free as (r + 2g + b) div 4: when r=g=b that is (4r) div 4 = r,
+   --     and for non-negative integers div IS the truncated quotient. Bit-
+   --     identical to the branching form (proven under the headless model).
    put 0 into o
    repeat with p = 0 to (n - 1)
-      put byteToNum(byte (o + 2) of pRaw) into r
-      put byteToNum(byte (o + 3) of pRaw) into g
-      put byteToNum(byte (o + 4) of pRaw) into b
-      if (r = g) and (g = b) then
-         put r into tLum[p]
-      else
-         put trunc((r + (2 * g) + b) / 4) into tLum[p]
-      end if
+      put ((byteToNum(byte (o + 2) of pRaw) + (2 * byteToNum(byte (o + 3) of pRaw)) \
+            + byteToNum(byte (o + 4) of pRaw)) div 4) into tLum[p]
       add 4 to o
    end repeat
    put tLum into tObj["lum"]
@@ -188,27 +182,32 @@ function luminanceSource_newFromData pImageData, pMaxDim
 end luminanceSource_newFromData
 
 -- Build a luminance source from a 4-byte/pixel raw plane, sampling every
--- pStep-th pixel in x and y (nearest-neighbour downsample). Reuses the verified
--- section 7.3 greyscale by reassembling a reduced 4-bpp raw and calling newFromImageData.
+-- pStep-th pixel in x and y (nearest-neighbour downsample), in ONE pass: the
+-- kept pixel's R/G/B bytes (o+2, o+3, o+4) go straight through the section 7.3
+-- greyscale rule of newFromImageData above. (Until 2026-09 this rebuilt a
+-- reduced raw string first and then converted it - two passes over every kept
+-- pixel; the bytes read and the values written are identical.)
 function luminanceSource_downsampleRaw pW, pH, pRaw, pStep
-   local tOutW, tOutH, sx, sy, tOStep, o, tReduced
+   local tOutW, tOutH, sx, sy, tOStep, o, p, tLum, tObj
    put (((pW - 1) div pStep) + 1) into tOutW
    put (((pH - 1) div pStep) + 1) into tOutH
-   put empty into tReduced
-   -- Carry the source byte offset incrementally. Within a row each kept pixel is
-   -- pStep source pixels (= pStep*4 bytes) past the previous one, so advance o by
-   -- a constant add instead of recomputing ((sy*pStep)*pW + sx*pStep)*4 for every
-   -- output pixel. The byte ranges copied are identical (same idiom as the
-   -- per-pixel `add 4` in luminanceSource_newFromImageData).
+   -- Within a row each kept pixel is pStep source pixels (= pStep*4 bytes) past
+   -- the previous one, so o advances by a constant add per kept pixel.
    put (pStep * 4) into tOStep
+   put 0 into p
    repeat with sy = 0 to (tOutH - 1)
       put (((sy * pStep) * pW) * 4) into o
       repeat with sx = 0 to (tOutW - 1)
-         put (byte (o + 1) to (o + 4) of pRaw) after tReduced
+         put ((byteToNum(byte (o + 2) of pRaw) + (2 * byteToNum(byte (o + 3) of pRaw)) \
+               + byteToNum(byte (o + 4) of pRaw)) div 4) into tLum[p]
          add tOStep to o
+         add 1 to p
       end repeat
    end repeat
-   return luminanceSource_newFromImageData(tOutW, tOutH, tReduced)
+   put tOutW into tObj["width"]
+   put tOutH into tObj["height"]
+   put tLum into tObj["lum"]
+   return tObj
 end luminanceSource_downsampleRaw
 
 function luminanceSource_getWidth pObj

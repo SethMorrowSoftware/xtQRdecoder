@@ -33,6 +33,26 @@
 --    on a synthetic corpus (tools/run_synthetic.py).
 -- =====================================================================
 
+-- HOT PATH (2026-09): the row scan reads the matrix's 32-bit words directly
+-- (one word per 32 pixels, one table lookup per pixel) instead of calling
+-- bitMatrix_get per pixel, and skips whole words when nothing can change the
+-- run state: an all-white word while already counting a white run adds 32 to
+-- that run, an all-black word while counting a black run likewise. Every state
+-- transition still happens on the exact pixel it did before (proven
+-- bit-identical under the headless model: same candidates, same centres).
+local sFPPow2, sFPPow2Ready      -- sFPPow2[b] = 2^b, b = 0..31; built once
+
+command fpf_ensurePow2
+   local b, v
+   if sFPPow2Ready is true then exit fpf_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sFPPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sFPPow2Ready
+end fpf_ensurePow2
+
 -- is key pKey present in the hints array pHints? Uses only proven constructs:
 -- "the keys of" yields a CR-list of keys; "among the lines of" tests membership.
 -- A non-array pHints yields an empty key list, so this safely returns false.
@@ -441,6 +461,7 @@ function fpf_find pImg, pHints
    local tTryHarder, tNrSkip, tAllowedDev, tMaxVar
    local tMaxI, tMaxJ, tISkip, tDone, i, j, tSC, tCurState, tEndRow
    local tConfirmed, tRowSkip, tInfo, tPats, tFinder
+   local tBits, tRowSize, tRowBase, tWi, tWord, tJ0, tB
    -- hints: read each key directly. A missing key (or a non-array pHints)
    -- yields empty in xTalk, so we just test the read value -- no need for
    -- "is an array" / "is among the keys of" (both unexercised on this engine).
@@ -475,6 +496,9 @@ function fpf_find pImg, pHints
    put pImg into tFinder["bits"]
    put 0 into tFinder["np"]
    put false into tFinder["skip"]
+   fpf_ensurePow2
+   put pImg["bits"] into tBits            -- read-only: the words of the matrix
+   put pImg["rowSize"] into tRowSize
 
    put (tISkip - 1) into i
    repeat while (i < tMaxI) and (not tDone)
@@ -485,58 +509,83 @@ function fpf_find pImg, pHints
       put 0 into tSC[4]
       put 0 into tCurState
       put false into tEndRow
-      repeat with j = 0 to (tMaxJ - 1)
-         if bitMatrix_get(pImg, j, i) then
-            -- black pixel
-            if (tCurState bitAnd 1) = 1 then add 1 to tCurState
-            add 1 to tSC[tCurState]
-         else
-            -- white pixel
-            if (tCurState bitAnd 1) = 0 then
-               if tCurState = 4 then
-                  if fpf_foundPatternCross(tSC, tMaxVar) then
-                     fpf_handlePossibleCenter tFinder, tSC, i, j, tConfirmed
-                     if tConfirmed then
-                        put 2 into tISkip                 -- ZXing: iSkip = 2
-                        if tFinder["skip"] then
-                           put fpf_haveMultiplyConfirmedCenters(tFinder, tAllowedDev) into tDone
-                        else
-                           if tNrSkip is empty then
-                              fpf_findRowSkip tFinder, tRowSkip
+      put (i * tRowSize) into tRowBase
+      repeat with tWi = 0 to (tRowSize - 1)
+         put tBits[tRowBase + tWi] into tWord
+         put (tWi * 32) into tJ0
+         -- black runs are the even states, white runs the odd ones: a word that
+         -- is all one colour, met while already counting that colour, cannot
+         -- change the state - it only lengthens the current run
+         if (tWord = 0) and ((tCurState bitAnd 1) = 1) then
+            add min(32, (tMaxJ - tJ0)) to tSC[tCurState]
+            next repeat
+         end if
+         if (tWord = 4294967295) and ((tCurState bitAnd 1) = 0) then
+            add 32 to tSC[tCurState]
+            next repeat
+         end if
+         repeat with tB = 0 to 31
+            put (tJ0 + tB) into j
+            if j >= tMaxJ then exit repeat
+            if (tWord bitAnd sFPPow2[tB]) <> 0 then
+               -- black pixel
+               if (tCurState bitAnd 1) = 1 then add 1 to tCurState
+               add 1 to tSC[tCurState]
+            else
+               -- white pixel
+               if (tCurState bitAnd 1) = 0 then
+                  if tCurState = 4 then
+                     if fpf_foundPatternCross(tSC, tMaxVar) then
+                        fpf_handlePossibleCenter tFinder, tSC, i, j, tConfirmed
+                        if tConfirmed then
+                           put 2 into tISkip                 -- ZXing: iSkip = 2
+                           if tFinder["skip"] then
+                              put fpf_haveMultiplyConfirmedCenters(tFinder, tAllowedDev) into tDone
                            else
-                              put tNrSkip into tRowSkip
+                              if tNrSkip is empty then
+                                 fpf_findRowSkip tFinder, tRowSkip
+                              else
+                                 put tNrSkip into tRowSkip
+                              end if
+                              if tRowSkip > tSC[2] then
+                                 add (tRowSkip - tSC[2] - tISkip) to i
+                                 put true into tEndRow
+                              end if
                            end if
-                           if tRowSkip > tSC[2] then
-                              add (tRowSkip - tSC[2] - tISkip) to i
-                              put true into tEndRow
+                           put 0 into tCurState
+                           put 0 into tSC[0]
+                           put 0 into tSC[1]
+                           put 0 into tSC[2]
+                           put 0 into tSC[3]
+                           put 0 into tSC[4]
+                           if tEndRow then
+                              exit repeat            -- leaves the bit loop; the word loop checks tEndRow
                            end if
-                        end if
-                        put 0 into tCurState
-                        put 0 into tSC[0]
-                        put 0 into tSC[1]
-                        put 0 into tSC[2]
-                        put 0 into tSC[3]
-                        put 0 into tSC[4]
-                        if tEndRow then
-                           exit repeat
+                        else
+                           fpf_shiftCounts2 tSC
+                           put 3 into tCurState
                         end if
                      else
                         fpf_shiftCounts2 tSC
                         put 3 into tCurState
                      end if
                   else
-                     fpf_shiftCounts2 tSC
-                     put 3 into tCurState
+                     add 1 to tCurState
+                     add 1 to tSC[tCurState]
                   end if
                else
-                  add 1 to tCurState
                   add 1 to tSC[tCurState]
                end if
-            else
-               add 1 to tSC[tCurState]
             end if
-         end if
+            end repeat
+         if tEndRow then exit repeat
       end repeat
+      if tEndRow then
+         -- the row was abandoned after a confirmed centre (row skip): the
+         -- end-of-row check did not run before 2026-09 either
+         add tISkip to i
+         next repeat
+      end if
       if fpf_foundPatternCross(tSC, tMaxVar) then
          fpf_handlePossibleCenter tFinder, tSC, i, tMaxJ, tConfirmed
          if tConfirmed then

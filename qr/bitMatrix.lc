@@ -12,17 +12,40 @@
 --   pObj["rowSize"]  = (width + 31) div 32   (words per row)
 --   pObj["bits"][w]  = dense 0-based unsigned-32-bit words, length rowSize*height
 --
--- get/getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
+-- getEnclosingRectangle/getTopLeftOnBit/getBottomRightOnBit use the Java
 -- `theBits << (31-bit)` / `>>> bit` idioms. These are exactly why qrCompat.shl
 -- is precision-safe: shl(theBits,31-bit)=0 iff the low (bit+1) bits are zero,
 -- matching Java's overflow-discard semantics bit-for-bit (spec section 6.2).
+--
+-- HOT PATH: get/set/unset/flip run once per pixel in the binarizers, the finder
+-- and the sampler. They use a power-of-two table (sBMPow2[b] = 2^b, built once
+-- by bitMatrix_new) instead of the shl/uShr/u32 helper calls: for a word in
+-- [0, 2^32) and a bit index in 0..31, `word div 2^b` IS uShr(word, b) and
+-- `word bitOr 2^b` IS u32(word bitOr shl(1, b)) - bit-identical, proven under
+-- the headless model on every fixture, with no `^` operator on the hot path
+-- (some OXT parsers are reported to reject `^` inside a compound expression).
+-- Every matrix comes from bitMatrix_new, so the table always exists.
 --
 -- NOTE: the giant hard-coded debug array literal in PHP BitMatrix::set() is
 -- dead cruft and is intentionally NOT ported (spec section 8.1 warning).
 -- =====================================================================
 
+local sBMPow2, sBMPow2Ready      -- sBMPow2[b] = 2^b, b = 0..31; built once
+
+command bm_ensurePow2
+   local b, v
+   if sBMPow2Ready is true then exit bm_ensurePow2
+   put 1 into v
+   repeat with b = 0 to 31
+      put v into sBMPow2[b]
+      put (v * 2) into v
+   end repeat
+   put true into sBMPow2Ready
+end bm_ensurePow2
+
 function bitMatrix_new pWidth, pHeight
    local tObj, tRowSize, tCount, k, tBits
+   bm_ensurePow2
    if pWidth < 1 then throw "BitMatrix: dimensions must be > 0"
    if pHeight is empty then put pWidth into pHeight
    if pHeight < 1 then throw "BitMatrix: dimensions must be > 0"
@@ -59,26 +82,26 @@ function bitMatrix_get pObj, x, y
    if (x < 0) or (y < 0) or (x >= pObj["width"]) or (y >= pObj["height"]) then
       return false
    end if
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   return ((uShr(pObj["bits"][tOffset], (x bitAnd 31)) bitAnd 1) <> 0)
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   return (((pObj["bits"][tOffset] div sBMPow2[x bitAnd 31]) bitAnd 1) = 1)
 end bitMatrix_get
 
 command bitMatrix_set @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitOr shl(1, (x bitAnd 31))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitOr sBMPow2[x bitAnd 31]) into pObj["bits"][tOffset]
 end bitMatrix_set
 
 command bitMatrix_unset @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitAnd u32(bitNot(shl(1, (x bitAnd 31))))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitAnd (4294967295 - sBMPow2[x bitAnd 31])) into pObj["bits"][tOffset]
 end bitMatrix_unset
 
 command bitMatrix_flip @pObj, x, y
    local tOffset
-   put (y * pObj["rowSize"] + (x div 32)) into tOffset
-   put u32(pObj["bits"][tOffset] bitXor shl(1, (x bitAnd 31))) into pObj["bits"][tOffset]
+   put ((y * pObj["rowSize"]) + (x div 32)) into tOffset
+   put (pObj["bits"][tOffset] bitXor sBMPow2[x bitAnd 31]) into pObj["bits"][tOffset]
 end bitMatrix_flip
 
 command bitMatrix_clear @pObj
