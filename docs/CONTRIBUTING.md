@@ -13,24 +13,47 @@ either — the decoder runs only on an xTalk engine (OpenXTalk, an xTalk
 standalone/IDE, or xTalk server). The workflow is therefore:
 
 1. Make your change.
-2. Run the static linter: `python3 tools/lint_lcs.py` (must be clean).
+2. Run the compiler-free gates (all of them; CI runs the same commands):
+
+   ```sh
+   python3 tools/lint_lcs.py qr lib/xtQRdecoder.livecodescript
+   python3 tools/check_engine_rules.py
+   python3 tools/build_livecodescript.py --check
+   python3 tools/run_unit_tests.py && python3 tools/run_unit_tests.py --lib
+   python3 tools/run_golden.py && python3 tools/run_synthetic.py
+   python3 tools/verify_tables.py
+   python3 tools/test_gates.py && python3 tools/test_model_mutations.py
+   ```
+
+   The unit, golden and synthetic runs execute the shipped `.lc` text under a
+   headless **model** of the engine (`tools/MODEL.md` names its divergences).
+   A green model run means the algorithm is right as written; it is not an
+   engine pass, and the runners say so in their own trailers.
 3. Verify the algorithm/data in **Python** against an independent oracle when
-   you touch a table or algorithm (see "Testing philosophy" below).
-4. Run it on a real engine. The bundled `.lc` test pages are written for
-   **xTalk server** — deploy the `qr/` folder and open the relevant page in a
-   browser to confirm that it passes:
-   - `qr/qr_tester.lc` — the unit suite (per-module pass/fail dashboard)
+   you touch a table or algorithm (see "Testing philosophy" below), and put
+   the oracle in `tools/verify_tables.py` or the synthetic corpus so the
+   attestation is committed, not remembered.
+4. When you can, run it on a real engine. The bundled `.lc` test pages are
+   written for **xTalk server** — deploy the `qr/` folder and open the
+   relevant page in a browser to confirm that it passes:
+   - `qr/qr_tester.lc` — the unit suite (per-panel pass/fail dashboard; the
+     page must end with its `END OF REPORT` trailer)
    - `qr/qr_golden.lc` — the golden photographic fixtures (acceptance)
+   - `qr/qr_synthetic.lc` — the synthetic corpus (acceptance)
    - `qr/qr_demo.lc` — the interactive scanner
 
    On OpenXTalk / a desktop or mobile engine, `start using
    lib/xtQRdecoder.livecodescript` and exercise the public API on the same
    fixtures instead.
 5. State in your PR **which engine and version** you verified on (e.g. "xTalk
-   server 9.6.11, Linux" or "OpenXTalk, macOS").
+   server 9.6.11, Linux" or "OpenXTalk, macOS") and add the row to
+   [`VERIFICATION.md`](VERIFICATION.md). Anything not run on an engine carries
+   the label *verified statically; needs an OXT pass* — in the PR, in the
+   docs, in the commit message.
 
-A PR that has not been run on a real engine is fine to open as a **draft**, but
-please say so — a maintainer will need to run it before merge.
+A PR that has not been run on a real engine is fine to open as long as it
+says so; the gates keep it honest and a maintainer will schedule the engine
+pass.
 
 ## xTalk style rules
 
@@ -52,10 +75,15 @@ essentials are:
 - **`<?lc … ?>` wraps every file; the loose "main" block goes last**, after all
   handler definitions.
 - **0-based arrays** (matching the PHP/Java source). Bit-packed words are
-  unsigned 32-bit; route bit ops through `qrCompat`.
+  unsigned 32-bit; route bit ops through `qrCompat` (`qr_u32`, `qr_shl`, …).
+- **Pure ASCII source**, no `foo()` in statement position, no `throw` inside
+  `catch`, constants literal and declared above use, no `local` inside a block
+  — the xTalk Suite's rules, all gated (`docs/ENGINE-LESSONS.md`).
 
-The linter (`tools/lint_lcs.py`) catches most of these. When the engine teaches
-you a new reserved word, **add it to the `RESERVED` set** in the linter.
+The two checkers catch most of these. When the engine teaches you a new reserved
+word, **add it to the `RESERVED` set** in `tools/lint_lcs.py`; when it teaches
+you a new rule, record it in `docs/ENGINE-LESSONS.md` with the build and date,
+and offer it to the xTalk Suite's engine notes.
 
 ## Testing philosophy (please don't skip)
 
@@ -63,8 +91,11 @@ you a new reserved word, **add it to the `RESERVED` set** in the linter.
   value you haven't derived from an oracle (ZXing, the `qrcode` Python lib, ISO
   18004). A fabricated fixture can pass a *broken* decoder.
 - **Include a multi-part / edge case**, not just the happy path.
-- Re-run `qr/qr_golden.lc` after any change to the luminance / binarizer /
-  detector / decoder path to guard against regressions.
+- **Prove the test can fail.** A new assertion that pins a defect class should
+  come with a seeded mutation in `tools/test_model_mutations.py`.
+- Re-run the golden and synthetic runners after any change to the luminance /
+  binarizer / detector / decoder path; for a pure optimisation, prove the
+  output bit-identical stage by stage before and after.
 
 ## License of contributions
 

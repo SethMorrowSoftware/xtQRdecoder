@@ -206,6 +206,13 @@ Most QR bit math is on **non-negative** values (pixel 0–255, coordinates, bit 
 - **GF(256) arithmetic** is on values 0–255; XOR via `bitXor` is safe.
 - **`hashCode`** (`31*h + c`) overflows a Java int; only used for `equals`/dedup. The port can keep full-precision xTalk numbers **as long as both sides use the same function** — equality still holds. (Or `u32` each step to match Java exactly.)
 
+> **As built (0.2.0):** the implementation in `qr/qrCompat.lc` carries these helpers
+> under the library prefix (`qr_u32`, `qr_u8`, `qr_shl`, `qr_uShr`, `qr_aShr`,
+> `qr_byteAt`, `qr_hashCode`, `qr_arraycopy`, `qr_floatToIntBits`,
+> `qr_numberOfTrailingZeros`, `qr_fillArray`) so that a host stack cannot shadow
+> them, and `qr_shl` is precision-safe (it discards out-shifted high bits before
+> multiplying). The sketches below keep the spec's short names.
+
 ### 6.3 Shift emulation (no native operators exist)
 ```xtalk
 function shl a, n            -- logical/arith left shift, 32-bit
