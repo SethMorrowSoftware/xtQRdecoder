@@ -198,6 +198,7 @@ python3 tools/verify_tables.py           # every decoder table from first princi
 python3 tools/test_gates.py              # the static gates catch their seeded defects
 python3 tools/test_model_mutations.py    # the suites go red on seeded library defects
 python3 tools/gen_synthetic_fixtures.py --check   # the corpus matches its generator (needs `pip install qrcode`)
+python3 tools/sync_demo_embeds.py --check   # the showcase stack carries the library + suite blocks exactly
 ```
 
 - **The linter** (`lint_lcs.py`) checks block-type matching, reserved words, bare
@@ -364,6 +365,9 @@ tools/
   check_livecodescript.py      the xTalk Suite's checker, vendored VERBATIM (never edit)
   check_engine_rules.py        runs it over the <?lc ?>-wrapped sources
   build_livecodescript.py      regenerates lib/ from the qr/ modules (--check gate)
+  sync_demo_embeds.py          carries the library + the suite's blocks into the showcase (--check gate)
+  ui-kit.livecodescript        the xTalk Suite's UI kit master, vendored VERBATIM (never edit)
+  demo-selfcheck.livecodescript   the suite's boot self-check master, vendored VERBATIM (never edit)
   lcs_model.py + MODEL.md      the headless execution model and its named divergences
   run_unit_tests.py            the suites under the model
   run_golden.py                the golden fixtures under the model (pure-Python PNG decoder)

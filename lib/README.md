@@ -82,9 +82,14 @@ on mouseUp
 end mouseUp
 ```
 
-A complete, ready-to-paste **"Scan QR" button** (with the mobile-camera variant)
-is in [`examples/scanButton.livecodescript`](examples/scanButton.livecodescript),
+**The showcase stack**, [`examples/xtQRdecoder-demo.livecodescript`](examples/xtQRdecoder-demo.livecodescript),
+is a one-file demo in the xTalk Suite's style that carries this library inside
+it and builds its own tabbed window: every hint, every result key, the pipeline
+stage by stage, and seven embedded samples decoded for a PASS/FAIL record of your
+engine. A complete, ready-to-paste **"Scan QR" button** (with the mobile-camera
+variant) is in [`examples/scanButton.livecodescript`](examples/scanButton.livecodescript),
 and a two-button demo stack in [`examples/demoStack/`](examples/demoStack/).
+[`examples/README.md`](examples/README.md) explains all three.
 
 ## Rebuilding
 

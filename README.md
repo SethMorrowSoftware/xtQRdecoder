@@ -133,6 +133,17 @@ app, your mobile app, or a headless server page.
 
 There is nothing to compile or install. Choose the form that fits your target.
 
+### Try it first: the showcase stack
+
+[`lib/examples/xtQRdecoder-demo.livecodescript`](lib/examples/xtQRdecoder-demo.livecodescript)
+is a one-file demo laid out the way the xTalk Suite's demos are: paste it into
+a new stack's script, close and reopen the stack, and it builds a tabbed window
+with the whole library carried inside it - load a file, paste, or drop an image
+and decode it with every hint and every result key on screen; walk the
+pipeline stage by stage; decode the seven embedded samples for a PASS/FAIL
+record of your engine. [`lib/examples/README.md`](lib/examples/README.md) has
+the five steps.
+
 ### The script-only library (desktop / mobile / OpenXTalk / server) — recommended
 
 `lib/xtQRdecoder.livecodescript` is a single **script-only stack** containing the
@@ -464,6 +475,7 @@ xtQRdecoder/
 ├─ lib/
 │  ├─ xtQRdecoder.livecodescript  ★ the whole library combined into one
 │  │                              script-only stack (desktop / mobile / server)
+│  ├─ examples/xtQRdecoder-demo.livecodescript   the one-file showcase stack (suite UI kit, library carried)
 │  ├─ examples/scanButton.livecodescript   a ready-to-paste "Scan QR" button
 │  ├─ examples/demoStack/        a 2-button demo stack (Decode QR + Verbose Decode)
 │  └─ README.md                 library quick-start
@@ -475,6 +487,8 @@ xtQRdecoder/
 │  ├─ check_engine_rules.py     the xTalk Suite's checker (vendored verbatim)
 │  ├─ lint_lcs.py               this repo's linter
 │  ├─ build_livecodescript.py   regenerates lib/ from the modules (--check gate)
+│  ├─ sync_demo_embeds.py       carries the library + suite blocks into the showcase (--check gate)
+│  ├─ ui-kit.livecodescript, demo-selfcheck.livecodescript   the xTalk Suite's masters, vendored verbatim
 │  ├─ gen_synthetic_fixtures.py regenerates the synthetic corpus (--check gate)
 │  └─ test_gates.py, test_model_mutations.py   the gates' own mutation tests
 ├─ docs/

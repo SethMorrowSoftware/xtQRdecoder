@@ -113,6 +113,17 @@ gains one hint and several result keys; nothing is removed.
 - `docs/VERIFICATION.md` (what is proven, how, on what engine, and how to
   record an engine pass) and `docs/ENGINE-LESSONS.md` (the suite's lessons
   applied, each with its evidence class).
+- **The showcase stack** `lib/examples/xtQRdecoder-demo.livecodescript`: a
+  one-file, self-building demo in the xTalk Suite's style. It carries the
+  combined library, the suite's UI kit v2 and its boot self-check block
+  (both vendored byte-identical as `tools/ui-kit.livecodescript` and
+  `tools/demo-selfcheck.livecodescript`), and seven sample images. Tabs:
+  Decode (file, paste, drag-and-drop or a sample; every hint; every result
+  key; copy), Pipeline (the library stage by stage with the de-skewed grid as
+  block art), Samples (seven PASS/FAIL decodes against known texts, plus the
+  inverted symbol correctly failing without its flag), About (the self-check
+  log). `tools/sync_demo_embeds.py` keeps the three carried regions and the
+  derived control list exact (`--check` in CI, mutation-tested).
 
 ### Test harness
 - `qr_tester.lc` harness 2: the reporter compares byte-exactly under
