@@ -20,7 +20,7 @@ match this file, this file is right and the sentence is stale.
 |---|---|---|---|
 | Unit harness 1 (17 panels, 399 assertions) via `qr/qr_tester.lc` | xTalk server, a 9.6.11-class community build, Linux | 2026-06-03 (the 0.1.0 release) | 399/399 |
 | The 5 golden photographic fixtures via `qr/qr_golden.lc` | same | 2026-06-03 | 5/5 |
-| Desktop / mobile / OpenXTalk (`start using` the combined stack, the two examples, the demo stack) | - | never | **verified statically; needs an OXT pass** |
+| Desktop / mobile / OpenXTalk (`start using` the combined stack, the showcase stack, the two examples, the demo stack) | - | never | **verified statically; needs an OXT pass** |
 | Everything changed since 0.1.0 (see `CHANGELOG.md` 0.2.0) | - | not yet | **verified statically; needs an OXT pass** |
 
 The 0.2.0 changes touch the finder, the detector, the decoder, the
@@ -59,6 +59,7 @@ independent GF(256) encoder and ZXing's rules, MODEL-PASSED only.
 | `tools/run_golden.py`, `tools/run_synthetic.py` | Real and synthetic images through the public API, the engine image object replaced by a pure-Python PNG decoder (`tools/MODEL.md` D17) | the corpus rows include negative rows (an inverted symbol must FAIL without `ALSO_INVERTED`; `empty.png` must not decode) |
 | `tools/verify_tables.py` | Every constant table against a source that is not the code | mutation-checked by hand: a one-bit change to a format-table entry is caught here (the BCH-tolerant decoder itself forgives it) |
 | `tools/gen_synthetic_fixtures.py --check` | The committed corpus matches its generator pixel for pixel | a flipped pixel and a changed manifest byte were both caught |
+| `tools/sync_demo_embeds.py --check` | The showcase stack carries the library, the suite UI kit and the self-check block exactly, its derived control list is current, and it would compile as one script (no collisions) | `tools/test_gates.py` (an edit inside the sentinels, a patched kit, a stale list, a colliding handler) |
 
 ## How to do an OXT pass, and how to record it
 
@@ -71,9 +72,13 @@ independent GF(256) encoder and ZXing's rules, MODEL-PASSED only.
    incomplete, whatever the banner says.
 3. Open `qr/qr_golden.lc` (5 rows) and `qr/qr_synthetic.lc` (49 rows; the
    v40 image is 555 px square, allow time on a shared host).
-4. On desktop or mobile, run `lib/examples/scanButton.livecodescript` on a
-   golden fixture and on `qr/fixtures/synthetic/inverted-v3Q.png` with
-   `TRY_HARDER,ALSO_INVERTED`.
+4. On desktop, paste `lib/examples/xtQRdecoder-demo.livecodescript` into a
+   new stack (`lib/examples/README.md`, five steps). The About tab's boot
+   self-check block must end `... passed, 0 failed` and the Samples tab's
+   **Decode all samples** must print eight PASS lines; copy both blocks
+   verbatim into the record. On mobile, run
+   `lib/examples/scanButton.livecodescript` on a golden fixture and on
+   `qr/fixtures/synthetic/inverted-v3Q.png` with `TRY_HARDER,ALSO_INVERTED`.
 5. Record the engine version and platform (`the version`, `the platform`),
    the date, the harness version and the counts in the engine record above,
    and move the corresponding rows from "needs an OXT pass" to

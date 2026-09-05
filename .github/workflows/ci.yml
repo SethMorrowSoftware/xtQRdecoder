@@ -30,13 +30,16 @@ jobs:
           python-version: "3.x"
 
       - name: Repo linter (blocks, reserved words, bare return, undeclared writes, delimiter footgun, SPDX)
-        run: python3 tools/lint_lcs.py qr lib/xtQRdecoder.livecodescript
+        run: python3 tools/lint_lcs.py qr lib
 
       - name: Suite engine rules (the vendored xTalk Suite checker, 22 engine-derived rules)
         run: python3 tools/check_engine_rules.py
 
       - name: Combined script-only stack is in sync with the modules
         run: python3 tools/build_livecodescript.py --check
+
+      - name: The showcase demo carries the library, the UI kit and the self-check block exactly
+        run: python3 tools/sync_demo_embeds.py --check
 
       - name: Unit suites under the headless model (modules)
         run: python3 tools/run_unit_tests.py

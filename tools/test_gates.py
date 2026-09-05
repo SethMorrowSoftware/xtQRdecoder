@@ -20,9 +20,11 @@ Gates covered: tools/build_livecodescript.py (duplicate handler, handler
 imbalance, constant used above its declaration, page include order,
 non-ASCII source, stale generated stack), tools/check_engine_rules.py (the
 vendored xTalk Suite checker: dangling else, zero-argument statement call,
-throw inside catch, curly quote) and tools/lint_lcs.py (bare return,
+throw inside catch, curly quote), tools/lint_lcs.py (bare return,
 undeclared variable, nested local, delimiter changed inside its own loop,
-missing SPDX header).
+missing SPDX header) and tools/sync_demo_embeds.py (a line typed inside the
+embed sentinels, the carried UI kit patched in place, a stale derived
+control list, a demo handler that collides with the library).
 """
 import os
 import shutil
@@ -137,6 +139,26 @@ def m_no_spdx(tmp):
     edit(tmp, "qr/mathUtils.lc", "-- SPDX-License-Identifier: Apache-2.0\n", "")
 
 
+DEMO = "lib/examples/xtQRdecoder-demo.livecodescript"
+
+
+def m_demo_embed_edited(tmp):
+    edit(tmp, DEMO, "-- ---- lib/xtQRdecoder.livecodescript ----\n",
+         "-- ---- lib/xtQRdecoder.livecodescript ----\n-- a line somebody typed inside the sentinels\n")
+
+
+def m_demo_kit_edited(tmp):
+    edit(tmp, DEMO, 'constant kUiAccent = "44,90,160"', 'constant kUiAccent = "44,90,161"')
+
+
+def m_demo_control_list_stale(tmp):
+    edit(tmp, DEMO, 'constant kQdScControls = "about:exp,', 'constant kQdScControls = "')
+
+
+def m_demo_handler_collision(tmp):
+    append(tmp, DEMO, "\nfunction qr_u32 n\n   return n\nend qr_u32\n")
+
+
 CASES = [
     ("build: duplicate handler across modules", BUILD, m_dup_handler, "duplicate handler"),
     ("build: handler open/close imbalance", BUILD, m_imbalance, "imbalance"),
@@ -153,6 +175,10 @@ CASES = [
     ("lint: local declared inside a block", ("lint_lcs.py", "qr/mathUtils.lc"), m_nested_local, "inside a block"),
     ("lint: itemDelimiter changed inside repeat for each item", ("lint_lcs.py", "qr/mathUtils.lc"), m_delimiter_in_loop, "itemDelimiter changed"),
     ("lint: missing SPDX header", ("lint_lcs.py", "qr/mathUtils.lc"), m_no_spdx, "SPDX"),
+    ("demo sync: a line typed inside the embed sentinels", ("sync_demo_embeds.py", "--check"), m_demo_embed_edited, "STALE"),
+    ("demo sync: the carried UI kit patched in place", ("sync_demo_embeds.py", "--check"), m_demo_kit_edited, "STALE"),
+    ("demo sync: the derived control list is stale", ("sync_demo_embeds.py", "--check"), m_demo_control_list_stale, "STALE"),
+    ("demo sync: a demo handler collides with the library", ("sync_demo_embeds.py", "--check"), m_demo_handler_collision, "duplicate handler"),
 ]
 
 
@@ -163,7 +189,8 @@ def main():
     try:
         for tool, args in (("build_livecodescript.py", ["--check"]),
                            ("check_engine_rules.py", ["qr/mathUtils.lc", "qr/qrReader.lc", "qr/qr_golden.lc"]),
-                           ("lint_lcs.py", ["qr/mathUtils.lc"])):
+                           ("lint_lcs.py", ["qr/mathUtils.lc"]),
+                           ("sync_demo_embeds.py", ["--check"])):
             rc, out = run(tmp, tool, *args)
             if rc != 0:
                 bad.append("positive control: %s exited %d on the pristine copy:\n%s" % (tool, rc, out))
